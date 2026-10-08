@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 	"sync"
 )
@@ -109,7 +108,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		}
 		if !n.allowInvites {
 			n.mu.Unlock()
-			return &SyncResponse{Counter: env.Counter, OK: false, Timestamp: NowSecs()}, nil
+			return nil, ErrInvitesDisabled
 		}
 		if len(n.links) >= MaxLinks {
 			n.mu.Unlock()
@@ -124,7 +123,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 
 	// Piggybacked response.
 	if env.Resp != nil && link.Pending != nil && env.Resp.Counter == link.Counter {
-		n.handleCoreSyncResponse(env.From, link, link.Pending.Method, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
+		n.handleResponse(env.From, link, link.Pending.Method, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
 		link.Counter++
 		link.RespTimestamp = env.Resp.Timestamp
 		link.Pending = nil
@@ -165,11 +164,11 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 	}
 
 	// Dispatch.
-	if !coreSyncMethods[env.Method] {
+	if !syncMethods[env.Method] {
 		n.mu.Unlock()
 		return nil, ErrBadMethod
 	}
-	ok, reqErr := n.handleCoreSyncRequest(env.From, link, env.Method, env.Payload, ts)
+	ok, reqErr := n.handleRequest(env.From, link, env.Method, env.Payload, ts)
 	if reqErr != nil {
 		n.mu.Unlock()
 		return nil, reqErr
@@ -233,20 +232,13 @@ func (n *Node) sendPending(peer string) {
 	}
 	n.mu.Unlock()
 
-	status, body, err := n.transport.Send(PeerDomain(peer), env)
+	body, err := n.transport.Send(PeerDomain(peer), env)
 
 	n.mu.Lock()
 	delete(n.inFlight, peer)
-	if err != nil || status != http.StatusOK {
-		if status == http.StatusBadRequest {
-			log.Printf("[link] %s->%s %s: 400", n.id, peer, msg.Method)
-		}
-		link = n.links[peer]
-		requeue := status == http.StatusConflict && link != nil && link.Pending == nil
+	if err != nil {
+		log.Printf("[link] %s->%s %s: %v", n.id, peer, msg.Method, err)
 		n.mu.Unlock()
-		if requeue {
-			n.Kick(peer)
-		}
 		return
 	}
 	var resp SyncResponse
@@ -260,7 +252,7 @@ func (n *Node) sendPending(peer string) {
 		return
 	}
 
-	n.handleCoreSyncResponse(peer, link, msg.Method, msg.Payload, resp.OK, resp.Timestamp)
+	n.handleResponse(peer, link, msg.Method, msg.Payload, resp.OK, resp.Timestamp)
 	link.Counter++
 	link.RespTimestamp = resp.Timestamp
 	link.Pending = nil

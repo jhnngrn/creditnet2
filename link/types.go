@@ -119,7 +119,7 @@ func NewLink(self, peer string) *Link {
 
 // Transport sends sync messages to peers.
 type Transport interface {
-	Send(peerDomain string, msg SyncRequest) (status int, body []byte, err error)
+	Send(peerDomain string, msg SyncRequest) ([]byte, error)
 }
 
 // NodeStore persists and loads node state.
@@ -133,13 +133,14 @@ type NodeStore interface {
 // ---------------------------------------------------------------------------
 
 var (
-	ErrNoLink               = errors.New("no link")
-	ErrMaxLinks             = errors.New("max links")
-	ErrStaleCounter         = errors.New("stale counter")
-	ErrCounterAhead         = errors.New("counter ahead")
-	ErrCollision            = errors.New("collision")
-	ErrBadMethod            = errors.New("unknown sync method")
-	ErrPersistFailed        = errors.New("persist failed")
+	ErrNoLink           = errors.New("no link")
+	ErrMaxLinks         = errors.New("max links")
+	ErrInvitesDisabled  = errors.New("invites disabled")
+	ErrStaleCounter     = errors.New("stale counter")
+	ErrCounterAhead     = errors.New("counter ahead")
+	ErrCollision        = errors.New("collision")
+	ErrBadMethod        = errors.New("unknown sync method")
+	ErrPersistFailed    = errors.New("persist failed")
 )
 
 // ---------------------------------------------------------------------------

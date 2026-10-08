@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -105,8 +106,15 @@ type Server struct {
 }
 
 // Send implements link.Transport.
-func (s *Server) Send(peerDomain string, msg link.SyncRequest) (int, []byte, error) {
-	return s.postSigned(peerDomain, "/p2p/tx", msg)
+func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
+	status, body, err := s.postSigned(peerDomain, "/p2p/tx", msg)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("peer %s returned %d", peerDomain, status)
+	}
+	return body, nil
 }
 
 func (s *Server) newNode(id string, raw json.RawMessage) *link.Node {
@@ -293,6 +301,8 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(syncErr, link.ErrNoLink):
 			HttpError(w, http.StatusNotFound, "no link")
+		case errors.Is(syncErr, link.ErrInvitesDisabled):
+			HttpError(w, http.StatusForbidden, "invites disabled")
 		case errors.Is(syncErr, link.ErrMaxLinks):
 			HttpError(w, http.StatusBadRequest, "max links")
 		case errors.Is(syncErr, link.ErrStaleCounter), errors.Is(syncErr, link.ErrCounterAhead), errors.Is(syncErr, link.ErrCollision):
