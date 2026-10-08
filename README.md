@@ -37,6 +37,7 @@ link/                    generic bilateral sync protocol
 
 base/                    foundation layer — peers, credit, payments
   base.go                Handler: sync + account API for credit operations
+  demurrage.go           demurrage computation (decay over time)
 
 core/                    application layer (HTTP, auth, persistence)
   server.go              server, config, handler factory registration, P2P
@@ -54,25 +55,25 @@ cmd/
 
 ## Link layer
 
-The link layer (`link/`) provides bilateral connections between peers: establishing, accepting, rejecting and disconnecting. Handlers register under a namespace and receive sync dispatch. The link handler itself is registered as `"link"`, base as `"base"`, and modules add their own namespaces.
+The link layer (`link/`) provides bilateral connections between nodes: establishing, accepting, rejecting and disconnecting. Handlers register under a namespace and receive sync dispatch. The link handler itself is registered as `"link"`, base as `"base"`, and modules add their own namespaces.
 
-## Base layer
+Links are general-purpose channels. What runs on top (peers, payments, or something else) is determined by the handler layer. A link can exist without a peer — accepting a link and creating a peer are separate operations.
 
-Base (`base/`) is the foundation that everything else builds on. It owns per-peer data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), and `balance`. Changes are transactional — a credit limit or payment is pending until the peer confirms. Base wraps link operations: `add_peer` creates a peer and triggers a link, `accept_peer` creates a peer and accepts an incoming link.
+Links track a reference count (`Refs`). Handlers call `RefLink`/`UnrefLink` when claiming or releasing a link. `RemoveLink` and incoming `link.disconnect` are refused while refs > 0, enforcing that the application layer is wound down before a link can be disconnected.
 
 ### Link state machine
 
 ```
-                         add_peer              incoming link.connect
-                        (account)              (allowInvites=true)
+                     add_peer / AddLink         incoming link.connect
+                                                (allowInvites=true)
                             |                        |
                             v                        v
                       +-----------+            +----------+
                       |connecting |            | incoming  |
                       +--+--+--+--+            +-+------+-+
                          |  |  |                 |      |
-     recv link.connect   |  |  | resp NACK       |      |  reject_peer
-     (mutual add) -------+  |  +------+          |      |  (account)
+     recv link.connect   |  |  | resp NACK       |      |  link.reject_link
+     (mutual) ----------+  |  +------+          |      |  (account)
                              |         |          |      |
                resp OK ------+         v          |      v
                              |    +---------+     |  +----------+
@@ -83,13 +84,13 @@ Base (`base/`) is the foundation that everything else builds on. It owns per-pee
                              |  link.connect      |        v
                              |  from peer         |    (deleted)
                              |         |          |
-                             v         v          | accept_peer
+                             v         v          | link.accept_link
                           +----------+            | (account)
                           |connected |            |
                           +-----+----+            +---> connecting
                                 |
-                   remove_peer  |
-                   (account)    |
+                   RemoveLink   |  (refused if refs > 0)
+                                |
                                 v
                        +--------------+
                        |disconnecting |
@@ -102,22 +103,74 @@ Base (`base/`) is the foundation that everything else builds on. It owns per-pee
 
 **States:**
 
-- **connecting** — outgoing `link.connect` in flight. Entered by `add_peer` or `accept_peer`.
-- **waiting** — `link.connect` was NACKed. Peer has the invite (`incoming` on their side). Waiting for peer to `accept_peer` or `reject_peer`.
-- **incoming** — received `link.connect` from peer. Awaiting local user decision (`accept_peer` or `reject_peer`).
-- **connected** — bilaterally established. Both sides agree the link is up.
-- **rejecting** — outgoing `link.reject` in flight. Entered by `reject_peer` on an incoming link.
-- **disconnecting** — outgoing `link.disconnect` in flight. Entered by `remove_peer` on a connected link.
+- **connecting** — outgoing `link.connect` in flight.
+- **waiting** — `link.connect` was NACKed. Peer has the invite (`incoming` on their side).
+- **incoming** — received `link.connect` from peer. Awaiting local decision (`link.accept_link` or `link.reject_link`).
+- **connected** — bilaterally established.
+- **rejecting** — outgoing `link.reject` in flight.
+- **disconnecting** — outgoing `link.disconnect` in flight. Refused while refs > 0.
+
+## Base layer
+
+Base (`base/`) is the foundation that everything else builds on. It owns per-peer data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
+
+Links and peers are separate. A link is the communication channel (link layer). A peer is what base adds on top: balance, credit limits, demurrage. Establishing a peer requires a bilateral `peer_request` exchange after the link is connected.
+
+### Peer state machine
+
+```
+                     add_peer                   recv base.peer_request
+                    (account)                   (link already connected)
+                        |                              |
+                        v                              v
+                  +-----------+                  +----------+
+                  |connecting |                  | incoming  |
+                  +--+-----+--+                  +-+------+-+
+                     |      |                      |      |
+  recv peer_request  |      | resp NACK            |      |  reject_peer
+  (mutual) ---------+      +------+               |      |  (account)
+                     |              |               |      |
+       resp OK ------+              v               |      v
+                     |        +---------+           |  +----------+
+                     |        | waiting |           |  | rejecting |
+                     |        +----+----+           |  +-----+----+
+                     |             |                |        |
+                     |  recv       |                |        | resp ACK'd
+                     |  peer_request                |        | -> delete peer
+                     |  from peer  |                |        |    + UnrefLink
+                     |             |                |        v
+                     v             v                |    (deleted)
+                  +----------+                      |
+                  |connected |                      | accept_peer
+                  +-----+----+                      | (account)
+                        |                           |
+           remove_peer  |                           +---> connecting
+           (account)    |
+                        v
+                   (deleted)
+                   + UnrefLink
+```
+
+**States:**
+
+- **connecting** — `peer_request` queued, not yet acked.
+- **waiting** — `peer_request` was NACKed. Peer has the request (`incoming` on their side).
+- **incoming** — received `peer_request`. Awaiting local decision (`accept_peer` or `reject_peer`).
+- **connected** — bilaterally confirmed. Operations (credit limit, demurrage, payment) require this state.
+- **rejecting** — outgoing `peer_reject` in flight.
+- **rejected** — denied by peer (received `peer_reject`).
 
 **Flows:**
 
-*Mutual add* — both peers call `add_peer` independently (out-of-band coordination). First `link.connect` to arrive finds the other side already in `connecting` or `waiting` -> both transition to `connected` immediately.
+*Add peer* — `add_peer` creates a link and a peer in `connecting`. After the link connects, `peer_request` is sent. If the other side has no peer, it creates one in `incoming` and NACKs. Sender transitions to `waiting`. Acceptor calls `accept_peer` -> `connecting` -> sends `peer_request` back -> both sides `connected`.
 
-*Incoming request* — unknown peer sends `link.connect`. If `allowInvites=true` (default), a link is created in `incoming` state and the connect is NACKed. Sender transitions to `waiting`. User can `accept_peer` (-> creates peer, `connecting` -> sends `link.connect` back -> `connected`) or `reject_peer` (-> `rejecting` -> sends `link.reject` -> link deleted on both sides, no peer created).
+*Pre-accept* — acceptor calls `accept_peer` before `peer_request` arrives (while link is still `incoming`). This accepts the link and creates a peer in `connecting`. When the initiator's `peer_request` arrives, it finds `connecting` -> `connected` + ACK.
 
-*Disconnect* — `remove_peer` on a `connected` link sets `disconnecting`. Sends `link.disconnect`, peer deletes their link and ACKs, we delete ours. The peer entry is also removed.
+*Mutual add* — both sides call `add_peer` independently. First `peer_request` to arrive finds the other side in `connecting` -> `connected` immediately.
 
-*Anti-spam* — set `allowInvites=false` via `link.set_allow_invites` to reject incoming connections from unknown peers. Sender stays in `connecting` and retries periodically — the connect goes through once the peer enables invites or adds the sender via `add_peer`. Links can always be established via mutual add.
+*Reject* — `reject_peer` on an `incoming` peer sets `rejecting`, sends `peer_reject`. The rejected side transitions to `rejected` (visible in their status). After ACK, rejector deletes their peer and unrefs the link.
+
+*Anti-spam* — set `allowInvites=false` via `link.set_allow_invites` to reject incoming connections from unknown peers.
 
 ### Sync protocol
 
@@ -141,7 +194,13 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 **base namespace:**
 
+`base.peer_request` — declare intent to establish a peer relationship. If the other side is already in `connecting` or `waiting`, both transition to `connected` (ACK). Otherwise a new `incoming` peer is created (NACK).
+
+`base.peer_reject` — reject a peer request. The rejected side transitions to `rejected` (visible in status). Rejector deletes their peer and unrefs the link after ACK.
+
 `base.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
+
+`base.set_demurrage` — tell peer my demurrage rate. Materializes existing demurrage before applying. Pending until peer confirms.
 
 `base.payment` — send payment to peer. Receiver validates against their credit limit, both sides adjust balance on success.
 
@@ -155,13 +214,16 @@ All endpoints accept JSON `{method, payload}`.
 
 **POST /api/account** — requires bearer token. Methods are namespace-routed (`namespace.method`):
 
-- `base.add_peer` (`{peer}`) — create peer + link, send `link.connect`
-- `base.remove_peer` (`{peer}`) — remove peer + disconnect link
-- `base.accept_peer` (`{peer}`) — create peer + accept incoming link
-- `base.reject_peer` (`{peer}`) — reject incoming link (no peer created)
+- `base.add_peer` (`{peer}`) — create link + peer, queue `link.connect` then `peer_request`
+- `base.accept_peer` (`{peer}`) — accept incoming `peer_request`, or pre-accept link + create peer if no request yet
+- `base.reject_peer` (`{peer}`) — reject incoming `peer_request`, or reject link if no peer yet
+- `base.remove_peer` (`{peer}`) — delete peer, unref link
 - `base.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
+- `base.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
 - `base.payment` (`{peer, amount}`) — send payment to peer
-- `base.status` — peers with credit data and link state, incoming invites
+- `base.status` — peers with credit data, link state, incoming invites
+- `link.accept_link` (`{peer}`) — accept incoming link
+- `link.reject_link` (`{peer}`) — reject incoming link
 - `link.set_allow_invites` (`{enabled}`) — toggle incoming invites (default: true)
 - `link.status` — raw link state and allow_invites setting
 
