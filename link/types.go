@@ -77,9 +77,9 @@ type SyncResponse struct {
 type LinkState string
 
 const (
-	Pending       LinkState = "pending"       // incoming request, awaiting local acceptance
+	Pending       LinkState = "pending"       // connect sent and NACKed, waiting for peer
 	Connecting    LinkState = "connecting"     // outgoing link.connect in flight
-	Requested     LinkState = "requested"      // connect sent and NACKed, waiting for peer
+	Requested     LinkState = "requested"      // incoming request, awaiting local acceptance
 	Connected     LinkState = "connected"      // bilaterally established
 	Rejecting     LinkState = "rejecting"      // outgoing link.reject in flight
 	Disconnecting LinkState = "disconnecting"  // outgoing link.disconnect in flight
