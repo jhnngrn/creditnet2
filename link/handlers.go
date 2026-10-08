@@ -16,7 +16,7 @@ func (n *Node) handleCoreSyncRequest(peer string, link *Link, method string, pay
 	switch method {
 	case "link.connect":
 		switch link.State {
-		case Connecting:
+		case Connecting, Requested:
 			// Mutual add — both sides initiated. Accept.
 			link.State = Connected
 			return true, nil
@@ -46,6 +46,8 @@ func (n *Node) handleCoreSyncResponse(peer string, link *Link, method string, pa
 	case "link.connect":
 		if ok {
 			link.State = Connected
+		} else {
+			link.State = Requested
 		}
 
 	case "link.reject":

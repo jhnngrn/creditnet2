@@ -56,24 +56,30 @@ Core provides a bilateral link layer: establishing, accepting, rejecting and dis
                             v                        v
                       +-----------+            +---------+
                       |connecting |            | pending  |
-                      +-+-+-+-----+            +-+-----+-+
-                        | | |                    |     |
-     recv link.connect  | | |  recv              |     |  reject_link
-     request -----------+ | |  link.reject       |     |  (account)
-     (mutual add)         | |  request           |     |
-                          | |    |               |     v
-               resp OK ---+ |    |               |  +----------+
-                             |    |               |  | rejecting |
-                             v    v               |  +-----+----+
-                          +----------+            |        |
-                          |connected |            |        | resp ACK'd
-                          +-----+----+            |        v
-                                |                 |    (deleted)
-                   remove_link  |                 |
-                   (account)    |                 | accept_link
-                                v                 | (account)
-                       +--------------+           |
-                       |disconnecting |           +---> connecting
+                      +--+--+--+--+            +-+-----+-+
+                         |  |  |                 |     |
+     recv link.connect   |  |  | resp NACK       |     |  reject_link
+     (mutual add) -------+  |  +------+          |     |  (account)
+                             |         |          |     |
+               resp OK ------+         v          |     v
+                             |    +-----------+   |  +----------+
+                             |    | requested |   |  | rejecting |
+                             |    +-----+-----+   |  +-----+----+
+                             |          |         |        |
+                             |   recv   |         |        | resp ACK'd
+                             |   link.connect     |        v
+                             |   from peer        |    (deleted)
+                             |          |         |
+                             v          v         | accept_link
+                          +----------+            | (account)
+                          |connected |            |
+                          +-----+----+            +---> connecting
+                                |
+                   remove_link  |
+                   (account)    |
+                                v
+                       +--------------+
+                       |disconnecting |
                        +------+-------+
                               |
                               | resp ACK'd
@@ -85,15 +91,16 @@ Core provides a bilateral link layer: establishing, accepting, rejecting and dis
 
 - **pending** — incoming `link.connect` from unknown peer. Awaiting local user acceptance. The connect is NACKed; peer knows we received it.
 - **connecting** — outgoing `link.connect` in flight. Entered by `add_link` or `accept_link`.
+- **requested** — `link.connect` sent and NACKed. Peer has the request as `pending`. No retries — waiting for peer to accept or reject.
 - **connected** — bilaterally established. Both sides agree the link is up.
 - **rejecting** — outgoing `link.reject` in flight. Entered by `reject_link` on a pending link.
 - **disconnecting** — outgoing `link.disconnect` in flight. Entered by `remove_link` on a connected link.
 
 **Flows:**
 
-*Mutual add* — both peers call `add_link` independently (out-of-band coordination). First `link.connect` to arrive finds the other side already in `connecting` -> both transition to `connected` immediately.
+*Mutual add* — both peers call `add_link` independently (out-of-band coordination). First `link.connect` to arrive finds the other side already in `connecting` or `requested` -> both transition to `connected` immediately.
 
-*Incoming request* — unknown peer sends `link.connect`. If `allowInvites=true` (default), a link is created in `pending` state and the connect is NACKed. User can `accept_link` (-> `connecting` -> sends `link.connect` back -> `connected`) or `reject_link` (-> `rejecting` -> sends `link.reject` -> link deleted on both sides).
+*Incoming request* — unknown peer sends `link.connect`. If `allowInvites=true` (default), a link is created in `pending` state and the connect is NACKed. Sender transitions to `requested` and waits. User can `accept_link` (-> `connecting` -> sends `link.connect` back -> `connected`) or `reject_link` (-> `rejecting` -> sends `link.reject` -> link deleted on both sides).
 
 *Disconnect* — `remove_link` on a `connected` link sets `disconnecting`. Sends `link.disconnect`, peer deletes their link and ACKs, we delete ours.
 
