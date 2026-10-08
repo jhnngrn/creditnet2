@@ -116,7 +116,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 			return nil, ErrMaxLinks
 		}
 		link = NewLink(n.id, env.From)
-		link.State = Requested
+		link.State = Incoming
 		n.links[env.From] = link
 	}
 
@@ -351,8 +351,8 @@ func (n *Node) AcceptLink(peer string) error {
 	if link == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	if link.State != Requested {
-		return fmt.Errorf("link to %s is not requested", peer)
+	if link.State != Incoming {
+		return fmt.Errorf("link to %s is not incoming", peer)
 	}
 	link.State = Connecting
 	n.Kick(peer)
@@ -365,8 +365,8 @@ func (n *Node) RejectLink(peer string) error {
 	if link == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	if link.State != Requested {
-		return fmt.Errorf("link to %s is not requested", peer)
+	if link.State != Incoming {
+		return fmt.Errorf("link to %s is not incoming", peer)
 	}
 	link.State = Rejecting
 	n.Kick(peer)
