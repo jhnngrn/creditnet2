@@ -87,12 +87,21 @@ func (a *nodeStoreAdapter) Load(id string) (json.RawMessage, error) {
 // Server
 // ---------------------------------------------------------------------------
 
+// HandlerFactory creates a handler for a newly loaded or created node.
+type HandlerFactory func(n *link.Node) link.Handler
+
+type handlerReg struct {
+	name    string
+	factory HandlerFactory
+}
+
 type Server struct {
-	cfg    Config
-	store  Store
-	key    ed25519.PrivateKey
-	client *http.Client
-	mux    *http.ServeMux
+	cfg       Config
+	store     Store
+	key       ed25519.PrivateKey
+	client    *http.Client
+	mux       *http.ServeMux
+	factories []handlerReg
 
 	nmu   sync.RWMutex
 	nodes map[string]*link.Node
@@ -103,6 +112,11 @@ type Server struct {
 
 	kmu      sync.Mutex
 	keyCache map[string]cachedKey
+}
+
+// Register adds a handler factory. Call before Init/RunAndWait.
+func (s *Server) Register(name string, factory HandlerFactory) {
+	s.factories = append(s.factories, handlerReg{name: name, factory: factory})
 }
 
 // Send implements link.Transport.
@@ -120,6 +134,9 @@ func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
 func (s *Server) newNode(id string, raw json.RawMessage) *link.Node {
 	n := link.NewNode(id, raw, s, &nodeStoreAdapter{s.store})
 	n.RegisterHandler("link", link.NewLinkHandler(n))
+	for _, f := range s.factories {
+		n.RegisterHandler(f.name, f.factory(n))
+	}
 	return n
 }
 

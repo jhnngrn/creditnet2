@@ -95,9 +95,25 @@ func (n *Node) DeleteLink(peer string) {
 // Locking & persistence
 // ---------------------------------------------------------------------------
 
-func (n *Node) Lock()      { n.mu.Lock() }
-func (n *Node) Unlock()    { n.mu.Unlock() }
-func (n *Node) ID() string { return n.id }
+func (n *Node) Lock()         { n.mu.Lock() }
+func (n *Node) Unlock()       { n.mu.Unlock() }
+func (n *Node) ID() string    { return n.id }
+func (n *Node) AllowInvites() bool { return n.allowInvites }
+
+// HandleAccount dispatches a user-facing API call by namespace.
+// Caller must hold Lock.
+func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.RawMessage, error) {
+	ns, method := SplitMethod(fullMethod)
+	handler := n.handlerMap[ns]
+	if handler == nil {
+		return nil, ErrBadMethod
+	}
+	ah, ok := handler.(AccountHandler)
+	if !ok {
+		return nil, ErrBadMethod
+	}
+	return ah.HandleAccount(method, payload)
+}
 
 // Commit persists the node state. Caller must hold Lock.
 func (n *Node) Commit() error {

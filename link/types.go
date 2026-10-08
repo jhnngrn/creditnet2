@@ -125,6 +125,12 @@ type Handler interface {
 	ResetState(json.RawMessage)
 }
 
+// AccountHandler processes user-facing API methods for a namespace.
+// Handlers that also implement this interface receive account API calls.
+type AccountHandler interface {
+	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
+}
+
 // Transport sends sync messages to peers.
 type Transport interface {
 	Send(peerDomain string, msg SyncRequest) ([]byte, error)

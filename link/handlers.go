@@ -1,6 +1,9 @@
 package link
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ---------------------------------------------------------------------------
 // linkHandler — handles link.connect, link.disconnect, link.reject
@@ -67,3 +70,20 @@ func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
 }
 
 func (h *linkHandler) ResetState(json.RawMessage) {}
+
+func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+	switch method {
+	case "set_allow_invites":
+		var p struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return nil, fmt.Errorf("bad request")
+		}
+		h.node.SetAllowInvites(p.Enabled)
+		return Enc("ok"), nil
+	case "status":
+		return h.node.Status(), nil
+	}
+	return nil, ErrBadMethod
+}

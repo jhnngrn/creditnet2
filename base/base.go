@@ -1,0 +1,340 @@
+package base
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"creditnet2/link"
+)
+
+// ---------------------------------------------------------------------------
+// Peer — per-peer data owned by base
+// ---------------------------------------------------------------------------
+
+type Peer struct {
+	CreditLimit    uint64  `json:"credit_limit"`
+	CreditLimitIn  uint64  `json:"credit_limit_in"`
+	Balance        int64   `json:"balance"`
+	PendingLimit   *uint64 `json:"pending_limit,omitempty"`
+	PendingPayment *uint64 `json:"pending_payment,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Handler — implements link.Handler and link.AccountHandler
+// ---------------------------------------------------------------------------
+
+type Handler struct {
+	node  *link.Node
+	peers map[string]*Peer
+}
+
+type handlerState struct {
+	Peers map[string]*Peer `json:"peers"`
+}
+
+func NewHandler(n *link.Node) link.Handler {
+	h := &Handler{
+		node:  n,
+		peers: map[string]*Peer{},
+	}
+	if raw := n.HandlerState("base"); raw != nil {
+		var st handlerState
+		if json.Unmarshal(raw, &st) == nil && st.Peers != nil {
+			h.peers = st.Peers
+		}
+	}
+	return h
+}
+
+func (h *Handler) MarshalJSON() ([]byte, error) {
+	return json.Marshal(handlerState{Peers: h.peers})
+}
+
+// ---------------------------------------------------------------------------
+// Sync — HandleRequest
+// ---------------------------------------------------------------------------
+
+func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, payload json.RawMessage, ts int64) (bool, error) {
+	switch method {
+	case "set_credit_limit":
+		return h.onSetCreditLimit(peerID, payload)
+	case "payment":
+		return h.onPayment(peerID, payload)
+	}
+	return false, link.ErrBadMethod
+}
+
+func (h *Handler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, error) {
+	var p struct {
+		Amount uint64 `json:"amount"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return false, nil
+	}
+	peer := h.peers[peerID]
+	if peer == nil {
+		return false, nil
+	}
+	peer.CreditLimitIn = p.Amount
+	return true, nil
+}
+
+func (h *Handler) onPayment(peerID string, payload json.RawMessage) (bool, error) {
+	var p struct {
+		Amount uint64 `json:"amount"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return false, nil
+	}
+	peer := h.peers[peerID]
+	if peer == nil {
+		return false, nil
+	}
+	// Receiving payment: peer's debt to me increases.
+	// Validate: new balance <= my credit_limit for this peer.
+	newBalance := peer.Balance + int64(p.Amount)
+	if newBalance > int64(peer.CreditLimit) {
+		return false, nil
+	}
+	peer.Balance = newBalance
+	return true, nil
+}
+
+// ---------------------------------------------------------------------------
+// Sync — HandleResponse
+// ---------------------------------------------------------------------------
+
+func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, payload json.RawMessage, ok bool, ts int64) {
+	peer := h.peers[peerID]
+	if peer == nil {
+		return
+	}
+	switch method {
+	case "set_credit_limit":
+		if ok && peer.PendingLimit != nil {
+			peer.CreditLimit = *peer.PendingLimit
+		}
+		peer.PendingLimit = nil
+	case "payment":
+		if ok && peer.PendingPayment != nil {
+			peer.Balance -= int64(*peer.PendingPayment)
+		}
+		peer.PendingPayment = nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sync — NextTx
+// ---------------------------------------------------------------------------
+
+func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
+	if lk.State != link.Connected {
+		return nil
+	}
+	peer := h.peers[peerID]
+	if peer == nil {
+		return nil
+	}
+	if peer.PendingLimit != nil {
+		return &link.QueuedMsg{
+			Method:  "set_credit_limit",
+			Payload: link.Enc(map[string]uint64{"amount": *peer.PendingLimit}),
+		}
+	}
+	if peer.PendingPayment != nil {
+		return &link.QueuedMsg{
+			Method:  "payment",
+			Payload: link.Enc(map[string]uint64{"amount": *peer.PendingPayment}),
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Sync — ResetState
+// ---------------------------------------------------------------------------
+
+func (h *Handler) ResetState(raw json.RawMessage) {
+	var st handlerState
+	if json.Unmarshal(raw, &st) == nil && st.Peers != nil {
+		h.peers = st.Peers
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Account API
+// ---------------------------------------------------------------------------
+
+func (h *Handler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+	switch method {
+	case "add_peer":
+		return h.addPeer(payload)
+	case "accept_peer":
+		return h.acceptPeer(payload)
+	case "reject_peer":
+		return h.rejectPeer(payload)
+	case "remove_peer":
+		return h.removePeer(payload)
+	case "set_credit_limit":
+		return h.setCreditLimit(payload)
+	case "payment":
+		return h.payment(payload)
+	case "status":
+		return h.status()
+	}
+	return nil, link.ErrBadMethod
+}
+
+func (h *Handler) addPeer(payload json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Peer string `json:"peer"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("bad request")
+	}
+	peerID := strings.ToLower(p.Peer)
+	if h.peers[peerID] != nil {
+		return nil, fmt.Errorf("peer %s already exists", peerID)
+	}
+	if err := h.node.AddLink(peerID); err != nil {
+		return nil, err
+	}
+	h.peers[peerID] = &Peer{}
+	return link.Enc("ok"), nil
+}
+
+func (h *Handler) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Peer string `json:"peer"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("bad request")
+	}
+	peerID := strings.ToLower(p.Peer)
+	if h.peers[peerID] != nil {
+		return nil, fmt.Errorf("peer %s already exists", peerID)
+	}
+	if err := h.node.AcceptLink(peerID); err != nil {
+		return nil, err
+	}
+	h.peers[peerID] = &Peer{}
+	return link.Enc("ok"), nil
+}
+
+func (h *Handler) rejectPeer(payload json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Peer string `json:"peer"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("bad request")
+	}
+	peerID := strings.ToLower(p.Peer)
+	if err := h.node.RejectLink(peerID); err != nil {
+		return nil, err
+	}
+	return link.Enc("ok"), nil
+}
+
+func (h *Handler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Peer string `json:"peer"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("bad request")
+	}
+	peerID := strings.ToLower(p.Peer)
+	if h.peers[peerID] == nil {
+		return nil, fmt.Errorf("no peer %s", peerID)
+	}
+	h.node.RemoveLink(peerID)
+	delete(h.peers, peerID)
+	return link.Enc("ok"), nil
+}
+
+func (h *Handler) setCreditLimit(payload json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Peer   string `json:"peer"`
+		Amount uint64 `json:"amount"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("bad request")
+	}
+	peerID := strings.ToLower(p.Peer)
+	peer := h.peers[peerID]
+	if peer == nil {
+		return nil, fmt.Errorf("no peer %s", peerID)
+	}
+	if peer.PendingLimit != nil {
+		return nil, fmt.Errorf("credit limit change already pending")
+	}
+	peer.PendingLimit = &p.Amount
+	h.node.Kick(peerID)
+	return link.Enc("ok"), nil
+}
+
+func (h *Handler) payment(payload json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Peer   string `json:"peer"`
+		Amount uint64 `json:"amount"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("bad request")
+	}
+	peerID := strings.ToLower(p.Peer)
+	peer := h.peers[peerID]
+	if peer == nil {
+		return nil, fmt.Errorf("no peer %s", peerID)
+	}
+	if peer.PendingPayment != nil {
+		return nil, fmt.Errorf("payment already pending")
+	}
+	if p.Amount == 0 {
+		return nil, fmt.Errorf("amount must be positive")
+	}
+	// Available credit: balance + credit_limit_in.
+	available := peer.Balance + int64(peer.CreditLimitIn)
+	if int64(p.Amount) > available {
+		return nil, fmt.Errorf("insufficient credit")
+	}
+	peer.PendingPayment = &p.Amount
+	h.node.Kick(peerID)
+	return link.Enc("ok"), nil
+}
+
+func (h *Handler) status() (json.RawMessage, error) {
+	links := h.node.Links()
+
+	peers := make(map[string]any)
+	for id, p := range h.peers {
+		info := map[string]any{
+			"credit_limit":    p.CreditLimit,
+			"credit_limit_in": p.CreditLimitIn,
+			"balance":         p.Balance,
+		}
+		if p.PendingLimit != nil {
+			info["pending_limit"] = *p.PendingLimit
+		}
+		if p.PendingPayment != nil {
+			info["pending_payment"] = *p.PendingPayment
+		}
+		if l := links[id]; l != nil {
+			info["link_state"] = l.State
+		}
+		peers[id] = info
+	}
+
+	// Show incoming invites that have no peer yet.
+	for id, l := range links {
+		if h.peers[id] == nil && l.State == link.Incoming {
+			peers[id] = map[string]any{
+				"link_state": l.State,
+			}
+		}
+	}
+
+	return link.Enc(map[string]any{
+		"peers":         peers,
+		"allow_invites": h.node.AllowInvites(),
+	}), nil
+}

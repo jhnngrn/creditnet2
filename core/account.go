@@ -2,14 +2,8 @@ package core
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
-
-	"creditnet2/link"
 )
-
-var ErrUnknownMethod = errors.New("unknown method")
 
 func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	sess, _, err := s.authenticate(r)
@@ -27,53 +21,8 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var m struct {
-		Peer    string `json:"peer"`
-		Enabled bool   `json:"enabled"`
-	}
-
 	n.Lock()
-
-	var result json.RawMessage
-	var appErr error
-	switch req.Method {
-	case "add_link":
-		if json.Unmarshal(req.Payload, &m) != nil {
-			appErr = fmt.Errorf("bad request")
-		} else if appErr = n.AddLink(m.Peer); appErr == nil {
-			result = link.Enc("ok")
-		}
-	case "remove_link":
-		if json.Unmarshal(req.Payload, &m) != nil {
-			appErr = fmt.Errorf("bad request")
-		} else if appErr = n.RemoveLink(m.Peer); appErr == nil {
-			result = link.Enc("ok")
-		}
-	case "accept_link":
-		if json.Unmarshal(req.Payload, &m) != nil {
-			appErr = fmt.Errorf("bad request")
-		} else if appErr = n.AcceptLink(m.Peer); appErr == nil {
-			result = link.Enc("ok")
-		}
-	case "reject_link":
-		if json.Unmarshal(req.Payload, &m) != nil {
-			appErr = fmt.Errorf("bad request")
-		} else if appErr = n.RejectLink(m.Peer); appErr == nil {
-			result = link.Enc("ok")
-		}
-	case "set_allow_invites":
-		if json.Unmarshal(req.Payload, &m) != nil {
-			appErr = fmt.Errorf("bad request")
-		} else {
-			n.SetAllowInvites(m.Enabled)
-			result = link.Enc("ok")
-		}
-	case "status":
-		result = n.Status()
-	default:
-		appErr = ErrUnknownMethod
-	}
-
+	result, appErr := n.HandleAccount(req.Method, req.Payload)
 	if appErr == nil {
 		if err := n.Commit(); err != nil {
 			n.Unlock()
