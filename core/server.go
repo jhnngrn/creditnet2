@@ -293,8 +293,6 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(syncErr, link.ErrNoLink):
 			HttpError(w, http.StatusNotFound, "no link")
-		case errors.Is(syncErr, link.ErrInvitesDisabled):
-			HttpError(w, http.StatusForbidden, "link requests disabled")
 		case errors.Is(syncErr, link.ErrMaxLinks):
 			HttpError(w, http.StatusBadRequest, "max links")
 		case errors.Is(syncErr, link.ErrStaleCounter), errors.Is(syncErr, link.ErrCounterAhead), errors.Is(syncErr, link.ErrCollision):

@@ -109,7 +109,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		}
 		if !n.allowInvites {
 			n.mu.Unlock()
-			return nil, ErrInvitesDisabled
+			return &SyncResponse{Counter: env.Counter, OK: false, Timestamp: NowSecs()}, nil
 		}
 		if len(n.links) >= MaxLinks {
 			n.mu.Unlock()
