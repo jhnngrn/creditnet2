@@ -24,20 +24,24 @@ Flags:
 ## Architecture
 
 ```
-core/
-  types.go         wire types, Link, LinkState, identities
-  server.go        server, config, node lifecycle
-  handlers.go      link lifecycle sync handlers, nextTx
-  sync.go          bilateral sync protocol
-  account.go       user API dispatch
-  keys.go          Ed25519 signing and verification
-  users.go         auth, sessions, admin, argon2 password hashing
-  store.go         persistence (file-based)
-  run.go           Boot/RunAndWait helpers
+link/                    generic bilateral sync protocol
+  types.go               wire types, Link, LinkState, identities, interfaces
+  node.go                Node: sync engine, account ops, retry
+  handlers.go            link lifecycle handlers, nextTx
+
+core/                    application layer (HTTP, auth, persistence)
+  server.go              server, config, P2P handler, retry loop
+  account.go             user API dispatch
+  keys.go                Ed25519 signing and verification
+  users.go               auth, sessions, admin, argon2 password hashing
+  store.go               persistence (file-based)
+  run.go                 Boot/RunAndWait helpers
 
 cmd/
-  base/            core only
+  base/                  core only
 ```
+
+`link/` is a standalone package — no dependency on `core/`. It defines `Transport` and `NodeStore` interfaces that `core/` implements.
 
 ## Core
 
@@ -47,34 +51,34 @@ Core provides a bilateral link layer: establishing, accepting, rejecting and dis
 
 ```
                          add_link              incoming link.connect
-                        (account)             (linkRequests=true)
-                            │                        │
-                            ▼                        ▼
-                      ┌────────────┐           ┌───────────┐
-                      │ connecting │           │  pending   │
-                      └─┬───┬───┬─┘           └─┬───────┬──┘
-                        │   │   │               │       │
-     recv link.connect  │   │   │  recv         │       │  reject_link
-     request ───────────┘   │   │  link.reject  │       │  (account)
-     (mutual add)           │   │  request      │       │
-                            │   │    │          │       ▼
-               resp OK ─────┘   │    │          │  ┌───────────┐
-                                │    │          │  │ rejecting  │
-                                ▼    ▼          │  └─────┬─────┘
-                          ┌───────────┐         │        │
-                          │ connected │         │        │ resp ACK'd
-                          └─────┬─────┘         │        ▼
-                                │               │    (deleted)
-                   remove_link  │               │
-                   (account)    │               │ accept_link
-                                ▼               │ (account)
-                       ┌───────────────┐        │
-                       │ disconnecting │        └──► connecting
-                       └───────┬───────┘
-                               │
-                               │ resp ACK'd
-                               ▼
-                           (deleted)
+                        (account)              (allowInvites=true)
+                            |                        |
+                            v                        v
+                      +-----------+            +---------+
+                      |connecting |            | pending  |
+                      +-+-+-+-----+            +-+-----+-+
+                        | | |                    |     |
+     recv link.connect  | | |  recv              |     |  reject_link
+     request -----------+ | |  link.reject       |     |  (account)
+     (mutual add)         | |  request           |     |
+                          | |    |               |     v
+               resp OK ---+ |    |               |  +----------+
+                             |    |               |  | rejecting |
+                             v    v               |  +-----+----+
+                          +----------+            |        |
+                          |connected |            |        | resp ACK'd
+                          +-----+----+            |        v
+                                |                 |    (deleted)
+                   remove_link  |                 |
+                   (account)    |                 | accept_link
+                                v                 | (account)
+                       +--------------+           |
+                       |disconnecting |           +---> connecting
+                       +------+-------+
+                              |
+                              | resp ACK'd
+                              v
+                          (deleted)
 ```
 
 **States:**
@@ -87,13 +91,13 @@ Core provides a bilateral link layer: establishing, accepting, rejecting and dis
 
 **Flows:**
 
-*Mutual add* — both peers call `add_link` independently (out-of-band coordination). First `link.connect` to arrive finds the other side already in `connecting` → both transition to `connected` immediately.
+*Mutual add* — both peers call `add_link` independently (out-of-band coordination). First `link.connect` to arrive finds the other side already in `connecting` -> both transition to `connected` immediately.
 
-*Incoming request* — unknown peer sends `link.connect`. If `linkRequests=true` (default), a link is created in `pending` state and the connect is NACKed. User can `accept_link` (→ `connecting` → sends `link.connect` back → `connected`) or `reject_link` (→ `rejecting` → sends `link.reject` → link deleted on both sides).
+*Incoming request* — unknown peer sends `link.connect`. If `allowInvites=true` (default), a link is created in `pending` state and the connect is NACKed. User can `accept_link` (-> `connecting` -> sends `link.connect` back -> `connected`) or `reject_link` (-> `rejecting` -> sends `link.reject` -> link deleted on both sides).
 
 *Disconnect* — `remove_link` on a `connected` link sets `disconnecting`. Sends `link.disconnect`, peer deletes their link and ACKs, we delete ours.
 
-*Anti-spam* — set `linkRequests=false` via `set_link_requests` to reject all incoming connections from unknown peers. Links can still be established via mutual add.
+*Anti-spam* — set `allowInvites=false` via `set_allow_invites` to reject all incoming connections from unknown peers. Links can still be established via mutual add.
 
 ### Sync protocol
 
@@ -105,7 +109,7 @@ Response piggybacking: when sending a new request, the peer includes its respons
 
 ### Core sync methods
 
-`link.connect` — establish bilateral connection. Mutual add → instant `connected`. Incoming from unknown → `pending` (NACKed).
+`link.connect` — establish bilateral connection. Mutual add -> instant `connected`. Incoming from unknown -> `pending` (NACKed).
 
 `link.reject` — reject a connection. Peer deletes their link, ACKs.
 
@@ -125,8 +129,8 @@ All endpoints accept JSON `{method, payload}`.
 - `remove_link` (`{peer}`) — disconnect or remove link
 - `accept_link` (`{peer}`) — accept pending link, send `link.connect`
 - `reject_link` (`{peer}`) — reject pending link, send `link.reject`
-- `set_link_requests` (`{enabled}`) — toggle incoming link requests (default: true)
-- `status` — list links with state, link_requests setting
+- `set_allow_invites` (`{enabled}`) — toggle incoming invites (default: true)
+- `status` — list links with state, allow_invites setting
 
 **POST /p2p/tx** — bilateral sync (`link.connect`, `link.disconnect`, `link.reject`)
 
