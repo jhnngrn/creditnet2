@@ -9,7 +9,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Node — a peer in the network with bilateral links
+// Node — sync engine and dispatcher
 // ---------------------------------------------------------------------------
 
 type Node struct {
@@ -19,14 +19,24 @@ type Node struct {
 	inFlight     map[string]bool
 	allowInvites bool
 
+	handlers      []handlerEntry
+	handlerMap    map[string]Handler
+	handlerStates map[string]json.RawMessage
+
 	transport Transport
 	store     NodeStore
 }
 
+type handlerEntry struct {
+	name    string
+	handler Handler
+}
+
 type nodeState struct {
-	ID           string           `json:"id"`
-	Links        map[string]*Link `json:"links"`
-	AllowInvites *bool            `json:"allow_invites,omitempty"`
+	ID           string                     `json:"id"`
+	Links        map[string]*Link           `json:"links"`
+	AllowInvites *bool                      `json:"allow_invites,omitempty"`
+	Handlers     map[string]json.RawMessage `json:"handlers,omitempty"`
 }
 
 func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStore) *Node {
@@ -42,13 +52,43 @@ func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStor
 		invites = *st.AllowInvites
 	}
 	return &Node{
-		id:           id,
-		links:        st.Links,
-		inFlight:     map[string]bool{},
-		allowInvites: invites,
-		transport:    transport,
-		store:        store,
+		id:            id,
+		links:         st.Links,
+		inFlight:      map[string]bool{},
+		allowInvites:  invites,
+		handlerMap:    map[string]Handler{},
+		handlerStates: st.Handlers,
+		transport:     transport,
+		store:         store,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Handler registration
+// ---------------------------------------------------------------------------
+
+func (n *Node) RegisterHandler(name string, h Handler) {
+	n.handlers = append(n.handlers, handlerEntry{name: name, handler: h})
+	n.handlerMap[name] = h
+}
+
+// HandlerState returns the persisted state for a handler namespace.
+// Used by callers to pass saved state when constructing a handler.
+func (n *Node) HandlerState(name string) json.RawMessage {
+	if n.handlerStates == nil {
+		return nil
+	}
+	return n.handlerStates[name]
+}
+
+// Links returns the node's links map. Caller must hold Lock.
+func (n *Node) Links() map[string]*Link {
+	return n.links
+}
+
+// DeleteLink removes a link. Caller must hold Lock.
+func (n *Node) DeleteLink(peer string) {
+	delete(n.links, peer)
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +103,14 @@ func (n *Node) ID() string { return n.id }
 func (n *Node) Commit() error {
 	ai := n.allowInvites
 	st := nodeState{ID: n.id, Links: n.links, AllowInvites: &ai}
+	if len(n.handlers) > 0 {
+		st.Handlers = make(map[string]json.RawMessage)
+		for _, entry := range n.handlers {
+			if data, err := json.Marshal(entry.handler); err == nil {
+				st.Handlers[entry.name] = data
+			}
+		}
+	}
 	if err := n.store.Save(n.id, st); err != nil {
 		// Rollback from persisted state.
 		if raw, lerr := n.store.Load(n.id); lerr == nil {
@@ -73,6 +121,11 @@ func (n *Node) Commit() error {
 				}
 				if reloaded.AllowInvites != nil {
 					n.allowInvites = *reloaded.AllowInvites
+				}
+				for _, entry := range n.handlers {
+					if state, ok := reloaded.Handlers[entry.name]; ok {
+						entry.handler.ResetState(state)
+					}
 				}
 			}
 		}
@@ -123,7 +176,10 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 
 	// Piggybacked response.
 	if env.Resp != nil && link.Pending != nil && env.Resp.Counter == link.Counter {
-		n.handleResponse(env.From, link, link.Pending.Method, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
+		pns, pmethod := SplitMethod(link.Pending.Method)
+		if ph := n.handlerMap[pns]; ph != nil {
+			ph.HandleResponse(env.From, link, pmethod, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
+		}
 		link.Counter++
 		link.RespTimestamp = env.Resp.Timestamp
 		link.Pending = nil
@@ -163,12 +219,14 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		ts = NowSecs()
 	}
 
-	// Dispatch.
-	if !syncMethods[env.Method] {
+	// Dispatch by namespace.
+	ns, method := SplitMethod(env.Method)
+	handler := n.handlerMap[ns]
+	if handler == nil {
 		n.mu.Unlock()
 		return nil, ErrBadMethod
 	}
-	ok, reqErr := n.handleRequest(env.From, link, env.Method, env.Payload, ts)
+	ok, reqErr := handler.HandleRequest(env.From, link, method, env.Payload, ts)
 	if reqErr != nil {
 		n.mu.Unlock()
 		return nil, reqErr
@@ -252,7 +310,10 @@ func (n *Node) sendPending(peer string) {
 		return
 	}
 
-	n.handleResponse(peer, link, msg.Method, msg.Payload, resp.OK, resp.Timestamp)
+	rns, rmethod := SplitMethod(msg.Method)
+	if rh := n.handlerMap[rns]; rh != nil {
+		rh.HandleResponse(peer, link, rmethod, msg.Payload, resp.OK, resp.Timestamp)
+	}
 	link.Counter++
 	link.RespTimestamp = resp.Timestamp
 	link.Pending = nil
@@ -274,21 +335,28 @@ func (n *Node) sendPending(peer string) {
 	}
 }
 
-// RetryPending kicks all peers that have pending messages or are in
-// lifecycle states and aren't already in flight.
+// nextTx returns the next message to send for a peer, asking each
+// handler in registration order. The namespace prefix is added.
+func (n *Node) nextTx(peer string) *QueuedMsg {
+	link := n.links[peer]
+	if link == nil {
+		return nil
+	}
+	for _, entry := range n.handlers {
+		if msg := entry.handler.NextTx(peer, link); msg != nil {
+			msg.Method = entry.name + "." + msg.Method
+			return msg
+		}
+	}
+	return nil
+}
+
+// RetryPending kicks all peers that aren't already in flight.
 func (n *Node) RetryPending() {
 	n.mu.Lock()
 	var kicks []string
-	for peer, l := range n.links {
-		if n.inFlight[peer] {
-			continue
-		}
-		if l.Pending != nil {
-			kicks = append(kicks, peer)
-			continue
-		}
-		switch l.State {
-		case Connecting, Rejecting, Disconnecting:
+	for peer := range n.links {
+		if !n.inFlight[peer] {
 			kicks = append(kicks, peer)
 		}
 	}

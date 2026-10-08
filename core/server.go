@@ -118,7 +118,9 @@ func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
 }
 
 func (s *Server) newNode(id string, raw json.RawMessage) *link.Node {
-	return link.NewNode(id, raw, s, &nodeStoreAdapter{s.store})
+	n := link.NewNode(id, raw, s, &nodeStoreAdapter{s.store})
+	n.RegisterHandler("link", link.NewLinkHandler(n))
+	return n
 }
 
 func NewServer(cfg Config) (*Server, error) {

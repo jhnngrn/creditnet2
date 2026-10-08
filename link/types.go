@@ -117,6 +117,14 @@ func NewLink(self, peer string) *Link {
 // Interfaces
 // ---------------------------------------------------------------------------
 
+// Handler processes sync methods for a namespace.
+type Handler interface {
+	HandleRequest(peer string, link *Link, method string, payload json.RawMessage, ts int64) (bool, error)
+	HandleResponse(peer string, link *Link, method string, payload json.RawMessage, ok bool, ts int64)
+	NextTx(peer string, link *Link) *QueuedMsg
+	ResetState(json.RawMessage)
+}
+
 // Transport sends sync messages to peers.
 type Transport interface {
 	Send(peerDomain string, msg SyncRequest) ([]byte, error)
@@ -149,5 +157,13 @@ var (
 
 func Enc(v any) json.RawMessage { d, _ := json.Marshal(v); return d }
 func NowSecs() int64            { return time.Now().Unix() }
+
+func SplitMethod(method string) (ns, name string) {
+	i := strings.Index(method, ".")
+	if i < 0 {
+		return "", method
+	}
+	return method[:i], method[i+1:]
+}
 
 const MaxLinks = 64

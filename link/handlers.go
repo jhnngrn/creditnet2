@@ -3,74 +3,67 @@ package link
 import "encoding/json"
 
 // ---------------------------------------------------------------------------
-// Core sync methods: link.connect, link.disconnect, link.reject
+// linkHandler — handles link.connect, link.disconnect, link.reject
 // ---------------------------------------------------------------------------
 
-var syncMethods = map[string]bool{
-	"link.connect":    true,
-	"link.disconnect": true,
-	"link.reject":     true,
+type linkHandler struct {
+	node *Node
 }
 
-func (n *Node) handleRequest(peer string, link *Link, method string, payload json.RawMessage, ts int64) (bool, error) {
+// NewLinkHandler creates a Handler for the "link" namespace.
+func NewLinkHandler(n *Node) Handler {
+	return &linkHandler{node: n}
+}
+
+func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payload json.RawMessage, ts int64) (bool, error) {
 	switch method {
-	case "link.connect":
-		switch link.State {
+	case "connect":
+		switch lk.State {
 		case Connecting, Waiting:
-			link.State = Connected
+			lk.State = Connected
 			return true, nil
 		default:
 			return false, nil
 		}
 
-	case "link.reject":
-		delete(n.links, peer)
+	case "reject":
+		delete(h.node.links, peer)
 		return true, nil
 
-	case "link.disconnect":
-		delete(n.links, peer)
+	case "disconnect":
+		delete(h.node.links, peer)
 		return true, nil
 	}
-	return false, nil
+	return false, ErrBadMethod
 }
 
-func (n *Node) handleResponse(peer string, link *Link, method string, payload json.RawMessage, ok bool, ts int64) {
+func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, payload json.RawMessage, ok bool, ts int64) {
 	switch method {
-	case "link.connect":
+	case "connect":
 		if ok {
-			link.State = Connected
+			lk.State = Connected
 		} else {
-			link.State = Waiting
+			lk.State = Waiting
 		}
 
-	case "link.reject":
-		// Our rejection was ACK'd — clean up.
-		delete(n.links, peer)
+	case "reject":
+		delete(h.node.links, peer)
 
-	case "link.disconnect":
-		// Our disconnect was ACK'd — clean up.
-		delete(n.links, peer)
+	case "disconnect":
+		delete(h.node.links, peer)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Promote: next message to send for a peer
-// ---------------------------------------------------------------------------
-
-func (n *Node) nextTx(peer string) *QueuedMsg {
-	link := n.links[peer]
-	if link == nil {
-		return nil
-	}
-
-	switch link.State {
+func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
+	switch lk.State {
 	case Connecting:
-		return &QueuedMsg{Method: "link.connect"}
+		return &QueuedMsg{Method: "connect"}
 	case Rejecting:
-		return &QueuedMsg{Method: "link.reject"}
+		return &QueuedMsg{Method: "reject"}
 	case Disconnecting:
-		return &QueuedMsg{Method: "link.disconnect"}
-	default:
-		return nil
+		return &QueuedMsg{Method: "disconnect"}
 	}
+	return nil
 }
+
+func (h *linkHandler) ResetState(json.RawMessage) {}
