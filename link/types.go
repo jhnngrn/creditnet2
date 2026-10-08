@@ -95,6 +95,7 @@ type Link struct {
 	State          LinkState     `json:"state"`
 	Counter        uint64        `json:"counter"`
 	TurnBit        uint64        `json:"turn_bit"`
+	Refs           int           `json:"refs"`
 	Pending        *QueuedMsg    `json:"pending,omitempty"`
 	CachedResponse *SyncResponse `json:"cached_response,omitempty"`
 	ReqTimestamp   int64         `json:"req_ts"`

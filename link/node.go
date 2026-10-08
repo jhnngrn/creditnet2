@@ -89,12 +89,22 @@ func (n *Node) Links() map[string]*Link {
 // DeleteLink removes a link and notifies all handlers. Caller must hold Lock.
 func (n *Node) DeleteLink(peer string) {
 	delete(n.links, peer)
-	n.notifyLinkRemoved(peer)
-}
-
-func (n *Node) notifyLinkRemoved(peer string) {
 	for _, entry := range n.handlers {
 		entry.handler.OnLinkRemoved(peer)
+	}
+}
+
+// RefLink increments the reference count on a link. Caller must hold Lock.
+func (n *Node) RefLink(peer string) {
+	if lk := n.links[peer]; lk != nil {
+		lk.Refs++
+	}
+}
+
+// UnrefLink decrements the reference count. Caller must hold Lock.
+func (n *Node) UnrefLink(peer string) {
+	if lk := n.links[peer]; lk != nil && lk.Refs > 0 {
+		lk.Refs--
 	}
 }
 
@@ -420,6 +430,9 @@ func (n *Node) RemoveLink(peer string) error {
 	link := n.links[peer]
 	if link == nil {
 		return fmt.Errorf("no link to %s", peer)
+	}
+	if link.Refs > 0 {
+		return fmt.Errorf("link to %s still in use (%d refs)", peer, link.Refs)
 	}
 	if link.State == Connected {
 		link.State = Disconnecting

@@ -105,6 +105,7 @@ func (h *Handler) onPeerRequest(peerID string) (bool, error) {
 	}
 	// No peer exists — create incoming.
 	h.peers[peerID] = &Peer{State: PeerIncoming}
+	h.node.RefLink(peerID)
 	return false, nil
 }
 
@@ -193,7 +194,7 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 	case "peer_reject":
 		if ok {
 			delete(h.peers, peerID)
-			h.node.RemoveLink(peerID)
+			h.node.UnrefLink(peerID)
 		}
 	case "set_credit_limit":
 		if ok && peer.PendingLimit != nil {
@@ -311,6 +312,7 @@ func (h *Handler) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if err := h.node.AddLink(peerID); err != nil {
 		return nil, err
 	}
+	h.node.RefLink(peerID)
 	h.peers[peerID] = &Peer{State: PeerConnecting}
 	return link.Enc("ok"), nil
 }
@@ -337,6 +339,7 @@ func (h *Handler) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if err := h.node.AcceptLink(peerID); err != nil {
 		return nil, err
 	}
+	h.node.RefLink(peerID)
 	h.peers[peerID] = &Peer{State: PeerConnecting}
 	return link.Enc("ok"), nil
 }
@@ -378,10 +381,7 @@ func (h *Handler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
 	delete(h.peers, peerID)
-	// Link may already be gone (e.g. PeerWaiting after disconnect).
-	if lk := h.node.Links()[peerID]; lk != nil {
-		h.node.RemoveLink(peerID)
-	}
+	h.node.UnrefLink(peerID)
 	return link.Enc("ok"), nil
 }
 
