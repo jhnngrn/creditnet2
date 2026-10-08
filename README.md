@@ -11,7 +11,7 @@ creditnet is a federated bilateral credit network built on this protocol. Each s
 ## Build
 
 ```
-go build ./cmd/base         # core only — pure link layer
+go build ./cmd/base         # server with base handler (peers, credit, payments)
 ```
 
 ## Run
@@ -31,32 +31,39 @@ Flags:
 
 ```
 link/                    generic bilateral sync protocol
-  types.go               wire types, Link, LinkState, identities, interfaces
-  node.go                Node: sync engine, account ops, retry
-  handlers.go            link lifecycle handlers, nextTx
+  types.go               wire types, Link, Handler/AccountHandler interfaces
+  node.go                Node: sync engine, handler dispatch, retry
+  handlers.go            linkHandler: link lifecycle (connect/disconnect/reject)
+
+base/                    foundation layer — peers, credit, payments
+  base.go                Handler: sync + account API for credit operations
 
 core/                    application layer (HTTP, auth, persistence)
-  server.go              server, config, P2P handler, retry loop
-  account.go             user API dispatch
+  server.go              server, config, handler factory registration, P2P
+  account.go             namespace-routed account API dispatch
   keys.go                Ed25519 signing and verification
   users.go               auth, sessions, admin, argon2 password hashing
   store.go               persistence (file-based)
   run.go                 Boot/RunAndWait helpers
 
 cmd/
-  base/                  core only
+  base/                  server with base handler
 ```
 
-`link/` is a standalone package — no dependency on `core/`. It defines `Transport` and `NodeStore` interfaces that `core/` implements.
+`link/` is a standalone package — no dependency on `core/` or `base/`. It defines `Handler`, `AccountHandler`, `Transport` and `NodeStore` interfaces. `base/` imports `link/` only. `core/` imports `link/` only — handlers are registered via factories from `cmd/`.
 
-## Core
+## Link layer
 
-Core provides a bilateral link layer: establishing, accepting, rejecting and disconnecting links between peers. No credit, no balances, no modules — pure transport.
+The link layer (`link/`) provides bilateral connections between peers: establishing, accepting, rejecting and disconnecting. Handlers register under a namespace and receive sync dispatch. The link handler itself is registered as `"link"`, base as `"base"`, and modules add their own namespaces.
+
+## Base layer
+
+Base (`base/`) is the foundation that everything else builds on. It owns per-peer data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), and `balance`. Changes are transactional — a credit limit or payment is pending until the peer confirms. Base wraps link operations: `add_peer` creates a peer and triggers a link, `accept_peer` creates a peer and accepts an incoming link.
 
 ### Link state machine
 
 ```
-                         add_link              incoming link.connect
+                         add_peer              incoming link.connect
                         (account)              (allowInvites=true)
                             |                        |
                             v                        v
@@ -64,7 +71,7 @@ Core provides a bilateral link layer: establishing, accepting, rejecting and dis
                       |connecting |            | incoming  |
                       +--+--+--+--+            +-+------+-+
                          |  |  |                 |      |
-     recv link.connect   |  |  | resp NACK       |      |  reject_link
+     recv link.connect   |  |  | resp NACK       |      |  reject_peer
      (mutual add) -------+  |  +------+          |      |  (account)
                              |         |          |      |
                resp OK ------+         v          |      v
@@ -76,12 +83,12 @@ Core provides a bilateral link layer: establishing, accepting, rejecting and dis
                              |  link.connect      |        v
                              |  from peer         |    (deleted)
                              |         |          |
-                             v         v          | accept_link
+                             v         v          | accept_peer
                           +----------+            | (account)
                           |connected |            |
                           +-----+----+            +---> connecting
                                 |
-                   remove_link  |
+                   remove_peer  |
                    (account)    |
                                 v
                        +--------------+
@@ -95,22 +102,22 @@ Core provides a bilateral link layer: establishing, accepting, rejecting and dis
 
 **States:**
 
-- **connecting** — outgoing `link.connect` in flight. Entered by `add_link` or `accept_link`.
-- **waiting** — `link.connect` was NACKed. Peer has the invite (`incoming` on their side). Waiting for peer to `accept_link` or `reject_link`.
-- **incoming** — received `link.connect` from peer. Awaiting local user decision (`accept_link` or `reject_link`).
+- **connecting** — outgoing `link.connect` in flight. Entered by `add_peer` or `accept_peer`.
+- **waiting** — `link.connect` was NACKed. Peer has the invite (`incoming` on their side). Waiting for peer to `accept_peer` or `reject_peer`.
+- **incoming** — received `link.connect` from peer. Awaiting local user decision (`accept_peer` or `reject_peer`).
 - **connected** — bilaterally established. Both sides agree the link is up.
-- **rejecting** — outgoing `link.reject` in flight. Entered by `reject_link` on an incoming link.
-- **disconnecting** — outgoing `link.disconnect` in flight. Entered by `remove_link` on a connected link.
+- **rejecting** — outgoing `link.reject` in flight. Entered by `reject_peer` on an incoming link.
+- **disconnecting** — outgoing `link.disconnect` in flight. Entered by `remove_peer` on a connected link.
 
 **Flows:**
 
-*Mutual add* — both peers call `add_link` independently (out-of-band coordination). First `link.connect` to arrive finds the other side already in `connecting` or `waiting` -> both transition to `connected` immediately.
+*Mutual add* — both peers call `add_peer` independently (out-of-band coordination). First `link.connect` to arrive finds the other side already in `connecting` or `waiting` -> both transition to `connected` immediately.
 
-*Incoming request* — unknown peer sends `link.connect`. If `allowInvites=true` (default), a link is created in `incoming` state and the connect is NACKed. Sender transitions to `waiting`. User can `accept_link` (-> `connecting` -> sends `link.connect` back -> `connected`) or `reject_link` (-> `rejecting` -> sends `link.reject` -> link deleted on both sides).
+*Incoming request* — unknown peer sends `link.connect`. If `allowInvites=true` (default), a link is created in `incoming` state and the connect is NACKed. Sender transitions to `waiting`. User can `accept_peer` (-> creates peer, `connecting` -> sends `link.connect` back -> `connected`) or `reject_peer` (-> `rejecting` -> sends `link.reject` -> link deleted on both sides, no peer created).
 
-*Disconnect* — `remove_link` on a `connected` link sets `disconnecting`. Sends `link.disconnect`, peer deletes their link and ACKs, we delete ours.
+*Disconnect* — `remove_peer` on a `connected` link sets `disconnecting`. Sends `link.disconnect`, peer deletes their link and ACKs, we delete ours. The peer entry is also removed.
 
-*Anti-spam* — set `allowInvites=false` via `set_allow_invites` to reject incoming connections from unknown peers. Sender stays in `connecting` and retries periodically — the connect goes through once the peer enables invites or adds the sender via `add_link`. Links can always be established via mutual add.
+*Anti-spam* — set `allowInvites=false` via `link.set_allow_invites` to reject incoming connections from unknown peers. Sender stays in `connecting` and retries periodically — the connect goes through once the peer enables invites or adds the sender via `add_peer`. Links can always be established via mutual add.
 
 ### Sync protocol
 
@@ -120,13 +127,23 @@ One decision in flight per link. Decisions between peers happen strictly sequent
 
 Response piggybacking: when sending a new request, the peer includes its response to our pending request. Both are processed atomically.
 
-### Core sync methods
+### Sync methods
+
+Sync methods are namespace-routed: `namespace.method`. Node dispatches to the handler registered under that namespace.
+
+**link namespace:**
 
 `link.connect` — establish bilateral connection. Mutual add -> instant `connected`. Incoming from unknown -> `incoming` (NACKed).
 
 `link.reject` — reject a connection. Peer deletes their link, ACKs.
 
 `link.disconnect` — tear down a connection. Peer deletes their link, ACKs.
+
+**base namespace:**
+
+`base.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
+
+`base.payment` — send payment to peer. Receiver validates against their credit limit, both sides adjust balance on success.
 
 ## API
 
@@ -136,15 +153,18 @@ All endpoints accept JSON `{method, payload}`.
 
 **POST /api/admin** — `create_user`, `delete_user`, `list_users`, `reset_password`
 
-**POST /api/account** — requires bearer token:
+**POST /api/account** — requires bearer token. Methods are namespace-routed (`namespace.method`):
 
-- `add_link` (`{peer}`) — create link, send `link.connect`
-- `remove_link` (`{peer}`) — disconnect or remove link
-- `accept_link` (`{peer}`) — accept incoming link, send `link.connect`
-- `reject_link` (`{peer}`) — reject incoming link, send `link.reject`
-- `set_allow_invites` (`{enabled}`) — toggle incoming invites (default: true)
-- `status` — list links with state, allow_invites setting
+- `base.add_peer` (`{peer}`) — create peer + link, send `link.connect`
+- `base.remove_peer` (`{peer}`) — remove peer + disconnect link
+- `base.accept_peer` (`{peer}`) — create peer + accept incoming link
+- `base.reject_peer` (`{peer}`) — reject incoming link (no peer created)
+- `base.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
+- `base.payment` (`{peer, amount}`) — send payment to peer
+- `base.status` — peers with credit data and link state, incoming invites
+- `link.set_allow_invites` (`{enabled}`) — toggle incoming invites (default: true)
+- `link.status` — raw link state and allow_invites setting
 
-**POST /p2p/tx** — bilateral sync (`link.connect`, `link.disconnect`, `link.reject`)
+**POST /p2p/tx** — bilateral sync (`link.*`, `base.*`)
 
 **GET /p2p/key** — public key for signature verification
