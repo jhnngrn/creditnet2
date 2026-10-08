@@ -96,7 +96,7 @@ Core provides a bilateral link layer: establishing, accepting, rejecting and dis
 **States:**
 
 - **connecting** — outgoing `link.connect` in flight. Entered by `add_link` or `accept_link`.
-- **waiting** — `link.connect` sent. Waiting for peer to connect back (whether via accepting an invite or via their own `add_link`).
+- **waiting** — `link.connect` was NACKed. Peer has the invite (`incoming` on their side). Waiting for peer to accept or add back via `add_link`.
 - **incoming** — received `link.connect` from peer. Awaiting local user decision (`accept_link` or `reject_link`).
 - **connected** — bilaterally established. Both sides agree the link is up.
 - **rejecting** — outgoing `link.reject` in flight. Entered by `reject_link` on an incoming link.
