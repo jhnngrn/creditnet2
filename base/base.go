@@ -267,6 +267,10 @@ func (h *Handler) ResetState(raw json.RawMessage) {
 	}
 }
 
+// OnLinkRemoved is called when a link is deleted (disconnect, reject, etc.).
+// TODO: decide cleanup policy for orphaned peers.
+func (h *Handler) OnLinkRemoved(peer string) {}
+
 // ---------------------------------------------------------------------------
 // Account API
 // ---------------------------------------------------------------------------

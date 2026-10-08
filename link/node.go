@@ -86,9 +86,16 @@ func (n *Node) Links() map[string]*Link {
 	return n.links
 }
 
-// DeleteLink removes a link. Caller must hold Lock.
+// DeleteLink removes a link and notifies all handlers. Caller must hold Lock.
 func (n *Node) DeleteLink(peer string) {
 	delete(n.links, peer)
+	n.notifyLinkRemoved(peer)
+}
+
+func (n *Node) notifyLinkRemoved(peer string) {
+	for _, entry := range n.handlers {
+		entry.handler.OnLinkRemoved(peer)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +424,7 @@ func (n *Node) RemoveLink(peer string) error {
 	if link.State == Connected {
 		link.State = Disconnecting
 	} else {
-		delete(n.links, peer)
+		n.DeleteLink(peer)
 	}
 	n.Kick(peer)
 	return nil

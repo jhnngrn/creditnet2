@@ -30,11 +30,11 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 		}
 
 	case "reject":
-		delete(h.node.links, peer)
+		h.node.DeleteLink(peer)
 		return true, nil
 
 	case "disconnect":
-		delete(h.node.links, peer)
+		h.node.DeleteLink(peer)
 		return true, nil
 	}
 	return false, ErrBadMethod
@@ -50,10 +50,10 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 		}
 
 	case "reject":
-		delete(h.node.links, peer)
+		h.node.DeleteLink(peer)
 
 	case "disconnect":
-		delete(h.node.links, peer)
+		h.node.DeleteLink(peer)
 	}
 }
 
@@ -70,6 +70,7 @@ func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
 }
 
 func (h *linkHandler) ResetState(json.RawMessage) {}
+func (h *linkHandler) OnLinkRemoved(string)          {}
 
 func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {
