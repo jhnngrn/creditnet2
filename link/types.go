@@ -133,7 +133,7 @@ type NodeStore interface {
 
 var (
 	ErrNoLink               = errors.New("no link")
-	ErrLinkRequestsDisabled = errors.New("link requests disabled")
+	ErrInvitesDisabled = errors.New("invites disabled")
 	ErrMaxLinks             = errors.New("max links")
 	ErrStaleCounter         = errors.New("stale counter")
 	ErrCounterAhead         = errors.New("counter ahead")

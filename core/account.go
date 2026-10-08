@@ -61,11 +61,11 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		} else if appErr = n.RejectLink(m.Peer); appErr == nil {
 			result = link.Enc("ok")
 		}
-	case "set_link_requests":
+	case "set_allow_invites":
 		if json.Unmarshal(req.Payload, &m) != nil {
 			appErr = fmt.Errorf("bad request")
 		} else {
-			n.SetLinkRequests(m.Enabled)
+			n.SetAllowInvites(m.Enabled)
 			result = link.Enc("ok")
 		}
 	case "status":

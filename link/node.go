@@ -18,7 +18,7 @@ type Node struct {
 	id           string
 	links        map[string]*Link
 	inFlight     map[string]bool
-	linkRequests bool
+	allowInvites bool
 
 	transport Transport
 	store     NodeStore
@@ -27,7 +27,7 @@ type Node struct {
 type nodeState struct {
 	ID           string           `json:"id"`
 	Links        map[string]*Link `json:"links"`
-	LinkRequests *bool            `json:"link_requests,omitempty"`
+	AllowInvites *bool            `json:"allow_invites,omitempty"`
 }
 
 func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStore) *Node {
@@ -38,15 +38,15 @@ func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStor
 	if st.Links == nil {
 		st.Links = map[string]*Link{}
 	}
-	linkReqs := true
-	if st.LinkRequests != nil {
-		linkReqs = *st.LinkRequests
+	invites := true
+	if st.AllowInvites != nil {
+		invites = *st.AllowInvites
 	}
 	return &Node{
 		id:           id,
 		links:        st.Links,
 		inFlight:     map[string]bool{},
-		linkRequests: linkReqs,
+		allowInvites: invites,
 		transport:    transport,
 		store:        store,
 	}
@@ -62,8 +62,8 @@ func (n *Node) ID() string { return n.id }
 
 // Commit persists the node state. Caller must hold Lock.
 func (n *Node) Commit() error {
-	lr := n.linkRequests
-	st := nodeState{ID: n.id, Links: n.links, LinkRequests: &lr}
+	ai := n.allowInvites
+	st := nodeState{ID: n.id, Links: n.links, AllowInvites: &ai}
 	if err := n.store.Save(n.id, st); err != nil {
 		// Rollback from persisted state.
 		if raw, lerr := n.store.Load(n.id); lerr == nil {
@@ -72,8 +72,8 @@ func (n *Node) Commit() error {
 				if reloaded.Links != nil {
 					n.links = reloaded.Links
 				}
-				if reloaded.LinkRequests != nil {
-					n.linkRequests = *reloaded.LinkRequests
+				if reloaded.AllowInvites != nil {
+					n.allowInvites = *reloaded.AllowInvites
 				}
 			}
 		}
@@ -107,9 +107,9 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrNoLink
 		}
-		if !n.linkRequests {
+		if !n.allowInvites {
 			n.mu.Unlock()
-			return nil, ErrLinkRequestsDisabled
+			return nil, ErrInvitesDisabled
 		}
 		if len(n.links) >= MaxLinks {
 			n.mu.Unlock()
@@ -373,8 +373,8 @@ func (n *Node) RejectLink(peer string) error {
 	return nil
 }
 
-func (n *Node) SetLinkRequests(enabled bool) {
-	n.linkRequests = enabled
+func (n *Node) SetAllowInvites(enabled bool) {
+	n.allowInvites = enabled
 }
 
 func (n *Node) Status() json.RawMessage {
@@ -386,6 +386,6 @@ func (n *Node) Status() json.RawMessage {
 	}
 	return Enc(map[string]any{
 		"links":         links,
-		"link_requests": n.linkRequests,
+		"allow_invites": n.allowInvites,
 	})
 }
