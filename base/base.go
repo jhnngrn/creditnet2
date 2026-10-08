@@ -20,7 +20,8 @@ const (
 	PeerWaiting    PeerState = "waiting"    // peer_request nacked, awaiting peer decision
 	PeerIncoming   PeerState = "incoming"   // received peer_request, awaiting local decision
 	PeerConnected  PeerState = "connected"  // bilaterally confirmed
-	PeerRejected   PeerState = "rejected"   // denied
+	PeerRejecting  PeerState = "rejecting"  // peer_reject queued, not yet sent
+	PeerRejected   PeerState = "rejected"   // denied by peer
 )
 
 // ---------------------------------------------------------------------------
@@ -79,6 +80,8 @@ func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, pay
 	switch method {
 	case "peer_request":
 		return h.onPeerRequest(peerID)
+	case "peer_reject":
+		return h.onPeerReject(peerID)
 	case "set_credit_limit":
 		return h.onSetCreditLimit(peerID, payload)
 	case "set_demurrage":
@@ -102,6 +105,19 @@ func (h *Handler) onPeerRequest(peerID string) (bool, error) {
 	}
 	// No peer exists — create incoming.
 	h.peers[peerID] = &Peer{State: PeerIncoming}
+	return false, nil
+}
+
+func (h *Handler) onPeerReject(peerID string) (bool, error) {
+	peer := h.peers[peerID]
+	if peer == nil {
+		return false, nil
+	}
+	switch peer.State {
+	case PeerConnecting, PeerWaiting:
+		peer.State = PeerRejected
+		return true, nil
+	}
 	return false, nil
 }
 
@@ -174,6 +190,11 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 		} else {
 			peer.State = PeerWaiting
 		}
+	case "peer_reject":
+		if ok {
+			delete(h.peers, peerID)
+			h.node.RemoveLink(peerID)
+		}
 	case "set_credit_limit":
 		if ok && peer.PendingLimit != nil {
 			peer.CreditLimit = *peer.PendingLimit
@@ -207,6 +228,9 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 	}
 	if peer.State == PeerConnecting {
 		return &link.QueuedMsg{Method: "peer_request"}
+	}
+	if peer.State == PeerRejecting {
+		return &link.QueuedMsg{Method: "peer_reject"}
 	}
 	if peer.State != PeerConnected {
 		return nil
@@ -327,8 +351,8 @@ func (h *Handler) rejectPeer(payload json.RawMessage) (json.RawMessage, error) {
 		if peer.State != PeerIncoming {
 			return nil, fmt.Errorf("peer %s is not incoming", peerID)
 		}
-		delete(h.peers, peerID)
-		h.node.RemoveLink(peerID)
+		peer.State = PeerRejecting
+		h.node.Kick(peerID)
 		return link.Enc("ok"), nil
 	}
 	// No peer — reject the link directly.
