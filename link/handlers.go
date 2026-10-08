@@ -34,6 +34,9 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 		return true, nil
 
 	case "disconnect":
+		if lk.Refs > 0 {
+			return false, nil
+		}
 		h.node.DeleteLink(peer)
 		return true, nil
 	}
@@ -53,7 +56,11 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 		h.node.DeleteLink(peer)
 
 	case "disconnect":
-		h.node.DeleteLink(peer)
+		if ok {
+			h.node.DeleteLink(peer)
+		} else {
+			lk.State = Connected
+		}
 	}
 }
 
