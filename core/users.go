@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"creditnet2/link"
+	"creditnet/link"
 	"golang.org/x/crypto/argon2"
 )
 

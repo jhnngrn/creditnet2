@@ -1,4 +1,4 @@
-module creditnet2
+module creditnet
 
 go 1.22
 

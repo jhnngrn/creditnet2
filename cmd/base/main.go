@@ -3,8 +3,8 @@ package main
 import (
 	"log"
 
-	"creditnet2/base"
-	"creditnet2/core"
+	"creditnet/base"
+	"creditnet/core"
 )
 
 func main() {
