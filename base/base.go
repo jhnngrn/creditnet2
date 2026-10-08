@@ -10,10 +10,25 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// PeerState — peer lifecycle
+// ---------------------------------------------------------------------------
+
+type PeerState string
+
+const (
+	PeerConnecting PeerState = "connecting" // peer_request queued, not yet acked
+	PeerWaiting    PeerState = "waiting"    // peer_request nacked, awaiting peer decision
+	PeerIncoming   PeerState = "incoming"   // received peer_request, awaiting local decision
+	PeerConnected  PeerState = "connected"  // bilaterally confirmed
+	PeerRejected   PeerState = "rejected"   // denied
+)
+
+// ---------------------------------------------------------------------------
 // Peer — per-peer data owned by base
 // ---------------------------------------------------------------------------
 
 type Peer struct {
+	State            PeerState `json:"state"`
 	CreditLimit      uint64  `json:"credit_limit"`
 	CreditLimitIn    uint64  `json:"credit_limit_in"`
 	Balance          int64   `json:"balance"`
@@ -62,6 +77,8 @@ func (h *Handler) MarshalJSON() ([]byte, error) {
 
 func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, payload json.RawMessage, ts int64) (bool, error) {
 	switch method {
+	case "peer_request":
+		return h.onPeerRequest(peerID)
 	case "set_credit_limit":
 		return h.onSetCreditLimit(peerID, payload)
 	case "set_demurrage":
@@ -70,6 +87,22 @@ func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, pay
 		return h.onPayment(peerID, payload, ts)
 	}
 	return false, link.ErrBadMethod
+}
+
+func (h *Handler) onPeerRequest(peerID string) (bool, error) {
+	peer := h.peers[peerID]
+	if peer != nil {
+		switch peer.State {
+		case PeerConnecting, PeerWaiting:
+			peer.State = PeerConnected
+			return true, nil
+		default:
+			return false, nil
+		}
+	}
+	// No peer exists — create incoming.
+	h.peers[peerID] = &Peer{State: PeerIncoming}
+	return false, nil
 }
 
 func (h *Handler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, error) {
@@ -135,6 +168,12 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 		return
 	}
 	switch method {
+	case "peer_request":
+		if ok {
+			peer.State = PeerConnected
+		} else {
+			peer.State = PeerWaiting
+		}
 	case "set_credit_limit":
 		if ok && peer.PendingLimit != nil {
 			peer.CreditLimit = *peer.PendingLimit
@@ -164,6 +203,12 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 	}
 	peer := h.peers[peerID]
 	if peer == nil {
+		return nil
+	}
+	if peer.State == PeerConnecting {
+		return &link.QueuedMsg{Method: "peer_request"}
+	}
+	if peer.State != PeerConnected {
 		return nil
 	}
 	if peer.PendingLimit != nil {
@@ -238,7 +283,7 @@ func (h *Handler) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if err := h.node.AddLink(peerID); err != nil {
 		return nil, err
 	}
-	h.peers[peerID] = &Peer{}
+	h.peers[peerID] = &Peer{State: PeerConnecting}
 	return link.Enc("ok"), nil
 }
 
@@ -250,13 +295,21 @@ func (h *Handler) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	if h.peers[peerID] != nil {
-		return nil, fmt.Errorf("peer %s already exists", peerID)
+	peer := h.peers[peerID]
+	if peer != nil {
+		// Existing peer — must be incoming peer_request.
+		if peer.State != PeerIncoming {
+			return nil, fmt.Errorf("peer %s is not incoming", peerID)
+		}
+		peer.State = PeerConnecting
+		h.node.Kick(peerID)
+		return link.Enc("ok"), nil
 	}
+	// No peer yet — accept the link and create peer.
 	if err := h.node.AcceptLink(peerID); err != nil {
 		return nil, err
 	}
-	h.peers[peerID] = &Peer{}
+	h.peers[peerID] = &Peer{State: PeerConnecting}
 	return link.Enc("ok"), nil
 }
 
@@ -268,6 +321,17 @@ func (h *Handler) rejectPeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
+	peer := h.peers[peerID]
+	if peer != nil {
+		// Existing peer — must be incoming peer_request.
+		if peer.State != PeerIncoming {
+			return nil, fmt.Errorf("peer %s is not incoming", peerID)
+		}
+		delete(h.peers, peerID)
+		h.node.RemoveLink(peerID)
+		return link.Enc("ok"), nil
+	}
+	// No peer — reject the link directly.
 	if err := h.node.RejectLink(peerID); err != nil {
 		return nil, err
 	}
@@ -285,8 +349,11 @@ func (h *Handler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 	if h.peers[peerID] == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	h.node.RemoveLink(peerID)
 	delete(h.peers, peerID)
+	// Link may already be gone (e.g. PeerWaiting after disconnect).
+	if lk := h.node.Links()[peerID]; lk != nil {
+		h.node.RemoveLink(peerID)
+	}
 	return link.Enc("ok"), nil
 }
 
@@ -302,6 +369,9 @@ func (h *Handler) setCreditLimit(payload json.RawMessage) (json.RawMessage, erro
 	peer := h.peers[peerID]
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
+	}
+	if peer.State != PeerConnected {
+		return nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if peer.PendingLimit != nil {
 		return nil, fmt.Errorf("credit limit change already pending")
@@ -324,6 +394,9 @@ func (h *Handler) setDemurrage(payload json.RawMessage) (json.RawMessage, error)
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
+	if peer.State != PeerConnected {
+		return nil, fmt.Errorf("peer %s is not connected", peerID)
+	}
 	if peer.PendingDemurrage != nil {
 		return nil, fmt.Errorf("demurrage change already pending")
 	}
@@ -344,6 +417,9 @@ func (h *Handler) payment(payload json.RawMessage) (json.RawMessage, error) {
 	peer := h.peers[peerID]
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
+	}
+	if peer.State != PeerConnected {
+		return nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if peer.PendingPayment != nil {
 		return nil, fmt.Errorf("payment already pending")
@@ -368,6 +444,7 @@ func (h *Handler) status() (json.RawMessage, error) {
 	peers := make(map[string]any)
 	for id, p := range h.peers {
 		info := map[string]any{
+			"peer_state":        p.State,
 			"credit_limit":      p.CreditLimit,
 			"credit_limit_in":   p.CreditLimitIn,
 			"balance":           p.Balance,
