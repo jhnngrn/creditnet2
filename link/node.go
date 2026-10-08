@@ -129,19 +129,21 @@ func (n *Node) Commit() error {
 	}
 	if err := n.store.Save(n.id, st); err != nil {
 		// Rollback from persisted state.
-		if raw, lerr := n.store.Load(n.id); lerr == nil {
-			var reloaded nodeState
-			if json.Unmarshal(raw, &reloaded) == nil {
-				if reloaded.Links != nil {
-					n.links = reloaded.Links
-				}
-				if reloaded.AllowInvites != nil {
-					n.allowInvites = *reloaded.AllowInvites
-				}
-				for _, entry := range n.handlers {
-					if state, ok := reloaded.Handlers[entry.name]; ok {
-						entry.handler.ResetState(state)
-					}
+		raw, lerr := n.store.Load(n.id)
+		if lerr != nil {
+			log.Fatalf("node %s: save failed and cannot reload state: %v (save: %v)", n.id, lerr, err)
+		}
+		var reloaded nodeState
+		if json.Unmarshal(raw, &reloaded) == nil {
+			if reloaded.Links != nil {
+				n.links = reloaded.Links
+			}
+			if reloaded.AllowInvites != nil {
+				n.allowInvites = *reloaded.AllowInvites
+			}
+			for _, entry := range n.handlers {
+				if state, ok := reloaded.Handlers[entry.name]; ok {
+					entry.handler.ResetState(state)
 				}
 			}
 		}
