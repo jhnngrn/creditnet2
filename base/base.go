@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"creditnet2/link"
 )
@@ -13,11 +14,15 @@ import (
 // ---------------------------------------------------------------------------
 
 type Peer struct {
-	CreditLimit    uint64  `json:"credit_limit"`
-	CreditLimitIn  uint64  `json:"credit_limit_in"`
-	Balance        int64   `json:"balance"`
-	PendingLimit   *uint64 `json:"pending_limit,omitempty"`
-	PendingPayment *uint64 `json:"pending_payment,omitempty"`
+	CreditLimit      uint64  `json:"credit_limit"`
+	CreditLimitIn    uint64  `json:"credit_limit_in"`
+	Balance          int64   `json:"balance"`
+	Demurrage        uint64  `json:"demurrage"`        // my rate (promille/year)
+	DemurrageIn      uint64  `json:"demurrage_in"`     // peer's rate
+	DemurrageTime    int64   `json:"demurrage_time"`   // last materialized (secs)
+	PendingLimit     *uint64 `json:"pending_limit,omitempty"`
+	PendingPayment   *uint64 `json:"pending_payment,omitempty"`
+	PendingDemurrage *uint64 `json:"pending_demurrage,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -59,8 +64,10 @@ func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, pay
 	switch method {
 	case "set_credit_limit":
 		return h.onSetCreditLimit(peerID, payload)
+	case "set_demurrage":
+		return h.onSetDemurrage(peerID, payload, ts)
 	case "payment":
-		return h.onPayment(peerID, payload)
+		return h.onPayment(peerID, payload, ts)
 	}
 	return false, link.ErrBadMethod
 }
@@ -80,7 +87,23 @@ func (h *Handler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool
 	return true, nil
 }
 
-func (h *Handler) onPayment(peerID string, payload json.RawMessage) (bool, error) {
+func (h *Handler) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) (bool, error) {
+	var p struct {
+		Rate uint64 `json:"rate"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return false, nil
+	}
+	peer := h.peers[peerID]
+	if peer == nil {
+		return false, nil
+	}
+	peer.MaterializeDemurrage(ts)
+	peer.DemurrageIn = p.Rate
+	return true, nil
+}
+
+func (h *Handler) onPayment(peerID string, payload json.RawMessage, ts int64) (bool, error) {
 	var p struct {
 		Amount uint64 `json:"amount"`
 	}
@@ -91,6 +114,7 @@ func (h *Handler) onPayment(peerID string, payload json.RawMessage) (bool, error
 	if peer == nil {
 		return false, nil
 	}
+	peer.MaterializeDemurrage(ts)
 	// Receiving payment: peer's debt to me increases.
 	// Validate: new balance <= my credit_limit for this peer.
 	newBalance := peer.Balance + int64(p.Amount)
@@ -116,9 +140,15 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 			peer.CreditLimit = *peer.PendingLimit
 		}
 		peer.PendingLimit = nil
+	case "set_demurrage":
+		if ok && peer.PendingDemurrage != nil {
+			peer.MaterializeDemurrage(ts)
+			peer.Demurrage = *peer.PendingDemurrage
+		}
+		peer.PendingDemurrage = nil
 	case "payment":
 		if ok && peer.PendingPayment != nil {
-			peer.Balance -= int64(*peer.PendingPayment)
+			peer.AddBalance(-int64(*peer.PendingPayment), ts)
 		}
 		peer.PendingPayment = nil
 	}
@@ -140,6 +170,12 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 		return &link.QueuedMsg{
 			Method:  "set_credit_limit",
 			Payload: link.Enc(map[string]uint64{"amount": *peer.PendingLimit}),
+		}
+	}
+	if peer.PendingDemurrage != nil {
+		return &link.QueuedMsg{
+			Method:  "set_demurrage",
+			Payload: link.Enc(map[string]uint64{"rate": *peer.PendingDemurrage}),
 		}
 	}
 	if peer.PendingPayment != nil {
@@ -178,6 +214,8 @@ func (h *Handler) HandleAccount(method string, payload json.RawMessage) (json.Ra
 		return h.removePeer(payload)
 	case "set_credit_limit":
 		return h.setCreditLimit(payload)
+	case "set_demurrage":
+		return h.setDemurrage(payload)
 	case "payment":
 		return h.payment(payload)
 	case "status":
@@ -273,6 +311,27 @@ func (h *Handler) setCreditLimit(payload json.RawMessage) (json.RawMessage, erro
 	return link.Enc("ok"), nil
 }
 
+func (h *Handler) setDemurrage(payload json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Peer string `json:"peer"`
+		Rate uint64 `json:"rate"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("bad request")
+	}
+	peerID := strings.ToLower(p.Peer)
+	peer := h.peers[peerID]
+	if peer == nil {
+		return nil, fmt.Errorf("no peer %s", peerID)
+	}
+	if peer.PendingDemurrage != nil {
+		return nil, fmt.Errorf("demurrage change already pending")
+	}
+	peer.PendingDemurrage = &p.Rate
+	h.node.Kick(peerID)
+	return link.Enc("ok"), nil
+}
+
 func (h *Handler) payment(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer   string `json:"peer"`
@@ -292,8 +351,8 @@ func (h *Handler) payment(payload json.RawMessage) (json.RawMessage, error) {
 	if p.Amount == 0 {
 		return nil, fmt.Errorf("amount must be positive")
 	}
-	// Available credit: balance + credit_limit_in.
-	available := peer.Balance + int64(peer.CreditLimitIn)
+	// Available credit: effective balance (after demurrage) + credit_limit_in.
+	available := peer.EffectiveBalance(time.Now().Unix()) + int64(peer.CreditLimitIn)
 	if int64(p.Amount) > available {
 		return nil, fmt.Errorf("insufficient credit")
 	}
@@ -305,18 +364,25 @@ func (h *Handler) payment(payload json.RawMessage) (json.RawMessage, error) {
 func (h *Handler) status() (json.RawMessage, error) {
 	links := h.node.Links()
 
+	now := time.Now().Unix()
 	peers := make(map[string]any)
 	for id, p := range h.peers {
 		info := map[string]any{
-			"credit_limit":    p.CreditLimit,
-			"credit_limit_in": p.CreditLimitIn,
-			"balance":         p.Balance,
+			"credit_limit":      p.CreditLimit,
+			"credit_limit_in":   p.CreditLimitIn,
+			"balance":           p.Balance,
+			"effective_balance": p.EffectiveBalance(now),
+			"demurrage":         p.Demurrage,
+			"demurrage_in":      p.DemurrageIn,
 		}
 		if p.PendingLimit != nil {
 			info["pending_limit"] = *p.PendingLimit
 		}
 		if p.PendingPayment != nil {
 			info["pending_payment"] = *p.PendingPayment
+		}
+		if p.PendingDemurrage != nil {
+			info["pending_demurrage"] = *p.PendingDemurrage
 		}
 		if l := links[id]; l != nil {
 			info["link_state"] = l.State
