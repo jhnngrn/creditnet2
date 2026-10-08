@@ -1,0 +1,7 @@
+# golang.org/x/crypto v0.31.0
+## explicit
+golang.org/x/crypto/argon2
+golang.org/x/crypto/blake2b
+# golang.org/x/sys v0.28.0
+## explicit
+golang.org/x/sys/cpu
