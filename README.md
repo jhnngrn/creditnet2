@@ -110,7 +110,7 @@ Core provides a bilateral link layer: establishing, accepting, rejecting and dis
 
 *Disconnect* — `remove_link` on a `connected` link sets `disconnecting`. Sends `link.disconnect`, peer deletes their link and ACKs, we delete ours.
 
-*Anti-spam* — set `allowInvites=false` via `set_allow_invites` to reject all incoming connections from unknown peers. Links can still be established via mutual add.
+*Anti-spam* — set `allowInvites=false` via `set_allow_invites` to reject incoming connections from unknown peers. Sender stays in `connecting` and retries periodically — the connect goes through once the peer enables invites or adds the sender via `add_link`. Links can always be established via mutual add.
 
 ### Sync protocol
 
@@ -122,7 +122,7 @@ Response piggybacking: when sending a new request, the peer includes its respons
 
 ### Core sync methods
 
-`link.connect` — establish bilateral connection. Mutual add -> instant `connected`. Incoming from unknown -> `pending` (NACKed).
+`link.connect` — establish bilateral connection. Mutual add -> instant `connected`. Incoming from unknown -> `incoming` (NACKed).
 
 `link.reject` — reject a connection. Peer deletes their link, ACKs.
 
@@ -140,8 +140,8 @@ All endpoints accept JSON `{method, payload}`.
 
 - `add_link` (`{peer}`) — create link, send `link.connect`
 - `remove_link` (`{peer}`) — disconnect or remove link
-- `accept_link` (`{peer}`) — accept pending link, send `link.connect`
-- `reject_link` (`{peer}`) — reject pending link, send `link.reject`
+- `accept_link` (`{peer}`) — accept incoming link, send `link.connect`
+- `reject_link` (`{peer}`) — reject incoming link, send `link.reject`
 - `set_allow_invites` (`{enabled}`) — toggle incoming invites (default: true)
 - `status` — list links with state, allow_invites setting
 
