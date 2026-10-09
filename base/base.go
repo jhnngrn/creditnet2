@@ -78,9 +78,9 @@ func (h *Handler) MarshalJSON() ([]byte, error) {
 
 func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, payload json.RawMessage, ts int64) (bool, error) {
 	switch method {
-	case "peer_request":
+	case "connect":
 		return h.onPeerRequest(peerID)
-	case "peer_reject":
+	case "reject":
 		return h.onPeerReject(peerID)
 	case "set_credit_limit":
 		return h.onSetCreditLimit(peerID, payload)
@@ -98,6 +98,7 @@ func (h *Handler) onPeerRequest(peerID string) (bool, error) {
 		switch peer.State {
 		case PeerConnecting, PeerWaiting:
 			peer.State = PeerConnected
+			h.node.RefLink(peerID)
 			return true, nil
 		default:
 			return false, nil
@@ -105,7 +106,6 @@ func (h *Handler) onPeerRequest(peerID string) (bool, error) {
 	}
 	// No peer exists — create incoming.
 	h.peers[peerID] = &Peer{State: PeerIncoming}
-	h.node.RefLink(peerID)
 	return false, nil
 }
 
@@ -117,7 +117,6 @@ func (h *Handler) onPeerReject(peerID string) (bool, error) {
 	switch peer.State {
 	case PeerConnecting, PeerWaiting:
 		peer.State = PeerRejected
-		h.node.UnrefLink(peerID)
 		return true, nil
 	}
 	return false, nil
@@ -186,16 +185,16 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 		return
 	}
 	switch method {
-	case "peer_request":
+	case "connect":
 		if ok {
 			peer.State = PeerConnected
+			h.node.RefLink(peerID)
 		} else {
 			peer.State = PeerWaiting
 		}
-	case "peer_reject":
+	case "reject":
 		if ok {
 			delete(h.peers, peerID)
-			h.node.UnrefLink(peerID)
 		}
 	case "set_credit_limit":
 		if ok && peer.PendingLimit != nil {
@@ -229,10 +228,10 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 		return nil
 	}
 	if peer.State == PeerConnecting {
-		return &link.QueuedMsg{Method: "peer_request"}
+		return &link.QueuedMsg{Method: "connect"}
 	}
 	if peer.State == PeerRejecting {
-		return &link.QueuedMsg{Method: "peer_reject"}
+		return &link.QueuedMsg{Method: "reject"}
 	}
 	if peer.State != PeerConnected {
 		return nil
@@ -309,7 +308,6 @@ func (h *Handler) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if err := h.node.AddLink(peerID); err != nil {
 		return nil, err
 	}
-	h.node.RefLink(peerID)
 	h.peers[peerID] = &Peer{State: PeerConnecting}
 	return link.Enc("ok"), nil
 }
@@ -336,7 +334,6 @@ func (h *Handler) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if err := h.node.AcceptLink(peerID); err != nil {
 		return nil, err
 	}
-	h.node.RefLink(peerID)
 	h.peers[peerID] = &Peer{State: PeerConnecting}
 	return link.Enc("ok"), nil
 }
@@ -374,11 +371,14 @@ func (h *Handler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	if h.peers[peerID] == nil {
+	peer := h.peers[peerID]
+	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
 	delete(h.peers, peerID)
-	h.node.UnrefLink(peerID)
+	if peer.State == PeerConnected {
+		h.node.UnrefLink(peerID)
+	}
 	return link.Enc("ok"), nil
 }
 
