@@ -26,8 +26,7 @@ type Config struct {
 	DataDir string
 	Store   Store
 
-	RetryInterval time.Duration
-	SessionTTL    time.Duration
+	SessionTTL time.Duration
 	KeyCacheTTL   time.Duration
 	HTTPTimeout   time.Duration
 	PeerScheme    string
@@ -48,9 +47,6 @@ func (c *Config) fill() error {
 		} else {
 			c.Listen = ":8471"
 		}
-	}
-	if c.RetryInterval <= 0 {
-		c.RetryInterval = 60 * time.Second
 	}
 	if c.SessionTTL <= 0 {
 		c.SessionTTL = 24 * time.Hour
@@ -185,9 +181,9 @@ func (s *Server) Init() error {
 		}
 		s.nodes[user] = s.newNode(id, raw)
 	}
-	// Kick peers with in-flight lifecycle from boot.
+	// Resume pending sends from boot.
 	for _, n := range s.nodes {
-		n.RetryPending()
+		n.KickAll()
 	}
 	if s.cfg.AdminUser != "" && s.cfg.AdminPass != "" {
 		if err := s.bootstrapAdmin(s.cfg.AdminUser, s.cfg.AdminPass); err != nil {
@@ -215,7 +211,6 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	hs := &http.Server{Handler: s.mux}
 	tctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go s.retryLoop(tctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -254,30 +249,6 @@ func (s *Server) nodeByIdentity(id string) *link.Node {
 	return s.getNode(user)
 }
 
-func (s *Server) retryLoop(ctx context.Context) {
-	t := time.NewTicker(s.cfg.RetryInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			s.retryPending()
-		}
-	}
-}
-
-func (s *Server) retryPending() {
-	s.nmu.RLock()
-	nodes := make([]*link.Node, 0, len(s.nodes))
-	for _, n := range s.nodes {
-		nodes = append(nodes, n)
-	}
-	s.nmu.RUnlock()
-	for _, n := range nodes {
-		n.RetryPending()
-	}
-}
 
 // ---------------------------------------------------------------------------
 // P2P sync handler

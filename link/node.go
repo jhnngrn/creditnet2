@@ -6,7 +6,10 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 )
+
+const retryDelay = 60 * time.Second
 
 // ---------------------------------------------------------------------------
 // Node — sync engine and dispatcher
@@ -25,8 +28,15 @@ type Node struct {
 
 	owners map[string]LinkOwner
 
+	retries map[string]*peerRetry
+
 	transport Transport
 	store     NodeStore
+}
+
+type peerRetry struct {
+	timer      *time.Timer
+	refractory bool
 }
 
 type handlerEntry struct {
@@ -61,6 +71,7 @@ func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStor
 		handlerMap:    map[string]Handler{},
 		handlerStates: st.Handlers,
 		owners:        map[string]LinkOwner{},
+		retries:       map[string]*peerRetry{},
 		transport:     transport,
 		store:         store,
 	}
@@ -113,6 +124,10 @@ func (n *Node) DeleteLink(peer string) {
 		if owner, ok := n.owners[lk.Owner]; ok && owner.OnClose != nil {
 			owner.OnClose(peer, lk)
 		}
+	}
+	if r := n.retries[peer]; r != nil {
+		r.timer.Stop()
+		delete(n.retries, peer)
 	}
 	delete(n.links, peer)
 }
@@ -179,6 +194,22 @@ func (n *Node) Commit() error {
 }
 
 func (n *Node) Kick(peer string) { go n.sendPending(peer) }
+
+// setRetry sets a per-peer retry timer. Caller must hold Lock.
+func (n *Node) setRetry(peer string, refractory bool) {
+	if r := n.retries[peer]; r != nil {
+		r.timer.Stop()
+	}
+	n.retries[peer] = &peerRetry{
+		refractory: refractory,
+		timer: time.AfterFunc(retryDelay, func() {
+			n.mu.Lock()
+			delete(n.retries, peer)
+			n.mu.Unlock()
+			n.sendPending(peer)
+		}),
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Incoming sync
@@ -318,6 +349,14 @@ func (n *Node) sendPending(peer string) {
 		n.mu.Unlock()
 		return
 	}
+	if r := n.retries[peer]; r != nil && r.refractory {
+		n.mu.Unlock()
+		return
+	}
+	if r := n.retries[peer]; r != nil {
+		r.timer.Stop()
+		delete(n.retries, peer)
+	}
 	if c, ok := n.inFlight[peer]; ok && c == link.Counter {
 		n.mu.Unlock()
 		return
@@ -360,11 +399,13 @@ func (n *Node) sendPending(peer string) {
 	}
 	if err != nil {
 		log.Printf("[link] %s->%s %s: %v", n.id, peer, msg.Method, err)
+		n.setRetry(peer, true)
 		n.mu.Unlock()
 		return
 	}
 	var resp SyncResponse
 	if json.Unmarshal(body, &resp) != nil {
+		n.setRetry(peer, true)
 		n.mu.Unlock()
 		return
 	}
@@ -393,6 +434,7 @@ func (n *Node) sendPending(peer string) {
 		n.mu.Unlock()
 		return
 	}
+	n.setRetry(peer, false)
 	n.mu.Unlock()
 	if kickPeer {
 		n.Kick(peer)
@@ -418,17 +460,15 @@ func (n *Node) nextTx(peer string) *QueuedMsg {
 	return nil
 }
 
-// RetryPending kicks all peers that aren't already in flight.
-func (n *Node) RetryPending() {
+// KickAll kicks all peers. Used at boot to resume pending work.
+func (n *Node) KickAll() {
 	n.mu.Lock()
-	var kicks []string
+	peers := make([]string, 0, len(n.links))
 	for peer := range n.links {
-		if _, ok := n.inFlight[peer]; !ok {
-			kicks = append(kicks, peer)
-		}
+		peers = append(peers, peer)
 	}
 	n.mu.Unlock()
-	for _, p := range kicks {
+	for _, p := range peers {
 		n.Kick(p)
 	}
 }
