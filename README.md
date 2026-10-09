@@ -120,8 +120,8 @@ Links and peers are separate. A link is the communication channel (link layer). 
                   +--+--+--+-+                  +-+------+-+
                      |  |  |                      |      |
   recv base.connect  |  |  |                      |      |  reject_peer
-  (mutual) ----------+  |  | remove_peer          |      |  (base.remove)
-                         |  | (base.remove)        |      |
+  (mutual) ----------+  |  | remove_peer          |      |  (base.close)
+                         |  | (base.close)         |      |
             resp OK -----+  +------+              |      +------+
                          |          |              |             |
                          |     resp OK             |        resp OK
@@ -140,7 +140,7 @@ Links and peers are separate. A link is the communication channel (link layer). 
                     (deleted)
                     + UnrefLink
 
-                recv base.remove
+                recv base.close
                          |
                          v
                    +----------+
@@ -150,10 +150,10 @@ Links and peers are separate. A link is the communication channel (link layer). 
 
 **States:**
 
-- **waiting** — `base.connect` queued or NACKed. If NACKed, peer has the request (`incoming` on their side). `remove_peer` queues `base.remove`.
+- **waiting** — `base.connect` queued or NACKed. If NACKed, peer has the request (`incoming` on their side). `remove_peer` queues `base.close`.
 - **incoming** — received `base.connect`. Awaiting local decision (`accept_peer` or `reject_peer`).
 - **connected** — bilaterally confirmed. Operations (credit limit, demurrage, payment) require this state. RefLink is called at this transition.
-- **removed** — removed by peer (received `base.remove`).
+- **removed** — removed by peer (received `base.close`).
 
 **Flows:**
 
@@ -163,9 +163,9 @@ Links and peers are separate. A link is the communication channel (link layer). 
 
 *Mutual add* — both sides call `add_peer` independently. First `base.connect` to arrive finds the other side in `waiting` -> `connected` immediately.
 
-*Reject* — `reject_peer` on an `incoming` peer queues `base.remove`. The removed side transitions to `removed` (visible in their status). After ACK, remover deletes their peer. No UnrefLink needed — refs are only added at `connected`.
+*Reject* — `reject_peer` on an `incoming` peer queues `base.close`. The removed side transitions to `removed` (visible in their status). After ACK, remover deletes their peer. No UnrefLink needed — refs are only added at `connected`.
 
-*Withdraw* — `remove_peer` on a `waiting` peer queues `base.remove` to clean up the peer's `incoming`. Same mechanism as reject.
+*Withdraw* — `remove_peer` on a `waiting` peer queues `base.close` to clean up the peer's `incoming`. Same mechanism as reject.
 
 *Anti-spam* — set `allowInvites=false` via `link.set_allow_invites` to reject incoming connections from unknown peers.
 
@@ -191,7 +191,7 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 `base.connect` — declare intent to establish a peer relationship. If the other side is already in `waiting`, both transition to `connected` (ACK, RefLink). Otherwise a new `incoming` peer is created (NACK).
 
-`base.remove` — remove a peer relationship. The removed side transitions to `removed` (visible in status). After ACK, remover deletes their peer. Handles `waiting` and `connected` peers on the receiver side.
+`base.close` — close a peer relationship. The closed side transitions to `removed` (visible in status). After ACK, closer deletes their peer. Handles `waiting` and `connected` peers on the receiver side.
 
 `base.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
 
@@ -211,8 +211,8 @@ All endpoints accept JSON `{method, payload}`.
 
 - `base.add_peer` (`{peer}`) — create link + peer, queue `link.connect` then `base.connect`
 - `base.accept_peer` (`{peer}`) — accept incoming `base.connect`, or pre-accept link + create peer if no request yet
-- `base.reject_peer` (`{peer}`) — reject incoming `base.connect` (sends `base.remove`), or reject link if no peer yet
-- `base.remove_peer` (`{peer}`) — delete peer, unref link
+- `base.reject_peer` (`{peer}`) — reject incoming `base.connect` (sends `base.close`), or reject link if no peer yet
+- `base.remove_peer` (`{peer}`) — connected: delete peer + unref link; waiting: queue `base.close`
 - `base.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
 - `base.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
 - `base.payment` (`{peer, amount}`) — send payment to peer

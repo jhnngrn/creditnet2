@@ -83,8 +83,8 @@ func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, pay
 	switch method {
 	case "connect":
 		return h.onPeerRequest(peerID)
-	case "remove":
-		return h.onPeerRemove(peerID)
+	case "close":
+		return h.onPeerClose(peerID)
 	case "set_credit_limit":
 		return h.onSetCreditLimit(peerID, payload)
 	case "set_demurrage":
@@ -113,7 +113,7 @@ func (h *Handler) onPeerRequest(peerID string) (bool, error) {
 	return false, nil
 }
 
-func (h *Handler) onPeerRemove(peerID string) (bool, error) {
+func (h *Handler) onPeerClose(peerID string) (bool, error) {
 	peer := h.peers[peerID]
 	if peer == nil {
 		return false, nil
@@ -198,7 +198,7 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 			h.node.RefLink(peerID)
 		}
 		// !ok: stays Waiting, peer has incoming
-	case "remove":
+	case "close":
 		if ok {
 			delete(h.peers, peerID)
 		}
@@ -243,8 +243,8 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 	switch method {
 	case "connect":
 		return &link.QueuedMsg{Method: "connect"}
-	case "remove":
-		return &link.QueuedMsg{Method: "remove"}
+	case "close":
+		return &link.QueuedMsg{Method: "close"}
 	case "set_credit_limit":
 		if peer.PendingLimit == nil {
 			return nil
@@ -369,7 +369,7 @@ func (h *Handler) rejectPeer(payload json.RawMessage) (json.RawMessage, error) {
 		if peer.State.Status != PeerIncoming {
 			return nil, fmt.Errorf("peer %s is not incoming", peerID)
 		}
-		link.Enqueue(&peer.State.Queue, "remove")
+		link.Enqueue(&peer.State.Queue, "close")
 		h.node.Kick(peerID)
 		return link.Enc("ok"), nil
 	}
@@ -397,7 +397,7 @@ func (h *Handler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 		delete(h.peers, peerID)
 		h.node.UnrefLink(peerID)
 	case PeerWaiting:
-		link.Enqueue(&peer.State.Queue, "remove")
+		link.Enqueue(&peer.State.Queue, "close")
 		h.node.Kick(peerID)
 	default:
 		delete(h.peers, peerID)
