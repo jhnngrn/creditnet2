@@ -6,7 +6,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// linkHandler — handles link.connect, link.disconnect, link.remove
+// linkHandler — handles link.connect, link.close
 // ---------------------------------------------------------------------------
 
 type linkHandler struct {
@@ -30,11 +30,7 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 		}
 		return false, nil // Incoming → NACK (invite flow)
 
-	case "remove":
-		h.node.DeleteLink(peer)
-		return true, nil
-
-	case "disconnect":
+	case "close":
 		if lk.Refs > 0 {
 			return false, nil
 		}
@@ -52,14 +48,11 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 		}
 		// !ok: stays Waiting, peer has incoming
 
-	case "remove":
-		h.node.DeleteLink(peer)
-
-	case "disconnect":
+	case "close":
 		if ok {
 			h.node.DeleteLink(peer)
 		}
-		// !ok: refs > 0 on peer side, stays Connected
+		// !ok: refs > 0 on peer side
 	}
 }
 
@@ -70,10 +63,7 @@ func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
 		return &QueuedMsg{Method: "connect"}
 	case IntentTeardown:
 		lk.State.Intent = ""
-		if lk.State.Status == Connected {
-			return &QueuedMsg{Method: "disconnect"}
-		}
-		return &QueuedMsg{Method: "remove"}
+		return &QueuedMsg{Method: "close"}
 	}
 	return nil
 }

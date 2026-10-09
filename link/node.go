@@ -173,11 +173,11 @@ func (n *Node) Kick(peer string) { go n.sendPending(peer) }
 // ---------------------------------------------------------------------------
 
 // QuickReject returns true if this request can be rejected before
-// expensive signature verification (no existing link and not a connect).
+// expensive signature verification (no existing link and not a connect/close).
 func (n *Node) QuickReject(from, method string) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.links[from] == nil && method != "link.connect"
+	return n.links[from] == nil && method != "link.connect" && method != "link.close"
 }
 
 // HandleSync processes an incoming sync request. The caller is responsible
@@ -187,7 +187,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 
 	link := n.links[env.From]
 	if link == nil {
-		if env.Method == "link.remove" {
+		if env.Method == "link.close" {
 			n.mu.Unlock()
 			return &SyncResponse{Counter: env.Counter, OK: true, Timestamp: NowSecs()}, nil
 		}
