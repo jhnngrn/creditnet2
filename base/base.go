@@ -204,6 +204,7 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 				h.node.UnrefLink(peerID)
 			}
 			delete(h.peers, peerID)
+			h.node.RemoveLink(peerID)
 		}
 	case "set_credit_limit":
 		if ok && peer.PendingLimit != nil {
