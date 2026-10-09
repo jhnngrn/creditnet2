@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"creditnet/base"
 	"creditnet/link"
 )
 
@@ -83,8 +84,9 @@ func (a *nodeStoreAdapter) Load(id string) (json.RawMessage, error) {
 // Server
 // ---------------------------------------------------------------------------
 
-// HandlerFactory creates a handler for a newly loaded or created node.
-type HandlerFactory func(n *link.Node) link.Handler
+// HandlerFactory creates a module handler for a newly loaded or created node.
+// The base handler is provided so modules can query peer state.
+type HandlerFactory func(n *link.Node, b *base.Handler) link.Handler
 
 type handlerReg struct {
 	name    string
@@ -130,8 +132,10 @@ func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
 func (s *Server) newNode(id string, raw json.RawMessage) *link.Node {
 	n := link.NewNode(id, raw, s, &nodeStoreAdapter{s.store})
 	n.RegisterHandler("link", link.NewLinkHandler(n))
+	bh := base.NewHandler(n)
+	n.RegisterHandler("trustline", bh)
 	for _, f := range s.factories {
-		n.RegisterHandler(f.name, f.factory(n))
+		n.RegisterHandler(f.name, f.factory(n, bh))
 	}
 	return n
 }

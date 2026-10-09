@@ -18,7 +18,8 @@ func NewLinkHandler(n *Node) Handler {
 	return &linkHandler{node: n}
 }
 
-func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (h *linkHandler) HandleRequest(peer string, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+	lk := h.node.links[peer]
 	switch method {
 	case "connect":
 		if lk.State.Status == Waiting {
@@ -38,7 +39,8 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 	return false, nil, ErrBadMethod
 }
 
-func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, payload json.RawMessage, ok bool, ts int64) []string {
+func (h *linkHandler) HandleResponse(peer string, method string, payload json.RawMessage, ok bool, ts int64) []string {
+	lk := h.node.links[peer]
 	switch method {
 	case "connect":
 		if ok {
@@ -57,7 +59,8 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 	return nil
 }
 
-func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
+func (h *linkHandler) NextTx(peer string) *QueuedMsg {
+	lk := h.node.links[peer]
 	if method := QueueHead(lk.State.Queue); method != "" {
 		msg := &QueuedMsg{Method: method}
 		if method == "connect" && lk.Owner != "" {

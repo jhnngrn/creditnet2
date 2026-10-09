@@ -278,7 +278,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 	if env.Resp != nil && link.Pending != nil && env.Resp.Counter == link.Counter {
 		pns, pmethod := SplitMethod(link.Pending.Method)
 		if ph := n.handlerMap[pns]; ph != nil {
-			extraKicks = append(extraKicks, ph.HandleResponse(env.From, link, pmethod, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)...)
+			extraKicks = append(extraKicks, ph.HandleResponse(env.From, pmethod, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)...)
 		}
 		link.Counter++
 		link.RespTimestamp = env.Resp.Timestamp
@@ -326,7 +326,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		n.mu.Unlock()
 		return nil, ErrBadMethod
 	}
-	ok, kicks, reqErr := handler.HandleRequest(env.From, link, method, env.Payload, ts)
+	ok, kicks, reqErr := handler.HandleRequest(env.From, method, env.Payload, ts)
 	if reqErr != nil {
 		n.mu.Unlock()
 		return nil, reqErr
@@ -425,7 +425,7 @@ func (n *Node) sendPending(peer string) {
 	var extraKicks []string
 	rns, rmethod := SplitMethod(msg.Method)
 	if rh := n.handlerMap[rns]; rh != nil {
-		extraKicks = rh.HandleResponse(peer, link, rmethod, msg.Payload, resp.OK, resp.Timestamp)
+		extraKicks = rh.HandleResponse(peer, rmethod, msg.Payload, resp.OK, resp.Timestamp)
 	}
 	link.Counter++
 	link.RespTimestamp = resp.Timestamp
@@ -464,7 +464,7 @@ func (n *Node) nextTx(peer string) *QueuedMsg {
 		if entry.name != "link" && link.State.Status != Connected {
 			continue
 		}
-		if msg := entry.handler.NextTx(peer, link); msg != nil {
+		if msg := entry.handler.NextTx(peer); msg != nil {
 			msg.Method = entry.name + "." + msg.Method
 			return msg
 		}

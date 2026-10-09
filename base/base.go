@@ -40,7 +40,33 @@ type handlerState struct {
 	Peers map[string]*Peer `json:"peers"`
 }
 
-func NewHandler(n *link.Node) link.Handler {
+// HasPeer returns true if peer is a connected trustline peer.
+func (h *Handler) HasPeer(peer string) bool {
+	p := h.peers[peer]
+	return p != nil && !p.Disconnected
+}
+
+// Peers returns the list of connected trustline peer IDs.
+func (h *Handler) Peers() []string {
+	out := make([]string, 0, len(h.peers))
+	for id, p := range h.peers {
+		if !p.Disconnected {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// GetPeer returns the peer data for a connected peer, or nil.
+func (h *Handler) GetPeer(peer string) *Peer {
+	p := h.peers[peer]
+	if p == nil || p.Disconnected {
+		return nil
+	}
+	return p
+}
+
+func NewHandler(n *link.Node) *Handler {
 	h := &Handler{
 		node:  n,
 		peers: map[string]*Peer{},
@@ -82,7 +108,7 @@ func (h *Handler) onClose(peer string, lk *link.Link) {
 // Sync — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) HandleRequest(peerID string, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	case "set_credit_limit":
 		ok, err := h.onSetCreditLimit(peerID, payload)
@@ -161,7 +187,7 @@ func (h *Handler) onPayment(peerID string, payload json.RawMessage, ts int64) (b
 // Sync — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, payload json.RawMessage, ok bool, ts int64) []string {
+func (h *Handler) HandleResponse(peerID string, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	peer := h.peers[peerID]
 	if peer == nil {
 		return nil
@@ -194,7 +220,7 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 // Sync — NextTx
 // ---------------------------------------------------------------------------
 
-func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
+func (h *Handler) NextTx(peerID string) *link.QueuedMsg {
 	peer := h.peers[peerID]
 	if peer == nil {
 		return nil
