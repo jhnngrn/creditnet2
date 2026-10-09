@@ -31,8 +31,8 @@ Flags:
 
 ```
 link/                    generic bilateral sync protocol
-  types.go               wire types, Link, Handler/AccountHandler interfaces
-  node.go                Node: sync engine, handler dispatch, retry
+  types.go               wire types, Link, LinkOwner, Handler interfaces
+  node.go                Node: sync engine, handler dispatch, owner registry
   handlers.go            linkHandler: link lifecycle (connect/close)
 
 base/                    foundation layer — peers, credit, payments
@@ -55,17 +55,28 @@ cmd/
 
 ## Link layer
 
-The link layer (`link/`) provides bilateral connections between nodes: establishing, accepting, rejecting and closing. Handlers register under a namespace and receive sync dispatch. The link handler itself is registered as `"link"`, base as `"base"`, and modules add their own namespaces.
+The link layer (`link/`) provides bilateral connections between nodes. Handlers register under a namespace and receive sync dispatch. The link handler itself is registered as `"link"`, base as `"trustline"`, and modules add their own namespaces.
 
-Links are general-purpose channels. What runs on top (peers, payments, or something else) is determined by the handler layer. A link can exist without a peer — accepting a link and creating a peer are separate operations.
+### Link ownership
 
-Links track an `InUse` flag. Handlers call `AcquireLink` when claiming a link and `ReleaseLink` when done — base acquires when a peer reaches `connected`. `RemoveLink` and incoming `link.close` are refused while in use. `ReleaseLink` automatically queues `link.close`, ensuring the link is torn down when the handler is done with it.
+Every link has an **owner** — a registered protocol that determines what runs on top of the link. The owner is identified by a string (e.g. `"trustline"`) stored in the link's `Owner` field and sent on the wire as `"protocol"` in the `link.connect` payload.
+
+Owners register lifecycle callbacks via `RegisterOwner`:
+
+- **OnConnect** (constructor) — called when the link reaches `connected`. Creates per-peer state for the protocol (e.g. base creates a `Peer` with credit data).
+- **OnClose** (destructor) — called before the link is deleted. Cleans up per-peer state (e.g. base marks the peer as disconnected).
+
+This separates concerns: the link layer handles the connection lifecycle, and the owner handles what happens at each transition. Peers only exist when a link is connected — no orphaned state.
+
+### Connected gate
+
+The node's `nextTx` always asks the link handler for pending messages (connect/close work regardless of connection state). For all other handlers, `nextTx` requires `link.State.Status == Connected` before asking. This means application-level sync methods (credit limits, payments, etc.) are only sent on connected links, without each handler needing to check connection state itself.
 
 ### Link state machine
 
 ```
                  add_peer / AddLink          incoming link.connect
-                                             (allowInvites=true)
+                 (with protocol)             (with protocol in payload)
                         |                         |
                         v                         v
                   +-----------+             +----------+
@@ -84,93 +95,66 @@ Links track an `InUse` flag. Handlers call `AcquireLink` when claiming a link an
                          |                   |
                          v                   | accept_link
                    +----------+              |
-                   |connected |              +---> waiting
+                   |connected | <-- OnConnect+---> waiting
                    +-----+----+
                          |
-            RemoveLink   |  (refused while refs > 0)
+            RemoveLink   |
             (link.close) |
                          |
                     resp OK
                          |
                          v
-                     (deleted)
+                  OnClose + (deleted)
 ```
 
 **States:**
 
-- **waiting** — outgoing `link.connect` queued or NACKed. If NACKed, peer has the invite (`incoming` on their side). `RemoveLink` sends `link.close`.
-- **incoming** — received `link.connect` from peer. Awaiting local decision (`link.accept_link` or `link.reject_link`).
-- **connected** — bilaterally established. `RemoveLink` refused while refs > 0.
+- **waiting** — outgoing `link.connect` queued (carries protocol in payload). If NACKed, peer has the invite (`incoming` on their side).
+- **incoming** — received `link.connect` from peer. Protocol validated against registered owners. Awaiting local decision (`accept_link` or `reject_link`).
+- **connected** — bilaterally established. `OnConnect` fires, creating per-peer state for the protocol.
+
+On deletion (close completes), `OnClose` fires before the link is removed.
 
 ## Base layer
 
-Base (`base/`) is the foundation that everything else builds on. It owns per-peer data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
+Base (`base/`) is the foundation that everything else builds on. It registers as a link owner with protocol `"trustline"` and provides lifecycle callbacks that manage per-peer data.
 
-Links and peers are separate. A link is the communication channel (link layer). A peer is what base adds on top: balance, credit limits, demurrage. Establishing a peer requires a bilateral `base.connect` exchange after the link is connected.
+When a link with protocol `"trustline"` reaches `connected`, the `OnConnect` callback creates a `Peer` with default values (zero balances, no limits). When the link is deleted, `OnClose` marks the peer as `disconnected`. There is no separate peer state machine — the link layer drives the lifecycle.
 
-### Peer state machine
+Peer data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
+
+### Peer lifecycle
 
 ```
-                 add_peer / accept_peer          recv base.connect
-                                                 (link already connected)
-                        |                              |
-                        v                              v
-                  +-----------+                  +----------+
-                  |  waiting  |                  | incoming  |
-                  +--+--+--+-+                  +-+------+-+
-                     |  |  |                      |      |
-  recv base.connect  |  |  |                      |      |  reject_peer
-  (mutual) ----------+  |  | remove_peer          |      |  (base.close)
-                         |  | (base.close)         |      |
-            resp OK -----+  +------+              |      +------+
-                         |          |              |             |
-                         |     resp OK             |        resp OK
-            resp NACK    |          |              |             |
-            (stays       |          v              |             v
-             waiting) <--+      (deleted)          |         (deleted)
-                         |                         |
-                         v                         | accept_peer
-                   +----------+                    |
-                   |connected |                    +---> waiting
-                   +-----+----+
-                         |
-            remove_peer  |
-            (base.close) |
-                         |
-                    resp OK
-                         |
-                         v
-                    (deleted)
-                    + ReleaseLink
-
-                recv base.close
-                         |
-                         v
-                   +----------+
-                   |disconnected|
-                   +------------+
+  add_peer                        incoming link.connect
+  (creates link with              (from peer with protocol="trustline")
+   protocol="trustline")
+       |                                |
+       v                                v
+  link waiting                     link incoming
+  (no peer yet)                    (no peer yet)
+       |                                |
+  link.connect completes           accept_peer / reject_peer
+       |                           (AcceptLink / RejectLink)
+       v                                |
+  OnConnect                        link connects -> OnConnect
+  (creates Peer)                   (creates Peer)
+       |                                |
+       v                                v
+  peer exists                      peer exists
+  (connected)                      (connected)
+       |
+  remove_peer
+  (RemoveLink -> link.close)
+       |
+  OnClose
+  (peer.Disconnected = true)
+       |
+  remove_peer again
+  (deletes peer data)
 ```
 
-**States:**
-
-- **waiting** — `base.connect` queued or NACKed. If NACKed, peer has the request (`incoming` on their side). `remove_peer` queues `base.close`.
-- **incoming** — received `base.connect`. Awaiting local decision (`accept_peer` or `reject_peer`).
-- **connected** — bilaterally confirmed. Operations (credit limit, demurrage, payment) require this state. Link is acquired at this transition.
-- **disconnected** — peer closed the relationship (received `base.close`).
-
-**Flows:**
-
-*Add peer* — `add_peer` creates a link and a peer in `waiting` with `connect` queued. After the link connects, `base.connect` is sent. If the other side has no peer, it creates one in `incoming` and NACKs. Sender stays `waiting`. Acceptor calls `accept_peer` -> `waiting` + queues `connect` -> sends `base.connect` back -> both sides `connected` (link acquired on both sides).
-
-*Pre-accept* — acceptor calls `accept_peer` before `base.connect` arrives (while link is still `incoming`). This accepts the link and creates a peer in `waiting` with `connect` queued. When the initiator's `base.connect` arrives, it finds `waiting` -> `connected` + ACK.
-
-*Mutual add* — both sides call `add_peer` independently. First `base.connect` to arrive finds the other side in `waiting` -> `connected` immediately.
-
-*Reject* — `reject_peer` on an `incoming` peer queues `base.close`. The closed side transitions to `disconnected` (visible in their status). After ACK, closer deletes their peer. No release needed — link is only acquired at `connected`.
-
-*Withdraw* — `remove_peer` on a `waiting` peer queues `base.close` to clean up the peer's `incoming`. Same mechanism as reject.
-
-*Anti-spam* — set `allowInvites=false` via `link.set_allow_invites` to reject incoming connections from unknown peers.
+No peer exists until a link connects. Peers are born in `OnConnect` and marked disconnected in `OnClose`. A disconnected peer retains its data (balance, limits) for display until explicitly removed.
 
 ### Sync protocol
 
@@ -186,21 +170,17 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 **link namespace:**
 
-`link.connect` — establish bilateral connection. Mutual add -> instant `connected`. Incoming from unknown -> `incoming` (NACKed).
+`link.connect` — establish bilateral connection. Payload carries `{"protocol": "trustline"}` to identify the link owner. Mutual add -> instant `connected` + `OnConnect`. Incoming from unknown -> `incoming` (NACKed, protocol stored on link).
 
-`link.close` — close a connection. Refused while refs > 0. Peer deletes their link, ACKs. If the peer has no link, a synthetic ACK is returned.
+`link.close` — close a connection. `OnClose` fires, then the link is deleted. If the peer has no link, a synthetic ACK is returned.
 
-**base namespace:**
+**trustline namespace:**
 
-`base.connect` — declare intent to establish a peer relationship. If the other side is already in `waiting`, both transition to `connected` (ACK, link acquired). Otherwise a new `incoming` peer is created (NACK).
+`trustline.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
 
-`base.close` — close a peer relationship. The closed side transitions to `disconnected` (visible in status). After ACK, closer deletes their peer. Handles `waiting` and `connected` peers on the receiver side.
+`trustline.set_demurrage` — tell peer my demurrage rate. Materializes existing demurrage before applying. Pending until peer confirms.
 
-`base.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
-
-`base.set_demurrage` — tell peer my demurrage rate. Materializes existing demurrage before applying. Pending until peer confirms.
-
-`base.payment` — send payment to peer. Receiver validates against their credit limit, both sides adjust balance on success.
+`trustline.payment` — send payment to peer. Receiver validates against their credit limit, both sides adjust balance on success.
 
 ## API
 
@@ -212,19 +192,19 @@ All endpoints accept JSON `{method, payload}`.
 
 **POST /api/account** — requires bearer token. Methods are namespace-routed (`namespace.method`):
 
-- `base.add_peer` (`{peer}`) — create link + peer, queue `link.connect` then `base.connect`
-- `base.accept_peer` (`{peer}`) — accept incoming `base.connect`, or pre-accept link + create peer if no request yet
-- `base.reject_peer` (`{peer}`) — reject incoming `base.connect` (sends `base.close`), or reject link if no peer yet
-- `base.remove_peer` (`{peer}`) — queue `base.close`, delete peer on ACK (+ unref link if connected)
-- `base.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
-- `base.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
-- `base.payment` (`{peer, amount}`) — send payment to peer
-- `base.status` — peers with credit data, link state, incoming invites
+- `trustline.add_peer` (`{peer}`) — create link with protocol `"trustline"`, queue `link.connect`
+- `trustline.accept_peer` (`{peer}`) — accept incoming link (peer created by `OnConnect` when link connects)
+- `trustline.reject_peer` (`{peer}`) — reject incoming link (sends `link.close`)
+- `trustline.remove_peer` (`{peer}`) — close link (`link.close`), peer marked disconnected by `OnClose`. Call again to delete peer data.
+- `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
+- `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
+- `trustline.payment` (`{peer, amount}`) — send payment to peer
+- `trustline.status` — peers with credit data, link state, incoming invites
 - `link.accept_link` (`{peer}`) — accept incoming link
 - `link.reject_link` (`{peer}`) — reject incoming link
 - `link.set_allow_invites` (`{enabled}`) — toggle incoming invites (default: true)
 - `link.status` — raw link state and allow_invites setting
 
-**POST /p2p/tx** — bilateral sync (`link.*`, `base.*`)
+**POST /p2p/tx** — bilateral sync (`link.*`, `trustline.*`)
 
 **GET /p2p/key** — public key for signature verification

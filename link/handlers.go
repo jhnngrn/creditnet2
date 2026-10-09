@@ -26,14 +26,12 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 			if QueueHead(lk.State.Queue) == "connect" {
 				Dequeue(&lk.State.Queue) // mutual connect — no need to send own
 			}
+			h.node.NotifyLinkConnected(peer)
 			return true, nil
 		}
 		return false, nil // Incoming → NACK (invite flow)
 
 	case "close":
-		if lk.InUse {
-			return false, nil
-		}
 		h.node.DeleteLink(peer)
 		return true, nil
 	}
@@ -45,6 +43,7 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 	case "connect":
 		if ok {
 			lk.State.Status = Connected
+			h.node.NotifyLinkConnected(peer)
 		}
 		// !ok: stays Waiting, peer has incoming
 
@@ -59,7 +58,11 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 
 func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
 	if method := QueueHead(lk.State.Queue); method != "" {
-		return &QueuedMsg{Method: method}
+		msg := &QueuedMsg{Method: method}
+		if method == "connect" && lk.Owner != "" {
+			msg.Payload = Enc(map[string]string{"protocol": lk.Owner})
+		}
+		return msg
 	}
 	return nil
 }

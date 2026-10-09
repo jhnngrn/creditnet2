@@ -99,11 +99,19 @@ type Link struct {
 	State          LinkState     `json:"state"`
 	Counter        uint64        `json:"counter"`
 	TurnBit        uint64        `json:"turn_bit"`
-	InUse          bool          `json:"in_use,omitempty"`
+	Owner          string        `json:"protocol,omitempty"` // registered LinkOwner name
 	Pending        *QueuedMsg    `json:"pending,omitempty"`
 	CachedResponse *SyncResponse `json:"cached_response,omitempty"`
 	ReqTimestamp   int64         `json:"req_ts"`
 	RespTimestamp  int64         `json:"resp_ts"`
+}
+
+// LinkOwner provides lifecycle callbacks for links with a given protocol.
+// OnConnect is called when the link reaches Connected (constructor).
+// OnClose is called before the link is deleted (destructor).
+type LinkOwner struct {
+	OnConnect func(peer string, lk *Link)
+	OnClose   func(peer string, lk *Link)
 }
 
 // Dominant returns true when this side owns the current counter slot.

@@ -23,6 +23,8 @@ type Node struct {
 	handlerMap    map[string]Handler
 	handlerStates map[string]json.RawMessage
 
+	owners map[string]LinkOwner
+
 	transport Transport
 	store     NodeStore
 }
@@ -58,6 +60,7 @@ func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStor
 		allowInvites:  invites,
 		handlerMap:    map[string]Handler{},
 		handlerStates: st.Handlers,
+		owners:        map[string]LinkOwner{},
 		transport:     transport,
 		store:         store,
 	}
@@ -70,6 +73,23 @@ func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStor
 func (n *Node) RegisterHandler(name string, h Handler) {
 	n.handlers = append(n.handlers, handlerEntry{name: name, handler: h})
 	n.handlerMap[name] = h
+}
+
+// RegisterOwner registers lifecycle callbacks for a link protocol.
+func (n *Node) RegisterOwner(name string, owner LinkOwner) {
+	n.owners[name] = owner
+}
+
+// NotifyLinkConnected calls the OnConnect callback for the link's owner.
+// Caller must hold Lock.
+func (n *Node) NotifyLinkConnected(peer string) {
+	lk := n.links[peer]
+	if lk == nil || lk.Owner == "" {
+		return
+	}
+	if owner, ok := n.owners[lk.Owner]; ok && owner.OnConnect != nil {
+		owner.OnConnect(peer, lk)
+	}
 }
 
 // HandlerState returns the persisted state for a handler namespace.
@@ -86,26 +106,15 @@ func (n *Node) Links() map[string]*Link {
 	return n.links
 }
 
-// DeleteLink removes a link. Caller must hold Lock.
+// DeleteLink removes a link, calling OnClose first. Caller must hold Lock.
 func (n *Node) DeleteLink(peer string) {
+	lk := n.links[peer]
+	if lk != nil && lk.Owner != "" {
+		if owner, ok := n.owners[lk.Owner]; ok && owner.OnClose != nil {
+			owner.OnClose(peer, lk)
+		}
+	}
 	delete(n.links, peer)
-}
-
-// AcquireLink marks a link as in use. Caller must hold Lock.
-func (n *Node) AcquireLink(peer string) {
-	if lk := n.links[peer]; lk != nil {
-		lk.InUse = true
-	}
-}
-
-// ReleaseLink releases a link and queues link.close.
-// Caller must hold Lock.
-func (n *Node) ReleaseLink(peer string) {
-	if lk := n.links[peer]; lk != nil && lk.InUse {
-		lk.InUse = false
-		Enqueue(&lk.State.Queue, "close")
-		n.Kick(peer)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -206,8 +215,20 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrMaxLinks
 		}
+		// Read protocol from connect payload.
+		var cp struct {
+			Protocol string `json:"protocol"`
+		}
+		if env.Payload != nil {
+			json.Unmarshal(env.Payload, &cp)
+		}
+		if _, ok := n.owners[cp.Protocol]; !ok {
+			n.mu.Unlock()
+			return nil, fmt.Errorf("unknown protocol %q", cp.Protocol)
+		}
 		link = NewLink(n.id, env.From)
 		link.State.Status = Incoming
+		link.Owner = cp.Protocol
 		n.links[env.From] = link
 	}
 
@@ -382,6 +403,9 @@ func (n *Node) nextTx(peer string) *QueuedMsg {
 		return nil
 	}
 	for _, entry := range n.handlers {
+		if entry.name != "link" && link.State.Status != Connected {
+			continue
+		}
 		if msg := entry.handler.NextTx(peer, link); msg != nil {
 			msg.Method = entry.name + "." + msg.Method
 			return msg
@@ -409,7 +433,7 @@ func (n *Node) RetryPending() {
 // Account operations (caller must hold Lock)
 // ---------------------------------------------------------------------------
 
-func (n *Node) AddLink(peer string) error {
+func (n *Node) AddLink(peer string, owner string) error {
 	if _, _, err := ParseIdentity(peer); err != nil {
 		return err
 	}
@@ -423,8 +447,12 @@ func (n *Node) AddLink(peer string) error {
 	if len(n.links) >= MaxLinks {
 		return fmt.Errorf("max links reached")
 	}
+	if _, ok := n.owners[owner]; !ok {
+		return fmt.Errorf("unknown protocol %q", owner)
+	}
 	lk := NewLink(n.id, peer)
 	lk.State.Status = Waiting
+	lk.Owner = owner
 	Enqueue(&lk.State.Queue, "connect")
 	n.links[peer] = lk
 	n.Kick(peer)
@@ -436,9 +464,6 @@ func (n *Node) RemoveLink(peer string) error {
 	link := n.links[peer]
 	if link == nil {
 		return fmt.Errorf("no link to %s", peer)
-	}
-	if link.InUse {
-		return fmt.Errorf("link to %s still in use", peer)
 	}
 	Enqueue(&link.State.Queue, "close")
 	n.Kick(peer)
@@ -482,7 +507,8 @@ func (n *Node) Status() json.RawMessage {
 	links := make(map[string]any)
 	for peer, l := range n.links {
 		links[peer] = map[string]any{
-			"state": l.State,
+			"state":    l.State,
+			"protocol": l.Owner,
 		}
 	}
 	return Enc(map[string]any{

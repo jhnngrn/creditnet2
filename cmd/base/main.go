@@ -12,6 +12,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv.Register("base", base.NewHandler)
+	srv.Register("trustline", base.NewHandler)
 	core.RunAndWait(srv)
 }
