@@ -33,15 +33,15 @@ type PeerState struct {
 
 type Peer struct {
 	State            PeerState `json:"state"`  // status + queue
-	CreditLimit      uint64  `json:"credit_limit"`
-	CreditLimitIn    uint64  `json:"credit_limit_in"`
-	Balance          int64   `json:"balance"`
-	Demurrage        uint64  `json:"demurrage"`        // my rate (promille/year)
-	DemurrageIn      uint64  `json:"demurrage_in"`     // peer's rate
-	DemurrageTime    int64   `json:"demurrage_time"`   // last materialized (secs)
-	PendingLimit     *uint64 `json:"pending_limit,omitempty"`
-	PendingPayment   *uint64 `json:"pending_payment,omitempty"`
-	PendingDemurrage *uint64 `json:"pending_demurrage,omitempty"`
+	CreditLimit      int64 `json:"credit_limit"`
+	CreditLimitIn    int64 `json:"credit_limit_in"`
+	Balance          int64 `json:"balance"`
+	Demurrage        int64 `json:"demurrage"`        // my rate (promille/year)
+	DemurrageIn      int64 `json:"demurrage_in"`     // peer's rate
+	DemurrageTime    int64 `json:"demurrage_time"`   // last materialized (secs)
+	PendingLimit     *int64 `json:"pending_limit,omitempty"`
+	PendingPayment   *int64 `json:"pending_payment,omitempty"`
+	PendingDemurrage *int64 `json:"pending_demurrage,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ func (h *Handler) onPeerClose(peerID string) (bool, error) {
 
 func (h *Handler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, error) {
 	var p struct {
-		Amount uint64 `json:"amount"`
+		Amount int64 `json:"amount"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return false, nil
@@ -139,6 +139,9 @@ func (h *Handler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool
 	peer := h.peers[peerID]
 	if peer == nil || peer.State.Status != PeerConnected {
 		return false, fmt.Errorf("peer not connected")
+	}
+	if p.Amount < 0 {
+		return false, nil
 	}
 	peer.CreditLimitIn = p.Amount
 	return true, nil
@@ -146,7 +149,7 @@ func (h *Handler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool
 
 func (h *Handler) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) (bool, error) {
 	var p struct {
-		Rate uint64 `json:"rate"`
+		Rate int64 `json:"rate"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return false, nil
@@ -154,6 +157,9 @@ func (h *Handler) onSetDemurrage(peerID string, payload json.RawMessage, ts int6
 	peer := h.peers[peerID]
 	if peer == nil || peer.State.Status != PeerConnected {
 		return false, fmt.Errorf("peer not connected")
+	}
+	if p.Rate < 0 {
+		return false, nil
 	}
 	peer.MaterializeDemurrage(ts)
 	peer.DemurrageIn = p.Rate
@@ -162,9 +168,12 @@ func (h *Handler) onSetDemurrage(peerID string, payload json.RawMessage, ts int6
 
 func (h *Handler) onPayment(peerID string, payload json.RawMessage, ts int64) (bool, error) {
 	var p struct {
-		Amount uint64 `json:"amount"`
+		Amount int64 `json:"amount"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
+		return false, nil
+	}
+	if p.Amount <= 0 {
 		return false, nil
 	}
 	peer := h.peers[peerID]
@@ -174,8 +183,8 @@ func (h *Handler) onPayment(peerID string, payload json.RawMessage, ts int64) (b
 	peer.MaterializeDemurrage(ts)
 	// Receiving payment: peer's debt to me increases.
 	// Validate: new balance <= my credit_limit for this peer.
-	newBalance := peer.Balance + int64(p.Amount)
-	if newBalance > int64(peer.CreditLimit) {
+	newBalance := peer.Balance + p.Amount
+	if newBalance > peer.CreditLimit {
 		return false, nil
 	}
 	peer.Balance = newBalance
@@ -220,7 +229,7 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 		peer.PendingDemurrage = nil
 	case "payment":
 		if ok && peer.PendingPayment != nil {
-			peer.AddBalance(-int64(*peer.PendingPayment), ts)
+			peer.AddBalance(-*peer.PendingPayment, ts)
 		}
 		peer.PendingPayment = nil
 	}
@@ -256,7 +265,7 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 		}
 		return &link.QueuedMsg{
 			Method:  "set_credit_limit",
-			Payload: link.Enc(map[string]uint64{"amount": *peer.PendingLimit}),
+			Payload: link.Enc(map[string]int64{"amount": *peer.PendingLimit}),
 		}
 	case "set_demurrage":
 		if peer.PendingDemurrage == nil {
@@ -264,7 +273,7 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 		}
 		return &link.QueuedMsg{
 			Method:  "set_demurrage",
-			Payload: link.Enc(map[string]uint64{"rate": *peer.PendingDemurrage}),
+			Payload: link.Enc(map[string]int64{"rate": *peer.PendingDemurrage}),
 		}
 	case "payment":
 		if peer.PendingPayment == nil {
@@ -272,7 +281,7 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 		}
 		return &link.QueuedMsg{
 			Method:  "payment",
-			Payload: link.Enc(map[string]uint64{"amount": *peer.PendingPayment}),
+			Payload: link.Enc(map[string]int64{"amount": *peer.PendingPayment}),
 		}
 	}
 	return nil
@@ -410,7 +419,7 @@ func (h *Handler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 func (h *Handler) setCreditLimit(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer   string `json:"peer"`
-		Amount uint64 `json:"amount"`
+		Amount int64  `json:"amount"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("bad request")
@@ -422,6 +431,9 @@ func (h *Handler) setCreditLimit(payload json.RawMessage) (json.RawMessage, erro
 	}
 	if peer.State.Status != PeerConnected {
 		return nil, fmt.Errorf("peer %s is not connected", peerID)
+	}
+	if p.Amount < 0 {
+		return nil, fmt.Errorf("credit limit must be non-negative")
 	}
 	if peer.PendingLimit != nil {
 		return nil, fmt.Errorf("credit limit change already pending")
@@ -435,7 +447,7 @@ func (h *Handler) setCreditLimit(payload json.RawMessage) (json.RawMessage, erro
 func (h *Handler) setDemurrage(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer string `json:"peer"`
-		Rate uint64 `json:"rate"`
+		Rate int64  `json:"rate"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("bad request")
@@ -447,6 +459,9 @@ func (h *Handler) setDemurrage(payload json.RawMessage) (json.RawMessage, error)
 	}
 	if peer.State.Status != PeerConnected {
 		return nil, fmt.Errorf("peer %s is not connected", peerID)
+	}
+	if p.Rate < 0 {
+		return nil, fmt.Errorf("demurrage rate must be non-negative")
 	}
 	if peer.PendingDemurrage != nil {
 		return nil, fmt.Errorf("demurrage change already pending")
@@ -460,7 +475,7 @@ func (h *Handler) setDemurrage(payload json.RawMessage) (json.RawMessage, error)
 func (h *Handler) payment(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer   string `json:"peer"`
-		Amount uint64 `json:"amount"`
+		Amount int64  `json:"amount"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("bad request")
@@ -476,12 +491,12 @@ func (h *Handler) payment(payload json.RawMessage) (json.RawMessage, error) {
 	if peer.PendingPayment != nil {
 		return nil, fmt.Errorf("payment already pending")
 	}
-	if p.Amount == 0 {
+	if p.Amount <= 0 {
 		return nil, fmt.Errorf("amount must be positive")
 	}
 	// Available credit: effective balance (after demurrage) + credit_limit_in.
-	available := peer.EffectiveBalance(time.Now().Unix()) + int64(peer.CreditLimitIn)
-	if int64(p.Amount) > available {
+	available := peer.EffectiveBalance(time.Now().Unix()) + peer.CreditLimitIn
+	if p.Amount > available {
 		return nil, fmt.Errorf("insufficient credit")
 	}
 	peer.PendingPayment = &p.Amount
