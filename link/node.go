@@ -91,17 +91,10 @@ func (n *Node) DeleteLink(peer string) {
 	delete(n.links, peer)
 }
 
-// RefLink increments the reference count on a link. Caller must hold Lock.
-func (n *Node) RefLink(peer string) {
+// SetLinkInUse marks a link as in use. Caller must hold Lock.
+func (n *Node) SetLinkInUse(peer string, inUse bool) {
 	if lk := n.links[peer]; lk != nil {
-		lk.Refs++
-	}
-}
-
-// UnrefLink decrements the reference count. Caller must hold Lock.
-func (n *Node) UnrefLink(peer string) {
-	if lk := n.links[peer]; lk != nil && lk.Refs > 0 {
-		lk.Refs--
+		lk.InUse = inUse
 	}
 }
 
@@ -434,8 +427,8 @@ func (n *Node) RemoveLink(peer string) error {
 	if link == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	if link.Refs > 0 {
-		return fmt.Errorf("link to %s still in use (%d refs)", peer, link.Refs)
+	if link.InUse {
+		return fmt.Errorf("link to %s still in use", peer)
 	}
 	Enqueue(&link.State.Queue, "close")
 	n.Kick(peer)
