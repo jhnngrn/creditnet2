@@ -66,11 +66,9 @@ func (h *Handler) MarshalJSON() ([]byte, error) {
 // Owner callbacks (constructor / destructor)
 // ---------------------------------------------------------------------------
 
-// onConnect is called when a link with protocol "base" reaches Connected.
+// onConnect is called when a link with protocol "trustline" reaches Connected.
 func (h *Handler) onConnect(peer string, lk *link.Link) {
-	if h.peers[peer] == nil {
-		h.peers[peer] = &Peer{}
-	}
+	h.peers[peer] = &Peer{}
 }
 
 // onClose is called before a link with protocol "base" is deleted.
@@ -275,7 +273,7 @@ func (h *Handler) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	if h.peers[peerID] != nil {
+	if peer := h.peers[peerID]; peer != nil && !peer.Disconnected {
 		return nil, fmt.Errorf("peer %s already exists", peerID)
 	}
 	if err := h.node.AddLink(peerID, "trustline"); err != nil {
