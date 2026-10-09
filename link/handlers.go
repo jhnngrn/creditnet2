@@ -77,7 +77,6 @@ func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
 }
 
 func (h *linkHandler) ResetState(json.RawMessage) {}
-func (h *linkHandler) OnLinkRemoved(string)          {}
 
 func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {

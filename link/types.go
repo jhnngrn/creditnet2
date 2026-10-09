@@ -124,7 +124,6 @@ type Handler interface {
 	HandleResponse(peer string, link *Link, method string, payload json.RawMessage, ok bool, ts int64)
 	NextTx(peer string, link *Link) *QueuedMsg
 	ResetState(json.RawMessage)
-	OnLinkRemoved(peer string)
 }
 
 // AccountHandler processes user-facing API methods for a namespace.

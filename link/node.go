@@ -86,12 +86,9 @@ func (n *Node) Links() map[string]*Link {
 	return n.links
 }
 
-// DeleteLink removes a link and notifies all handlers. Caller must hold Lock.
+// DeleteLink removes a link. Caller must hold Lock.
 func (n *Node) DeleteLink(peer string) {
 	delete(n.links, peer)
-	for _, entry := range n.handlers {
-		entry.handler.OnLinkRemoved(peer)
-	}
 }
 
 // RefLink increments the reference count on a link. Caller must hold Lock.
