@@ -46,6 +46,9 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, payload json.RawMessage, ok bool, ts int64) {
 	switch method {
 	case "connect":
+		if lk.State == Removing {
+			break // removal in progress, don't overwrite
+		}
 		if ok {
 			lk.State = Connected
 		} else {

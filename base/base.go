@@ -20,8 +20,8 @@ const (
 	PeerWaiting    PeerState = "waiting"    // peer_request nacked, awaiting peer decision
 	PeerIncoming   PeerState = "incoming"   // received peer_request, awaiting local decision
 	PeerConnected  PeerState = "connected"  // bilaterally confirmed
-	PeerRejecting  PeerState = "rejecting"  // peer_reject queued, not yet sent
-	PeerRejected   PeerState = "rejected"   // denied by peer
+	PeerRemoving   PeerState = "removing"   // base.remove queued, not yet sent
+	PeerRemoved    PeerState = "removed"    // removed by peer
 )
 
 // ---------------------------------------------------------------------------
@@ -80,8 +80,8 @@ func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, pay
 	switch method {
 	case "connect":
 		return h.onPeerRequest(peerID)
-	case "reject":
-		return h.onPeerReject(peerID)
+	case "remove":
+		return h.onPeerRemove(peerID)
 	case "set_credit_limit":
 		return h.onSetCreditLimit(peerID, payload)
 	case "set_demurrage":
@@ -109,14 +109,17 @@ func (h *Handler) onPeerRequest(peerID string) (bool, error) {
 	return false, nil
 }
 
-func (h *Handler) onPeerReject(peerID string) (bool, error) {
+func (h *Handler) onPeerRemove(peerID string) (bool, error) {
 	peer := h.peers[peerID]
 	if peer == nil {
 		return false, nil
 	}
 	switch peer.State {
-	case PeerConnecting, PeerWaiting:
-		peer.State = PeerRejected
+	case PeerConnecting, PeerWaiting, PeerConnected:
+		if peer.State == PeerConnected {
+			h.node.UnrefLink(peerID)
+		}
+		peer.State = PeerRemoved
 		return true, nil
 	}
 	return false, nil
@@ -186,13 +189,16 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 	}
 	switch method {
 	case "connect":
+		if peer.State == PeerRemoving {
+			break // removal in progress, don't overwrite
+		}
 		if ok {
 			peer.State = PeerConnected
 			h.node.RefLink(peerID)
 		} else {
 			peer.State = PeerWaiting
 		}
-	case "reject":
+	case "remove":
 		if ok {
 			delete(h.peers, peerID)
 		}
@@ -230,8 +236,8 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 	if peer.State == PeerConnecting {
 		return &link.QueuedMsg{Method: "connect"}
 	}
-	if peer.State == PeerRejecting {
-		return &link.QueuedMsg{Method: "reject"}
+	if peer.State == PeerRemoving {
+		return &link.QueuedMsg{Method: "remove"}
 	}
 	if peer.State != PeerConnected {
 		return nil
@@ -352,7 +358,7 @@ func (h *Handler) rejectPeer(payload json.RawMessage) (json.RawMessage, error) {
 		if peer.State != PeerIncoming {
 			return nil, fmt.Errorf("peer %s is not incoming", peerID)
 		}
-		peer.State = PeerRejecting
+		peer.State = PeerRemoving
 		h.node.Kick(peerID)
 		return link.Enc("ok"), nil
 	}
@@ -375,9 +381,15 @@ func (h *Handler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	delete(h.peers, peerID)
-	if peer.State == PeerConnected {
+	switch peer.State {
+	case PeerConnected:
+		delete(h.peers, peerID)
 		h.node.UnrefLink(peerID)
+	case PeerConnecting, PeerWaiting:
+		peer.State = PeerRemoving
+		h.node.Kick(peerID)
+	default:
+		delete(h.peers, peerID)
 	}
 	return link.Enc("ok"), nil
 }
