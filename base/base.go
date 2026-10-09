@@ -19,7 +19,7 @@ const (
 	PeerWaiting   PeerStatus = "waiting"   // connect queued or NACKed
 	PeerIncoming  PeerStatus = "incoming"  // received base.connect, awaiting local decision
 	PeerConnected PeerStatus = "connected" // bilaterally confirmed
-	PeerRemoved   PeerStatus = "removed"   // removed by peer
+	PeerDisconnected PeerStatus = "disconnected" // peer closed the relationship
 )
 
 type PeerState struct {
@@ -123,7 +123,7 @@ func (h *Handler) onPeerClose(peerID string) (bool, error) {
 		if peer.State.Status == PeerConnected {
 			h.node.ReleaseLink(peerID)
 		}
-		peer.State = PeerState{Status: PeerRemoved}
+		peer.State = PeerState{Status: PeerDisconnected}
 		return true, nil
 	}
 	return false, nil
