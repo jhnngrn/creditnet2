@@ -18,7 +18,7 @@ func NewLinkHandler(n *Node) Handler {
 	return &linkHandler{node: n}
 }
 
-func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payload json.RawMessage, ts int64) (bool, error) {
+func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	case "connect":
 		if lk.State.Status == Waiting {
@@ -27,18 +27,18 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 				Dequeue(&lk.State.Queue) // mutual connect — no need to send own
 			}
 			h.node.NotifyLinkConnected(peer)
-			return true, nil
+			return true, nil, nil
 		}
-		return false, nil // Incoming → NACK (invite flow)
+		return false, nil, nil // Incoming → NACK (invite flow)
 
 	case "close":
 		h.node.DeleteLink(peer)
-		return true, nil
+		return true, nil, nil
 	}
-	return false, ErrBadMethod
+	return false, nil, ErrBadMethod
 }
 
-func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, payload json.RawMessage, ok bool, ts int64) {
+func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "connect":
 		if ok {
@@ -54,6 +54,7 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 		// !ok: refs > 0 on peer side
 	}
 	Dequeue(&lk.State.Queue)
+	return nil
 }
 
 func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {

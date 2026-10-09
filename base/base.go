@@ -82,16 +82,19 @@ func (h *Handler) onClose(peer string, lk *link.Link) {
 // Sync — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, payload json.RawMessage, ts int64) (bool, error) {
+func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	case "set_credit_limit":
-		return h.onSetCreditLimit(peerID, payload)
+		ok, err := h.onSetCreditLimit(peerID, payload)
+		return ok, nil, err
 	case "set_demurrage":
-		return h.onSetDemurrage(peerID, payload, ts)
+		ok, err := h.onSetDemurrage(peerID, payload, ts)
+		return ok, nil, err
 	case "payment":
-		return h.onPayment(peerID, payload, ts)
+		ok, err := h.onPayment(peerID, payload, ts)
+		return ok, nil, err
 	}
-	return false, link.ErrBadMethod
+	return false, nil, link.ErrBadMethod
 }
 
 func (h *Handler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, error) {
@@ -158,10 +161,10 @@ func (h *Handler) onPayment(peerID string, payload json.RawMessage, ts int64) (b
 // Sync — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, payload json.RawMessage, ok bool, ts int64) {
+func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	peer := h.peers[peerID]
 	if peer == nil {
-		return
+		return nil
 	}
 	switch method {
 	case "set_credit_limit":
@@ -184,6 +187,7 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 	if h.peers[peerID] != nil {
 		link.Dequeue(&peer.Queue)
 	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

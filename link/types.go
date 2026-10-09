@@ -131,9 +131,12 @@ func NewLink(self, peer string) *Link {
 // ---------------------------------------------------------------------------
 
 // Handler processes sync methods for a namespace.
+// HandleRequest returns (ok, kicks, err) where kicks is a list of peers
+// that need kicking on other links (cross-link kicks, e.g. novation routing).
+// HandleResponse returns kicks for the same purpose.
 type Handler interface {
-	HandleRequest(peer string, link *Link, method string, payload json.RawMessage, ts int64) (bool, error)
-	HandleResponse(peer string, link *Link, method string, payload json.RawMessage, ok bool, ts int64)
+	HandleRequest(peer string, link *Link, method string, payload json.RawMessage, ts int64) (bool, []string, error)
+	HandleResponse(peer string, link *Link, method string, payload json.RawMessage, ok bool, ts int64) []string
 	NextTx(peer string, link *Link) *QueuedMsg
 	ResetState(json.RawMessage)
 }
