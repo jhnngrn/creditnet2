@@ -6,7 +6,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// linkHandler — handles link.connect, link.disconnect, link.reject
+// linkHandler — handles link.connect, link.disconnect, link.remove
 // ---------------------------------------------------------------------------
 
 type linkHandler struct {
@@ -29,7 +29,7 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 			return false, nil
 		}
 
-	case "reject":
+	case "remove":
 		h.node.DeleteLink(peer)
 		return true, nil
 
@@ -52,7 +52,7 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 			lk.State = Waiting
 		}
 
-	case "reject":
+	case "remove":
 		h.node.DeleteLink(peer)
 
 	case "disconnect":
@@ -68,8 +68,8 @@ func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
 	switch lk.State {
 	case Connecting:
 		return &QueuedMsg{Method: "connect"}
-	case Rejecting:
-		return &QueuedMsg{Method: "reject"}
+	case Removing:
+		return &QueuedMsg{Method: "remove"}
 	case Disconnecting:
 		return &QueuedMsg{Method: "disconnect"}
 	}

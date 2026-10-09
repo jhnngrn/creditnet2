@@ -81,7 +81,7 @@ const (
 	Connecting    LinkState = "connecting"     // outgoing link.connect in flight
 	Incoming      LinkState = "incoming"       // incoming request, awaiting local acceptance
 	Connected     LinkState = "connected"      // bilaterally established
-	Rejecting     LinkState = "rejecting"      // outgoing link.reject in flight
+	Removing      LinkState = "removing"       // outgoing link.remove in flight
 	Disconnecting LinkState = "disconnecting"  // outgoing link.disconnect in flight
 )
 

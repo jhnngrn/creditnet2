@@ -73,22 +73,22 @@ Links track a reference count (`Refs`). Handlers call `RefLink`/`UnrefLink` when
                       +--+--+--+--+            +-+------+-+
                          |  |  |                 |      |
      recv link.connect   |  |  | resp NACK       |      |  link.reject_link
-     (mutual) ----------+  |  +------+          |      |  (account)
+     (mutual) ----------+  |  +------+          |      |  or RemoveLink
                              |         |          |      |
                resp OK ------+         v          |      v
-                             |    +---------+     |  +----------+
-                             |    | waiting |     |  | rejecting |
-                             |    +----+----+     |  +-----+----+
-                             |         |          |        |
-                             |  recv   |          |        | resp ACK'd
-                             |  link.connect      |        v
-                             |  from peer         |    (deleted)
-                             |         |          |
-                             v         v          | link.accept_link
-                          +----------+            | (account)
-                          |connected |            |
-                          +-----+----+            +---> connecting
-                                |
+                             |    +---------+     |  +---------+
+                             |    | waiting |     |  | removing |<-- RemoveLink
+                             |    +----+----+     |  +----+----+    (connecting
+                             |         |          |        |         or waiting)
+                             |  recv   |          |        |
+                             |  link.connect      |        | resp ACK'd
+                             |  from peer         |        v
+                             |         |          |    (deleted)
+                             v         v          |
+                          +----------+            | link.accept_link
+                          |connected |            | (account)
+                          +-----+----+            |
+                                |                 +---> connecting
                    RemoveLink   |  (refused if refs > 0)
                                 |
                                 v
@@ -103,11 +103,11 @@ Links track a reference count (`Refs`). Handlers call `RefLink`/`UnrefLink` when
 
 **States:**
 
-- **connecting** — outgoing `link.connect` in flight.
-- **waiting** — `link.connect` was NACKed. Peer has the invite (`incoming` on their side).
+- **connecting** — outgoing `link.connect` in flight. `RemoveLink` transitions to `removing`.
+- **waiting** — `link.connect` was NACKed. Peer has the invite (`incoming` on their side). `RemoveLink` transitions to `removing`.
 - **incoming** — received `link.connect` from peer. Awaiting local decision (`link.accept_link` or `link.reject_link`).
 - **connected** — bilaterally established.
-- **rejecting** — outgoing `link.reject` in flight.
+- **removing** — outgoing `link.remove` in flight. Used by both `reject_link` (incoming) and `RemoveLink` (connecting/waiting).
 - **disconnecting** — outgoing `link.disconnect` in flight. Refused while refs > 0.
 
 ## Base layer
@@ -188,7 +188,7 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 `link.connect` — establish bilateral connection. Mutual add -> instant `connected`. Incoming from unknown -> `incoming` (NACKed).
 
-`link.reject` — reject a connection. Peer deletes their link, ACKs.
+`link.remove` — remove a connection. Peer deletes their link, ACKs. If the peer has no link, a synthetic ACK is returned.
 
 `link.disconnect` — tear down a connection. Peer deletes their link, ACKs.
 

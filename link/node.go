@@ -187,6 +187,10 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 
 	link := n.links[env.From]
 	if link == nil {
+		if env.Method == "link.remove" {
+			n.mu.Unlock()
+			return &SyncResponse{Counter: env.Counter, OK: true, Timestamp: NowSecs()}, nil
+		}
 		if env.Method != "link.connect" {
 			n.mu.Unlock()
 			return nil, ErrNoLink
@@ -431,9 +435,12 @@ func (n *Node) RemoveLink(peer string) error {
 	if link.Refs > 0 {
 		return fmt.Errorf("link to %s still in use (%d refs)", peer, link.Refs)
 	}
-	if link.State == Connected {
+	switch link.State {
+	case Connected:
 		link.State = Disconnecting
-	} else {
+	case Connecting, Waiting:
+		link.State = Removing
+	default:
 		n.DeleteLink(peer)
 	}
 	n.Kick(peer)
@@ -463,7 +470,7 @@ func (n *Node) RejectLink(peer string) error {
 	if link.State != Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	link.State = Rejecting
+	link.State = Removing
 	n.Kick(peer)
 	return nil
 }
