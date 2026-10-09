@@ -131,8 +131,8 @@ func (h *Handler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool
 		return false, nil
 	}
 	peer := h.peers[peerID]
-	if peer == nil {
-		return false, nil
+	if peer == nil || peer.State != PeerConnected {
+		return false, fmt.Errorf("peer not connected")
 	}
 	peer.CreditLimitIn = p.Amount
 	return true, nil
@@ -146,8 +146,8 @@ func (h *Handler) onSetDemurrage(peerID string, payload json.RawMessage, ts int6
 		return false, nil
 	}
 	peer := h.peers[peerID]
-	if peer == nil {
-		return false, nil
+	if peer == nil || peer.State != PeerConnected {
+		return false, fmt.Errorf("peer not connected")
 	}
 	peer.MaterializeDemurrage(ts)
 	peer.DemurrageIn = p.Rate
@@ -162,8 +162,8 @@ func (h *Handler) onPayment(peerID string, payload json.RawMessage, ts int64) (b
 		return false, nil
 	}
 	peer := h.peers[peerID]
-	if peer == nil {
-		return false, nil
+	if peer == nil || peer.State != PeerConnected {
+		return false, fmt.Errorf("peer not connected")
 	}
 	peer.MaterializeDemurrage(ts)
 	// Receiving payment: peer's debt to me increases.
