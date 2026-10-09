@@ -31,7 +31,7 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 		return false, nil // Incoming → NACK (invite flow)
 
 	case "close":
-		if lk.InUse {
+		if lk.Claim == Acquired {
 			return false, nil
 		}
 		h.node.DeleteLink(peer)

@@ -59,7 +59,7 @@ The link layer (`link/`) provides bilateral connections between nodes: establish
 
 Links are general-purpose channels. What runs on top (peers, payments, or something else) is determined by the handler layer. A link can exist without a peer — accepting a link and creating a peer are separate operations.
 
-Links track an `InUse` flag. Handlers call `SetLinkInUse` when claiming or releasing a link — base sets it when a peer reaches `connected`, so reject during establishment is always safe. `RemoveLink` and incoming `link.close` are refused while in use, enforcing that the application layer is wound down before a link can be closed.
+Links track a `Claim` state (`Unclaimed` → `Acquired` → `Released`). Handlers call `AcquireLink` when claiming a link and `ReleaseLink` when done — base acquires when a peer reaches `connected`. `RemoveLink` and incoming `link.close` are refused while acquired. Once released, the link cannot be re-acquired and must be closed.
 
 ### Link state machine
 
@@ -141,7 +141,7 @@ Links and peers are separate. A link is the communication channel (link layer). 
                          |
                          v
                     (deleted)
-                    + SetLinkInUse(false)
+                    + ReleaseLink
 
                 recv base.close
                          |
@@ -155,18 +155,18 @@ Links and peers are separate. A link is the communication channel (link layer). 
 
 - **waiting** — `base.connect` queued or NACKed. If NACKed, peer has the request (`incoming` on their side). `remove_peer` queues `base.close`.
 - **incoming** — received `base.connect`. Awaiting local decision (`accept_peer` or `reject_peer`).
-- **connected** — bilaterally confirmed. Operations (credit limit, demurrage, payment) require this state. Link is marked in use at this transition.
+- **connected** — bilaterally confirmed. Operations (credit limit, demurrage, payment) require this state. Link is acquired at this transition.
 - **removed** — removed by peer (received `base.close`).
 
 **Flows:**
 
-*Add peer* — `add_peer` creates a link and a peer in `waiting` with `connect` queued. After the link connects, `base.connect` is sent. If the other side has no peer, it creates one in `incoming` and NACKs. Sender stays `waiting`. Acceptor calls `accept_peer` -> `waiting` + queues `connect` -> sends `base.connect` back -> both sides `connected` (link marked in use on both sides).
+*Add peer* — `add_peer` creates a link and a peer in `waiting` with `connect` queued. After the link connects, `base.connect` is sent. If the other side has no peer, it creates one in `incoming` and NACKs. Sender stays `waiting`. Acceptor calls `accept_peer` -> `waiting` + queues `connect` -> sends `base.connect` back -> both sides `connected` (link acquired on both sides).
 
 *Pre-accept* — acceptor calls `accept_peer` before `base.connect` arrives (while link is still `incoming`). This accepts the link and creates a peer in `waiting` with `connect` queued. When the initiator's `base.connect` arrives, it finds `waiting` -> `connected` + ACK.
 
 *Mutual add* — both sides call `add_peer` independently. First `base.connect` to arrive finds the other side in `waiting` -> `connected` immediately.
 
-*Reject* — `reject_peer` on an `incoming` peer queues `base.close`. The removed side transitions to `removed` (visible in their status). After ACK, remover deletes their peer. No release needed — link is only marked in use at `connected`.
+*Reject* — `reject_peer` on an `incoming` peer queues `base.close`. The removed side transitions to `removed` (visible in their status). After ACK, remover deletes their peer. No release needed — link is only acquired at `connected`.
 
 *Withdraw* — `remove_peer` on a `waiting` peer queues `base.close` to clean up the peer's `incoming`. Same mechanism as reject.
 
@@ -192,7 +192,7 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 **base namespace:**
 
-`base.connect` — declare intent to establish a peer relationship. If the other side is already in `waiting`, both transition to `connected` (ACK, link marked in use). Otherwise a new `incoming` peer is created (NACK).
+`base.connect` — declare intent to establish a peer relationship. If the other side is already in `waiting`, both transition to `connected` (ACK, link acquired). Otherwise a new `incoming` peer is created (NACK).
 
 `base.close` — close a peer relationship. The closed side transitions to `removed` (visible in status). After ACK, closer deletes their peer. Handles `waiting` and `connected` peers on the receiver side.
 

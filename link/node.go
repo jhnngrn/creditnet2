@@ -91,10 +91,19 @@ func (n *Node) DeleteLink(peer string) {
 	delete(n.links, peer)
 }
 
-// SetLinkInUse marks a link as in use. Caller must hold Lock.
-func (n *Node) SetLinkInUse(peer string, inUse bool) {
-	if lk := n.links[peer]; lk != nil {
-		lk.InUse = inUse
+// AcquireLink marks a link as claimed. Only works if Unclaimed.
+// Caller must hold Lock.
+func (n *Node) AcquireLink(peer string) {
+	if lk := n.links[peer]; lk != nil && lk.Claim == Unclaimed {
+		lk.Claim = Acquired
+	}
+}
+
+// ReleaseLink marks a claimed link as released. Only works if Acquired.
+// Caller must hold Lock.
+func (n *Node) ReleaseLink(peer string) {
+	if lk := n.links[peer]; lk != nil && lk.Claim == Acquired {
+		lk.Claim = Released
 	}
 }
 
@@ -427,8 +436,8 @@ func (n *Node) RemoveLink(peer string) error {
 	if link == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	if link.InUse {
-		return fmt.Errorf("link to %s still in use", peer)
+	if link.Claim == Acquired {
+		return fmt.Errorf("link to %s still acquired", peer)
 	}
 	Enqueue(&link.State.Queue, "close")
 	n.Kick(peer)

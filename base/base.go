@@ -103,7 +103,7 @@ func (h *Handler) onPeerRequest(peerID string) (bool, error) {
 			if link.QueueHead(peer.State.Queue) == "connect" {
 				link.Dequeue(&peer.State.Queue) // mutual connect — no need to send own
 			}
-			h.node.SetLinkInUse(peerID, true)
+			h.node.AcquireLink(peerID)
 			return true, nil
 		}
 		return false, nil
@@ -121,7 +121,7 @@ func (h *Handler) onPeerClose(peerID string) (bool, error) {
 	switch peer.State.Status {
 	case PeerWaiting, PeerConnected:
 		if peer.State.Status == PeerConnected {
-			h.node.SetLinkInUse(peerID, false)
+			h.node.ReleaseLink(peerID)
 		}
 		peer.State = PeerState{Status: PeerRemoved}
 		return true, nil
@@ -195,13 +195,13 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 	case "connect":
 		if ok {
 			peer.State.Status = PeerConnected
-			h.node.SetLinkInUse(peerID, true)
+			h.node.AcquireLink(peerID)
 		}
 		// !ok: stays Waiting, peer has incoming
 	case "close":
 		if ok {
 			if peer.State.Status == PeerConnected {
-				h.node.SetLinkInUse(peerID, false)
+				h.node.ReleaseLink(peerID)
 			}
 			delete(h.peers, peerID)
 			h.node.RemoveLink(peerID)
