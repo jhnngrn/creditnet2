@@ -135,7 +135,10 @@ Links and peers are separate. A link is the communication channel (link layer). 
                    +-----+----+
                          |
             remove_peer  |
-            (account)    |
+            (base.close) |
+                         |
+                    resp OK
+                         |
                          v
                     (deleted)
                     + UnrefLink
@@ -212,7 +215,7 @@ All endpoints accept JSON `{method, payload}`.
 - `base.add_peer` (`{peer}`) — create link + peer, queue `link.connect` then `base.connect`
 - `base.accept_peer` (`{peer}`) — accept incoming `base.connect`, or pre-accept link + create peer if no request yet
 - `base.reject_peer` (`{peer}`) — reject incoming `base.connect` (sends `base.close`), or reject link if no peer yet
-- `base.remove_peer` (`{peer}`) — connected: delete peer + unref link; waiting: queue `base.close`
+- `base.remove_peer` (`{peer}`) — queue `base.close`, delete peer on ACK (+ unref link if connected)
 - `base.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
 - `base.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
 - `base.payment` (`{peer, amount}`) — send payment to peer

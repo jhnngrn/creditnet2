@@ -200,6 +200,9 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 		// !ok: stays Waiting, peer has incoming
 	case "close":
 		if ok {
+			if peer.State.Status == PeerConnected {
+				h.node.UnrefLink(peerID)
+			}
 			delete(h.peers, peerID)
 		}
 	case "set_credit_limit":
@@ -393,10 +396,7 @@ func (h *Handler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
 	switch peer.State.Status {
-	case PeerConnected:
-		delete(h.peers, peerID)
-		h.node.UnrefLink(peerID)
-	case PeerWaiting:
+	case PeerConnected, PeerWaiting:
 		link.Enqueue(&peer.State.Queue, "close")
 		h.node.Kick(peerID)
 	default:
