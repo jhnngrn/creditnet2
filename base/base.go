@@ -10,26 +10,29 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// PeerState — peer lifecycle
+// PeerStatus / PeerState — peer lifecycle
 // ---------------------------------------------------------------------------
 
-type PeerState string
+type PeerStatus string
 
 const (
-	PeerConnecting PeerState = "connecting" // peer_request queued, not yet acked
-	PeerWaiting    PeerState = "waiting"    // peer_request nacked, awaiting peer decision
-	PeerIncoming   PeerState = "incoming"   // received peer_request, awaiting local decision
-	PeerConnected  PeerState = "connected"  // bilaterally confirmed
-	PeerRemoving   PeerState = "removing"   // base.remove queued, not yet sent
-	PeerRemoved    PeerState = "removed"    // removed by peer
+	PeerWaiting   PeerStatus = "waiting"   // connect queued or NACKed
+	PeerIncoming  PeerStatus = "incoming"  // received base.connect, awaiting local decision
+	PeerConnected PeerStatus = "connected" // bilaterally confirmed
+	PeerRemoved   PeerStatus = "removed"   // removed by peer
 )
+
+type PeerState struct {
+	Status PeerStatus `json:"status"`
+	Queue  []string   `json:"queue,omitempty"`
+}
 
 // ---------------------------------------------------------------------------
 // Peer — per-peer data owned by base
 // ---------------------------------------------------------------------------
 
 type Peer struct {
-	State            PeerState `json:"state"`
+	State            PeerState `json:"state"`  // status + queue
 	CreditLimit      uint64  `json:"credit_limit"`
 	CreditLimitIn    uint64  `json:"credit_limit_in"`
 	Balance          int64   `json:"balance"`
@@ -95,17 +98,18 @@ func (h *Handler) HandleRequest(peerID string, lk *link.Link, method string, pay
 func (h *Handler) onPeerRequest(peerID string) (bool, error) {
 	peer := h.peers[peerID]
 	if peer != nil {
-		switch peer.State {
-		case PeerConnecting, PeerWaiting:
-			peer.State = PeerConnected
+		if peer.State.Status == PeerWaiting {
+			peer.State.Status = PeerConnected
+			if link.QueueHead(peer.State.Queue) == "connect" {
+				link.Dequeue(&peer.State.Queue) // mutual connect — no need to send own
+			}
 			h.node.RefLink(peerID)
 			return true, nil
-		default:
-			return false, nil
 		}
+		return false, nil
 	}
 	// No peer exists — create incoming.
-	h.peers[peerID] = &Peer{State: PeerIncoming}
+	h.peers[peerID] = &Peer{State: PeerState{Status: PeerIncoming}}
 	return false, nil
 }
 
@@ -114,12 +118,12 @@ func (h *Handler) onPeerRemove(peerID string) (bool, error) {
 	if peer == nil {
 		return false, nil
 	}
-	switch peer.State {
-	case PeerConnecting, PeerWaiting, PeerConnected:
-		if peer.State == PeerConnected {
+	switch peer.State.Status {
+	case PeerWaiting, PeerConnected:
+		if peer.State.Status == PeerConnected {
 			h.node.UnrefLink(peerID)
 		}
-		peer.State = PeerRemoved
+		peer.State = PeerState{Status: PeerRemoved}
 		return true, nil
 	}
 	return false, nil
@@ -133,7 +137,7 @@ func (h *Handler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool
 		return false, nil
 	}
 	peer := h.peers[peerID]
-	if peer == nil || peer.State != PeerConnected {
+	if peer == nil || peer.State.Status != PeerConnected {
 		return false, fmt.Errorf("peer not connected")
 	}
 	peer.CreditLimitIn = p.Amount
@@ -148,7 +152,7 @@ func (h *Handler) onSetDemurrage(peerID string, payload json.RawMessage, ts int6
 		return false, nil
 	}
 	peer := h.peers[peerID]
-	if peer == nil || peer.State != PeerConnected {
+	if peer == nil || peer.State.Status != PeerConnected {
 		return false, fmt.Errorf("peer not connected")
 	}
 	peer.MaterializeDemurrage(ts)
@@ -164,7 +168,7 @@ func (h *Handler) onPayment(peerID string, payload json.RawMessage, ts int64) (b
 		return false, nil
 	}
 	peer := h.peers[peerID]
-	if peer == nil || peer.State != PeerConnected {
+	if peer == nil || peer.State.Status != PeerConnected {
 		return false, fmt.Errorf("peer not connected")
 	}
 	peer.MaterializeDemurrage(ts)
@@ -189,15 +193,11 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 	}
 	switch method {
 	case "connect":
-		if peer.State == PeerRemoving {
-			break // removal in progress, don't overwrite
-		}
 		if ok {
-			peer.State = PeerConnected
+			peer.State.Status = PeerConnected
 			h.node.RefLink(peerID)
-		} else {
-			peer.State = PeerWaiting
 		}
+		// !ok: stays Waiting, peer has incoming
 	case "remove":
 		if ok {
 			delete(h.peers, peerID)
@@ -219,6 +219,9 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 		}
 		peer.PendingPayment = nil
 	}
+	if h.peers[peerID] != nil {
+		link.Dequeue(&peer.State.Queue)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -233,28 +236,35 @@ func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
 	if peer == nil {
 		return nil
 	}
-	if peer.State == PeerConnecting {
-		return &link.QueuedMsg{Method: "connect"}
-	}
-	if peer.State == PeerRemoving {
-		return &link.QueuedMsg{Method: "remove"}
-	}
-	if peer.State != PeerConnected {
+	method := link.QueueHead(peer.State.Queue)
+	if method == "" {
 		return nil
 	}
-	if peer.PendingLimit != nil {
+	switch method {
+	case "connect":
+		return &link.QueuedMsg{Method: "connect"}
+	case "remove":
+		return &link.QueuedMsg{Method: "remove"}
+	case "set_credit_limit":
+		if peer.PendingLimit == nil {
+			return nil
+		}
 		return &link.QueuedMsg{
 			Method:  "set_credit_limit",
 			Payload: link.Enc(map[string]uint64{"amount": *peer.PendingLimit}),
 		}
-	}
-	if peer.PendingDemurrage != nil {
+	case "set_demurrage":
+		if peer.PendingDemurrage == nil {
+			return nil
+		}
 		return &link.QueuedMsg{
 			Method:  "set_demurrage",
 			Payload: link.Enc(map[string]uint64{"rate": *peer.PendingDemurrage}),
 		}
-	}
-	if peer.PendingPayment != nil {
+	case "payment":
+		if peer.PendingPayment == nil {
+			return nil
+		}
 		return &link.QueuedMsg{
 			Method:  "payment",
 			Payload: link.Enc(map[string]uint64{"amount": *peer.PendingPayment}),
@@ -314,7 +324,7 @@ func (h *Handler) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if err := h.node.AddLink(peerID); err != nil {
 		return nil, err
 	}
-	h.peers[peerID] = &Peer{State: PeerConnecting}
+	h.peers[peerID] = &Peer{State: PeerState{Status: PeerWaiting, Queue: []string{"connect"}}}
 	return link.Enc("ok"), nil
 }
 
@@ -329,10 +339,11 @@ func (h *Handler) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 	peer := h.peers[peerID]
 	if peer != nil {
 		// Existing peer — must be incoming peer_request.
-		if peer.State != PeerIncoming {
+		if peer.State.Status != PeerIncoming {
 			return nil, fmt.Errorf("peer %s is not incoming", peerID)
 		}
-		peer.State = PeerConnecting
+		peer.State.Status = PeerWaiting
+		link.Enqueue(&peer.State.Queue, "connect")
 		h.node.Kick(peerID)
 		return link.Enc("ok"), nil
 	}
@@ -340,7 +351,7 @@ func (h *Handler) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if err := h.node.AcceptLink(peerID); err != nil {
 		return nil, err
 	}
-	h.peers[peerID] = &Peer{State: PeerConnecting}
+	h.peers[peerID] = &Peer{State: PeerState{Status: PeerWaiting, Queue: []string{"connect"}}}
 	return link.Enc("ok"), nil
 }
 
@@ -355,10 +366,10 @@ func (h *Handler) rejectPeer(payload json.RawMessage) (json.RawMessage, error) {
 	peer := h.peers[peerID]
 	if peer != nil {
 		// Existing peer — must be incoming peer_request.
-		if peer.State != PeerIncoming {
+		if peer.State.Status != PeerIncoming {
 			return nil, fmt.Errorf("peer %s is not incoming", peerID)
 		}
-		peer.State = PeerRemoving
+		link.Enqueue(&peer.State.Queue, "remove")
 		h.node.Kick(peerID)
 		return link.Enc("ok"), nil
 	}
@@ -381,12 +392,12 @@ func (h *Handler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	switch peer.State {
+	switch peer.State.Status {
 	case PeerConnected:
 		delete(h.peers, peerID)
 		h.node.UnrefLink(peerID)
-	case PeerConnecting, PeerWaiting:
-		peer.State = PeerRemoving
+	case PeerWaiting:
+		link.Enqueue(&peer.State.Queue, "remove")
 		h.node.Kick(peerID)
 	default:
 		delete(h.peers, peerID)
@@ -407,13 +418,14 @@ func (h *Handler) setCreditLimit(payload json.RawMessage) (json.RawMessage, erro
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	if peer.State != PeerConnected {
+	if peer.State.Status != PeerConnected {
 		return nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if peer.PendingLimit != nil {
 		return nil, fmt.Errorf("credit limit change already pending")
 	}
 	peer.PendingLimit = &p.Amount
+	link.Enqueue(&peer.State.Queue, "set_credit_limit")
 	h.node.Kick(peerID)
 	return link.Enc("ok"), nil
 }
@@ -431,13 +443,14 @@ func (h *Handler) setDemurrage(payload json.RawMessage) (json.RawMessage, error)
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	if peer.State != PeerConnected {
+	if peer.State.Status != PeerConnected {
 		return nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if peer.PendingDemurrage != nil {
 		return nil, fmt.Errorf("demurrage change already pending")
 	}
 	peer.PendingDemurrage = &p.Rate
+	link.Enqueue(&peer.State.Queue, "set_demurrage")
 	h.node.Kick(peerID)
 	return link.Enc("ok"), nil
 }
@@ -455,7 +468,7 @@ func (h *Handler) payment(payload json.RawMessage) (json.RawMessage, error) {
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	if peer.State != PeerConnected {
+	if peer.State.Status != PeerConnected {
 		return nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if peer.PendingPayment != nil {
@@ -470,6 +483,7 @@ func (h *Handler) payment(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("insufficient credit")
 	}
 	peer.PendingPayment = &p.Amount
+	link.Enqueue(&peer.State.Queue, "payment")
 	h.node.Kick(peerID)
 	return link.Enc("ok"), nil
 }

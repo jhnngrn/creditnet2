@@ -111,58 +111,61 @@ Links and peers are separate. A link is the communication channel (link layer). 
 ### Peer state machine
 
 ```
-                     add_peer                   recv base.connect
-                    (account)                   (link already connected)
+                 add_peer / accept_peer          recv base.connect
+                                                 (link already connected)
                         |                              |
                         v                              v
                   +-----------+                  +----------+
-                  |connecting |                  | incoming  |
-                  +--+-----+--+                  +-+------+-+
-                     |      |                      |      |
-  recv base.connect  |      | resp NACK            |      |  reject_peer
-  (mutual) ---------+      +------+               |      |  (account)
-                     |              |               |      |
-       resp OK ------+              v               |      v
-                     |        +---------+           |  +---------+
-                     |        | waiting |           |  | removing |<-- remove_peer
-                     |        +----+----+           |  +----+----+    (connecting
-                     |             |                |        |         or waiting)
-                     |  recv       |                |        |
-                     |  base.connect                |        | resp ACK'd
-                     |  from peer  |                |        v
-                     |             |                |    (deleted)
-                     v             v                |
-                  +----------+                      | accept_peer
-                  |connected |                      | (account)
-                  +-----+----+                      |
-                        |                           +---> connecting
-           remove_peer  |
-           (account)    |
-                        v
-                   (deleted)
-                   + UnrefLink
+                  |  waiting  |                  | incoming  |
+                  +--+--+--+-+                  +-+------+-+
+                     |  |  |                      |      |
+  recv base.connect  |  |  |                      |      |  reject_peer
+  (mutual) ----------+  |  | remove_peer          |      |  (base.remove)
+                         |  | (base.remove)        |      |
+            resp OK -----+  +------+              |      +------+
+                         |          |              |             |
+                         |     resp OK             |        resp OK
+            resp NACK    |          |              |             |
+            (stays       |          v              |             v
+             waiting) <--+      (deleted)          |         (deleted)
+                         |                         |
+                         v                         | accept_peer
+                   +----------+                    |
+                   |connected |                    +---> waiting
+                   +-----+----+
+                         |
+            remove_peer  |
+            (account)    |
+                         v
+                    (deleted)
+                    + UnrefLink
+
+                recv base.remove
+                         |
+                         v
+                   +----------+
+                   | removed  |
+                   +----------+
 ```
 
 **States:**
 
-- **connecting** — `base.connect` queued, not yet acked.
-- **waiting** — `base.connect` was NACKed. Peer has the request (`incoming` on their side).
+- **waiting** — `base.connect` queued or NACKed. If NACKed, peer has the request (`incoming` on their side). `remove_peer` queues `base.remove`.
 - **incoming** — received `base.connect`. Awaiting local decision (`accept_peer` or `reject_peer`).
 - **connected** — bilaterally confirmed. Operations (credit limit, demurrage, payment) require this state. RefLink is called at this transition.
-- **removing** — outgoing `base.remove` in flight. Used by both `reject_peer` (incoming) and `remove_peer` (connecting/waiting).
 - **removed** — removed by peer (received `base.remove`).
 
 **Flows:**
 
-*Add peer* — `add_peer` creates a link and a peer in `connecting`. After the link connects, `base.connect` is sent. If the other side has no peer, it creates one in `incoming` and NACKs. Sender transitions to `waiting`. Acceptor calls `accept_peer` -> `connecting` -> sends `base.connect` back -> both sides `connected` (RefLink on both sides).
+*Add peer* — `add_peer` creates a link and a peer in `waiting` with `connect` queued. After the link connects, `base.connect` is sent. If the other side has no peer, it creates one in `incoming` and NACKs. Sender stays `waiting`. Acceptor calls `accept_peer` -> `waiting` + queues `connect` -> sends `base.connect` back -> both sides `connected` (RefLink on both sides).
 
-*Pre-accept* — acceptor calls `accept_peer` before `base.connect` arrives (while link is still `incoming`). This accepts the link and creates a peer in `connecting`. When the initiator's `base.connect` arrives, it finds `connecting` -> `connected` + ACK.
+*Pre-accept* — acceptor calls `accept_peer` before `base.connect` arrives (while link is still `incoming`). This accepts the link and creates a peer in `waiting` with `connect` queued. When the initiator's `base.connect` arrives, it finds `waiting` -> `connected` + ACK.
 
-*Mutual add* — both sides call `add_peer` independently. First `base.connect` to arrive finds the other side in `connecting` -> `connected` immediately.
+*Mutual add* — both sides call `add_peer` independently. First `base.connect` to arrive finds the other side in `waiting` -> `connected` immediately.
 
-*Reject* — `reject_peer` on an `incoming` peer sets `removing`, sends `base.remove`. The removed side transitions to `removed` (visible in their status). After ACK, remover deletes their peer. No UnrefLink needed — refs are only added at `connected`.
+*Reject* — `reject_peer` on an `incoming` peer queues `base.remove`. The removed side transitions to `removed` (visible in their status). After ACK, remover deletes their peer. No UnrefLink needed — refs are only added at `connected`.
 
-*Withdraw* — `remove_peer` on a `connecting` or `waiting` peer sets `removing`, sends `base.remove` to clean up the peer's `incoming`. Same mechanism as reject.
+*Withdraw* — `remove_peer` on a `waiting` peer queues `base.remove` to clean up the peer's `incoming`. Same mechanism as reject.
 
 *Anti-spam* — set `allowInvites=false` via `link.set_allow_invites` to reject incoming connections from unknown peers.
 
@@ -186,9 +189,9 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 **base namespace:**
 
-`base.connect` — declare intent to establish a peer relationship. If the other side is already in `connecting` or `waiting`, both transition to `connected` (ACK, RefLink). Otherwise a new `incoming` peer is created (NACK).
+`base.connect` — declare intent to establish a peer relationship. If the other side is already in `waiting`, both transition to `connected` (ACK, RefLink). Otherwise a new `incoming` peer is created (NACK).
 
-`base.remove` — remove a peer relationship. The removed side transitions to `removed` (visible in status). After ACK, remover deletes their peer. Handles `connecting`, `waiting` and `connected` peers on the receiver side.
+`base.remove` — remove a peer relationship. The removed side transitions to `removed` (visible in status). After ACK, remover deletes their peer. Handles `waiting` and `connected` peers on the receiver side.
 
 `base.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
 
