@@ -83,18 +83,10 @@ const (
 	Connected LinkStatus = "connected"  // bilaterally established
 )
 
-// LinkIntent — what we WANT to send next.
-type LinkIntent string
-
-const (
-	IntentConnect LinkIntent = "connect" // send link.connect
-	IntentClose   LinkIntent = "close"   // send link.close
-)
-
-// LinkState combines what the link is with what it wants to do.
+// LinkState combines what the link is with what it wants to send.
 type LinkState struct {
 	Status LinkStatus `json:"status"`
-	Intent LinkIntent `json:"intent,omitempty"`
+	Queue  []string   `json:"queue,omitempty"`
 }
 
 type QueuedMsg struct {
@@ -176,6 +168,12 @@ var (
 
 func Enc(v any) json.RawMessage { d, _ := json.Marshal(v); return d }
 func NowSecs() int64            { return time.Now().Unix() }
+
+// Queue helpers
+
+func Enqueue(q *[]string, method string) { *q = append(*q, method) }
+func Dequeue(q *[]string)                { if len(*q) > 0 { *q = (*q)[1:] } }
+func QueueHead(q []string) string        { if len(q) > 0 { return q[0] }; return "" }
 
 func SplitMethod(method string) (ns, name string) {
 	i := strings.Index(method, ".")

@@ -422,7 +422,7 @@ func (n *Node) AddLink(peer string) error {
 	}
 	lk := NewLink(n.id, peer)
 	lk.State.Status = Waiting
-	lk.State.Intent = IntentConnect
+	Enqueue(&lk.State.Queue, "connect")
 	n.links[peer] = lk
 	n.Kick(peer)
 	return nil
@@ -437,7 +437,7 @@ func (n *Node) RemoveLink(peer string) error {
 	if link.Refs > 0 {
 		return fmt.Errorf("link to %s still in use (%d refs)", peer, link.Refs)
 	}
-	link.State.Intent = IntentClose
+	Enqueue(&link.State.Queue, "close")
 	n.Kick(peer)
 	return nil
 }
@@ -452,7 +452,7 @@ func (n *Node) AcceptLink(peer string) error {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
 	link.State.Status = Waiting
-	link.State.Intent = IntentConnect
+	Enqueue(&link.State.Queue, "connect")
 	n.Kick(peer)
 	return nil
 }
@@ -466,7 +466,7 @@ func (n *Node) RejectLink(peer string) error {
 	if link.State.Status != Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	link.State.Intent = IntentClose
+	Enqueue(&link.State.Queue, "close")
 	n.Kick(peer)
 	return nil
 }

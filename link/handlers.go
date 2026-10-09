@@ -23,8 +23,8 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 	case "connect":
 		if lk.State.Status == Waiting {
 			lk.State.Status = Connected
-			if lk.State.Intent == IntentConnect {
-				lk.State.Intent = "" // mutual connect — no need to send own
+			if QueueHead(lk.State.Queue) == "connect" {
+				Dequeue(&lk.State.Queue) // mutual connect — no need to send own
 			}
 			return true, nil
 		}
@@ -54,15 +54,12 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 		}
 		// !ok: refs > 0 on peer side
 	}
-	lk.State.Intent = ""
+	Dequeue(&lk.State.Queue)
 }
 
 func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
-	switch lk.State.Intent {
-	case IntentConnect:
-		return &QueuedMsg{Method: "connect"}
-	case IntentClose:
-		return &QueuedMsg{Method: "close"}
+	if method := QueueHead(lk.State.Queue); method != "" {
+		return &QueuedMsg{Method: method}
 	}
 	return nil
 }
