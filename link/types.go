@@ -74,17 +74,6 @@ type SyncResponse struct {
 // Link — bilateral sync primitive
 // ---------------------------------------------------------------------------
 
-// LinkClaim tracks whether a handler has claimed this link.
-// Unclaimed → Acquired → Released. Once Released, the link cannot be
-// re-acquired and must be closed.
-type LinkClaim uint8
-
-const (
-	Unclaimed LinkClaim = 0 // no handler has claimed this link
-	Acquired  LinkClaim = 1 // a handler owns this link
-	Released  LinkClaim = 2 // owner released; link must close
-)
-
 // LinkStatus — what the link IS.
 type LinkStatus string
 
@@ -110,7 +99,7 @@ type Link struct {
 	State          LinkState     `json:"state"`
 	Counter        uint64        `json:"counter"`
 	TurnBit        uint64        `json:"turn_bit"`
-	Claim          LinkClaim     `json:"claim,omitempty"`
+	InUse          bool          `json:"in_use,omitempty"`
 	Pending        *QueuedMsg    `json:"pending,omitempty"`
 	CachedResponse *SyncResponse `json:"cached_response,omitempty"`
 	ReqTimestamp   int64         `json:"req_ts"`

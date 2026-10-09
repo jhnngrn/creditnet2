@@ -59,7 +59,7 @@ The link layer (`link/`) provides bilateral connections between nodes: establish
 
 Links are general-purpose channels. What runs on top (peers, payments, or something else) is determined by the handler layer. A link can exist without a peer — accepting a link and creating a peer are separate operations.
 
-Links track a `Claim` state (`Unclaimed` → `Acquired` → `Released`). Handlers call `AcquireLink` when claiming a link and `ReleaseLink` when done — base acquires when a peer reaches `connected`. `RemoveLink` and incoming `link.close` are refused while acquired. Once released, the link cannot be re-acquired and must be closed.
+Links track an `InUse` flag. Handlers call `AcquireLink` when claiming a link and `ReleaseLink` when done — base acquires when a peer reaches `connected`. `RemoveLink` and incoming `link.close` are refused while in use. `ReleaseLink` automatically queues `link.close`, ensuring the link is torn down when the handler is done with it.
 
 ### Link state machine
 

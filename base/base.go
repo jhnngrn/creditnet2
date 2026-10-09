@@ -202,9 +202,10 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 		if ok {
 			if peer.State.Status == PeerConnected {
 				h.node.ReleaseLink(peerID)
+			} else {
+				h.node.RemoveLink(peerID)
 			}
 			delete(h.peers, peerID)
-			h.node.RemoveLink(peerID)
 		}
 	case "set_credit_limit":
 		if ok && peer.PendingLimit != nil {
