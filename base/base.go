@@ -117,6 +117,7 @@ func (h *Handler) onPeerReject(peerID string) (bool, error) {
 	switch peer.State {
 	case PeerConnecting, PeerWaiting:
 		peer.State = PeerRejected
+		h.node.UnrefLink(peerID)
 		return true, nil
 	}
 	return false, nil
