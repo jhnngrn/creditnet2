@@ -74,16 +74,28 @@ type SyncResponse struct {
 // Link — bilateral sync primitive
 // ---------------------------------------------------------------------------
 
-type LinkState string
+// LinkStatus — what the link IS.
+type LinkStatus string
 
 const (
-	Waiting       LinkState = "waiting"        // connect sent, waiting for peer to connect back
-	Connecting    LinkState = "connecting"     // outgoing link.connect in flight
-	Incoming      LinkState = "incoming"       // incoming request, awaiting local acceptance
-	Connected     LinkState = "connected"      // bilaterally established
-	Removing      LinkState = "removing"       // outgoing link.remove in flight
-	Disconnecting LinkState = "disconnecting"  // outgoing link.disconnect in flight
+	Waiting   LinkStatus = "waiting"    // exists, not yet connected
+	Incoming  LinkStatus = "incoming"   // peer initiated, awaiting local decision
+	Connected LinkStatus = "connected"  // bilaterally established
 )
+
+// LinkIntent — what we WANT to send next.
+type LinkIntent string
+
+const (
+	IntentConnect  LinkIntent = "connect"  // send link.connect
+	IntentTeardown LinkIntent = "teardown" // send link.remove or link.disconnect
+)
+
+// LinkState combines what the link is with what it wants to do.
+type LinkState struct {
+	Status LinkStatus `json:"status"`
+	Intent LinkIntent `json:"intent,omitempty"`
+}
 
 type QueuedMsg struct {
 	Method  string          `json:"method"`

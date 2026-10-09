@@ -226,7 +226,7 @@ func (h *Handler) HandleResponse(peerID string, lk *link.Link, method string, pa
 // ---------------------------------------------------------------------------
 
 func (h *Handler) NextTx(peerID string, lk *link.Link) *link.QueuedMsg {
-	if lk.State != link.Connected {
+	if lk.State.Status != link.Connected {
 		return nil
 	}
 	peer := h.peers[peerID]
@@ -506,7 +506,7 @@ func (h *Handler) status() (json.RawMessage, error) {
 
 	// Show incoming invites that have no peer yet.
 	for id, l := range links {
-		if h.peers[id] == nil && l.State == link.Incoming {
+		if h.peers[id] == nil && l.State.Status == link.Incoming {
 			peers[id] = map[string]any{
 				"link_state": l.State,
 			}

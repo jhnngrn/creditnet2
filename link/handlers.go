@@ -21,13 +21,14 @@ func NewLinkHandler(n *Node) Handler {
 func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payload json.RawMessage, ts int64) (bool, error) {
 	switch method {
 	case "connect":
-		switch lk.State {
-		case Connecting, Waiting:
-			lk.State = Connected
+		if lk.State.Status == Waiting {
+			lk.State.Status = Connected
+			if lk.State.Intent == IntentConnect {
+				lk.State.Intent = "" // mutual connect — no need to send own
+			}
 			return true, nil
-		default:
-			return false, nil
 		}
+		return false, nil // Incoming → NACK (invite flow)
 
 	case "remove":
 		h.node.DeleteLink(peer)
@@ -46,14 +47,10 @@ func (h *linkHandler) HandleRequest(peer string, lk *Link, method string, payloa
 func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, payload json.RawMessage, ok bool, ts int64) {
 	switch method {
 	case "connect":
-		if lk.State == Removing {
-			break // removal in progress, don't overwrite
-		}
 		if ok {
-			lk.State = Connected
-		} else {
-			lk.State = Waiting
+			lk.State.Status = Connected
 		}
+		// !ok: stays Waiting, peer has incoming
 
 	case "remove":
 		h.node.DeleteLink(peer)
@@ -61,20 +58,22 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 	case "disconnect":
 		if ok {
 			h.node.DeleteLink(peer)
-		} else {
-			lk.State = Connected
 		}
+		// !ok: refs > 0 on peer side, stays Connected
 	}
 }
 
 func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
-	switch lk.State {
-	case Connecting:
+	switch lk.State.Intent {
+	case IntentConnect:
+		lk.State.Intent = ""
 		return &QueuedMsg{Method: "connect"}
-	case Removing:
+	case IntentTeardown:
+		lk.State.Intent = ""
+		if lk.State.Status == Connected {
+			return &QueuedMsg{Method: "disconnect"}
+		}
 		return &QueuedMsg{Method: "remove"}
-	case Disconnecting:
-		return &QueuedMsg{Method: "disconnect"}
 	}
 	return nil
 }

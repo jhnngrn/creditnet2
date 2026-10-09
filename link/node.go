@@ -204,7 +204,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 			return nil, ErrMaxLinks
 		}
 		link = NewLink(n.id, env.From)
-		link.State = Incoming
+		link.State.Status = Incoming
 		n.links[env.From] = link
 	}
 
@@ -420,8 +420,10 @@ func (n *Node) AddLink(peer string) error {
 	if len(n.links) >= MaxLinks {
 		return fmt.Errorf("max links reached")
 	}
-	n.links[peer] = NewLink(n.id, peer)
-	n.links[peer].State = Connecting
+	lk := NewLink(n.id, peer)
+	lk.State.Status = Waiting
+	lk.State.Intent = IntentConnect
+	n.links[peer] = lk
 	n.Kick(peer)
 	return nil
 }
@@ -435,14 +437,7 @@ func (n *Node) RemoveLink(peer string) error {
 	if link.Refs > 0 {
 		return fmt.Errorf("link to %s still in use (%d refs)", peer, link.Refs)
 	}
-	switch link.State {
-	case Connected:
-		link.State = Disconnecting
-	case Connecting, Waiting:
-		link.State = Removing
-	default:
-		n.DeleteLink(peer)
-	}
+	link.State.Intent = IntentTeardown
 	n.Kick(peer)
 	return nil
 }
@@ -453,10 +448,11 @@ func (n *Node) AcceptLink(peer string) error {
 	if link == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	if link.State != Incoming {
+	if link.State.Status != Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	link.State = Connecting
+	link.State.Status = Waiting
+	link.State.Intent = IntentConnect
 	n.Kick(peer)
 	return nil
 }
@@ -467,10 +463,10 @@ func (n *Node) RejectLink(peer string) error {
 	if link == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	if link.State != Incoming {
+	if link.State.Status != Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	link.State = Removing
+	link.State.Intent = IntentTeardown
 	n.Kick(peer)
 	return nil
 }
