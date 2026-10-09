@@ -16,7 +16,7 @@ type Node struct {
 	mu           sync.Mutex
 	id           string
 	links        map[string]*Link
-	inFlight     map[string]bool
+	inFlight     map[string]uint64
 	allowInvites bool
 
 	handlers      []handlerEntry
@@ -56,7 +56,7 @@ func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStor
 	return &Node{
 		id:            id,
 		links:         st.Links,
-		inFlight:      map[string]bool{},
+		inFlight:      map[string]uint64{},
 		allowInvites:  invites,
 		handlerMap:    map[string]Handler{},
 		handlerStates: st.Handlers,
@@ -232,7 +232,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		n.links[env.From] = link
 	}
 
-	collision := link.Pending != nil
+	hasPending := link.Pending != nil
 
 	// Piggybacked response.
 	if env.Resp != nil && link.Pending != nil && env.Resp.Counter == link.Counter {
@@ -252,7 +252,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrPersistFailed
 		}
-		collision = false
+		hasPending = false
 	}
 
 	// Counter checks.
@@ -269,7 +269,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		n.mu.Unlock()
 		return nil, ErrCounterAhead
 	}
-	if collision && link.Dominant() {
+	if hasPending && link.Dominant() {
 		n.mu.Unlock()
 		return nil, ErrCollision
 	}
@@ -294,9 +294,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 
 	link.Counter++
 	link.ReqTimestamp = ts
-	if collision {
-		link.Pending = nil
-	}
+	link.Pending = nil
 
 	resp := SyncResponse{Counter: env.Counter, OK: ok, Timestamp: ts}
 	link.CachedResponse = &resp
@@ -316,7 +314,11 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 func (n *Node) sendPending(peer string) {
 	n.mu.Lock()
 	link := n.links[peer]
-	if link == nil || n.inFlight[peer] {
+	if link == nil {
+		n.mu.Unlock()
+		return
+	}
+	if c, ok := n.inFlight[peer]; ok && c == link.Counter {
 		n.mu.Unlock()
 		return
 	}
@@ -330,9 +332,9 @@ func (n *Node) sendPending(peer string) {
 		link.Pending = msg
 		promoted = true
 	}
-	n.inFlight[peer] = true
-	msg := link.Pending
 	counter := link.Counter
+	n.inFlight[peer] = counter
+	msg := link.Pending
 	env := SyncRequest{
 		From: n.id, To: peer, Counter: counter,
 		Method: msg.Method, Payload: msg.Payload,
@@ -353,7 +355,9 @@ func (n *Node) sendPending(peer string) {
 	body, err := n.transport.Send(PeerDomain(peer), env)
 
 	n.mu.Lock()
-	delete(n.inFlight, peer)
+	if n.inFlight[peer] == counter {
+		delete(n.inFlight, peer)
+	}
 	if err != nil {
 		log.Printf("[link] %s->%s %s: %v", n.id, peer, msg.Method, err)
 		n.mu.Unlock()
@@ -419,7 +423,7 @@ func (n *Node) RetryPending() {
 	n.mu.Lock()
 	var kicks []string
 	for peer := range n.links {
-		if !n.inFlight[peer] {
+		if _, ok := n.inFlight[peer]; !ok {
 			kicks = append(kicks, peer)
 		}
 	}
