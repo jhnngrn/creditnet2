@@ -54,15 +54,14 @@ func (h *linkHandler) HandleResponse(peer string, lk *Link, method string, paylo
 		}
 		// !ok: refs > 0 on peer side
 	}
+	lk.State.Intent = ""
 }
 
 func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
 	switch lk.State.Intent {
 	case IntentConnect:
-		lk.State.Intent = ""
 		return &QueuedMsg{Method: "connect"}
 	case IntentClose:
-		lk.State.Intent = ""
 		return &QueuedMsg{Method: "close"}
 	}
 	return nil
