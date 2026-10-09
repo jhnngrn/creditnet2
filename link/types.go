@@ -87,8 +87,8 @@ const (
 type LinkIntent string
 
 const (
-	IntentConnect  LinkIntent = "connect"  // send link.connect
-	IntentTeardown LinkIntent = "teardown" // send link.remove or link.disconnect
+	IntentConnect LinkIntent = "connect" // send link.connect
+	IntentClose   LinkIntent = "close"   // send link.close
 )
 
 // LinkState combines what the link is with what it wants to do.

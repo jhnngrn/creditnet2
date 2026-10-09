@@ -61,7 +61,7 @@ func (h *linkHandler) NextTx(peer string, lk *Link) *QueuedMsg {
 	case IntentConnect:
 		lk.State.Intent = ""
 		return &QueuedMsg{Method: "connect"}
-	case IntentTeardown:
+	case IntentClose:
 		lk.State.Intent = ""
 		return &QueuedMsg{Method: "close"}
 	}

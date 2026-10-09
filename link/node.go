@@ -437,7 +437,7 @@ func (n *Node) RemoveLink(peer string) error {
 	if link.Refs > 0 {
 		return fmt.Errorf("link to %s still in use (%d refs)", peer, link.Refs)
 	}
-	link.State.Intent = IntentTeardown
+	link.State.Intent = IntentClose
 	n.Kick(peer)
 	return nil
 }
@@ -466,7 +466,7 @@ func (n *Node) RejectLink(peer string) error {
 	if link.State.Status != Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	link.State.Intent = IntentTeardown
+	link.State.Intent = IntentClose
 	n.Kick(peer)
 	return nil
 }
