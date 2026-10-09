@@ -33,7 +33,7 @@ Flags:
 link/                    generic bilateral sync protocol
   types.go               wire types, Link, Handler/AccountHandler interfaces
   node.go                Node: sync engine, handler dispatch, retry
-  handlers.go            linkHandler: link lifecycle (connect/disconnect/reject)
+  handlers.go            linkHandler: link lifecycle (connect/close)
 
 base/                    foundation layer — peers, credit, payments
   base.go                Handler: sync + account API for credit operations
@@ -55,60 +55,52 @@ cmd/
 
 ## Link layer
 
-The link layer (`link/`) provides bilateral connections between nodes: establishing, accepting, rejecting and disconnecting. Handlers register under a namespace and receive sync dispatch. The link handler itself is registered as `"link"`, base as `"base"`, and modules add their own namespaces.
+The link layer (`link/`) provides bilateral connections between nodes: establishing, accepting, rejecting and closing. Handlers register under a namespace and receive sync dispatch. The link handler itself is registered as `"link"`, base as `"base"`, and modules add their own namespaces.
 
 Links are general-purpose channels. What runs on top (peers, payments, or something else) is determined by the handler layer. A link can exist without a peer — accepting a link and creating a peer are separate operations.
 
-Links track a reference count (`Refs`). Handlers call `RefLink`/`UnrefLink` when claiming or releasing a link — base calls `RefLink` only when a peer reaches `connected`, so reject during establishment is always safe. `RemoveLink` and incoming `link.disconnect` are refused while refs > 0, enforcing that the application layer is wound down before a link can be disconnected.
+Links track a reference count (`Refs`). Handlers call `RefLink`/`UnrefLink` when claiming or releasing a link — base calls `RefLink` only when a peer reaches `connected`, so reject during establishment is always safe. `RemoveLink` and incoming `link.close` are refused while refs > 0, enforcing that the application layer is wound down before a link can be closed.
 
 ### Link state machine
 
 ```
-                     add_peer / AddLink         incoming link.connect
-                                                (allowInvites=true)
-                            |                        |
-                            v                        v
-                      +-----------+            +----------+
-                      |connecting |            | incoming  |
-                      +--+--+--+--+            +-+------+-+
-                         |  |  |                 |      |
-     recv link.connect   |  |  | resp NACK       |      |  link.reject_link
-     (mutual) ----------+  |  +------+          |      |  or RemoveLink
-                             |         |          |      |
-               resp OK ------+         v          |      v
-                             |    +---------+     |  +---------+
-                             |    | waiting |     |  | removing |<-- RemoveLink
-                             |    +----+----+     |  +----+----+    (connecting
-                             |         |          |        |         or waiting)
-                             |  recv   |          |        |
-                             |  link.connect      |        | resp ACK'd
-                             |  from peer         |        v
-                             |         |          |    (deleted)
-                             v         v          |
-                          +----------+            | link.accept_link
-                          |connected |            | (account)
-                          +-----+----+            |
-                                |                 +---> connecting
-                   RemoveLink   |  (refused if refs > 0)
-                                |
-                                v
-                       +--------------+
-                       |disconnecting |
-                       +------+-------+
-                              |
-                              | resp ACK'd
-                              v
-                          (deleted)
+                 add_peer / AddLink          incoming link.connect
+                                             (allowInvites=true)
+                        |                         |
+                        v                         v
+                  +-----------+             +----------+
+                  |  waiting  |             | incoming  |
+                  +--+--+--+-+             +-+------+-+
+                     |  |  |                 |      |
+  recv link.connect  |  |  |                 |      |  reject_link
+  (mutual) ----------+  |  | RemoveLink     |      |  or RemoveLink
+                         |  | (link.close)   |      |  (link.close)
+            resp OK -----+  +------+        |      +------+
+                         |          |        |             |
+                         |     resp OK       |        resp OK
+            resp NACK    |          |        |             |
+            (stays       |          v        |             v
+             waiting) <--+      (deleted)    |         (deleted)
+                         |                   |
+                         v                   | accept_link
+                   +----------+              |
+                   |connected |              +---> waiting
+                   +-----+----+
+                         |
+            RemoveLink   |  (refused while refs > 0)
+            (link.close) |
+                         |
+                    resp OK
+                         |
+                         v
+                     (deleted)
 ```
 
 **States:**
 
-- **connecting** — outgoing `link.connect` in flight. `RemoveLink` transitions to `removing`.
-- **waiting** — `link.connect` was NACKed. Peer has the invite (`incoming` on their side). `RemoveLink` transitions to `removing`.
+- **waiting** — outgoing `link.connect` queued or NACKed. If NACKed, peer has the invite (`incoming` on their side). `RemoveLink` sends `link.close`.
 - **incoming** — received `link.connect` from peer. Awaiting local decision (`link.accept_link` or `link.reject_link`).
-- **connected** — bilaterally established.
-- **removing** — outgoing `link.remove` in flight. Used by both `reject_link` (incoming) and `RemoveLink` (connecting/waiting).
-- **disconnecting** — outgoing `link.disconnect` in flight. Refused while refs > 0.
+- **connected** — bilaterally established. `RemoveLink` refused while refs > 0.
 
 ## Base layer
 
@@ -190,9 +182,7 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 `link.connect` — establish bilateral connection. Mutual add -> instant `connected`. Incoming from unknown -> `incoming` (NACKed).
 
-`link.remove` — remove a connection. Peer deletes their link, ACKs. If the peer has no link, a synthetic ACK is returned.
-
-`link.disconnect` — tear down a connection. Peer deletes their link, ACKs.
+`link.close` — close a connection. Refused while refs > 0. Peer deletes their link, ACKs. If the peer has no link, a synthetic ACK is returned.
 
 **base namespace:**
 
