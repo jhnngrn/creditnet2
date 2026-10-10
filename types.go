@@ -136,8 +136,8 @@ func NewLink(self, peer string) *Link {
 // HandleResponse returns kicks for the same purpose.
 // HandleAccount handles user-facing API calls (via /api/account).
 type Module interface {
-	HandleRequest(peer string, method string, payload json.RawMessage, ts int64) (bool, []string, error)
-	HandleResponse(peer string, method string, payload json.RawMessage, ok bool, ts int64) []string
+	HandleRequest(peer string, p *Peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
+	HandleResponse(peer string, p *Peer, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 	NextTx(peer string) *QueuedMsg
 }

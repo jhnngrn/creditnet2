@@ -118,12 +118,11 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 
 	// Register external modules from factories.
 	if len(s.factories) > 0 {
-		bh := n.moduleMap["trustline"].(*TrustlineHandler)
 		for _, f := range s.factories {
-			m := f.factory(n, bh, handlerState(raw, f.name))
+			m := f.factory(n, n.trustline, handlerState(raw, f.name))
 			n.RegisterModule(f.name, m)
 			if r, ok := m.(Reserver); ok {
-				bh.RegisterReserver(r)
+				n.trustline.RegisterReserver(r)
 			}
 		}
 	}

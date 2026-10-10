@@ -13,7 +13,7 @@ type linkHandler struct {
 	node *Node
 }
 
-func newLinkHandler(n *Node) Module {
+func newLinkHandler(n *Node) *linkHandler {
 	return &linkHandler{node: n}
 }
 

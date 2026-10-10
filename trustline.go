@@ -136,7 +136,7 @@ func (h *TrustlineHandler) onClose(peer string, lk *Link) {
 // Sync — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (h *TrustlineHandler) HandleRequest(peerID string, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (h *TrustlineHandler) HandleRequest(peerID string, p *Peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	case "set_credit_limit":
 		ok, err := h.onSetCreditLimit(peerID, payload)
@@ -215,7 +215,7 @@ func (h *TrustlineHandler) onPayment(peerID string, payload json.RawMessage, ts 
 // Sync — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *TrustlineHandler) HandleResponse(peerID string, method string, payload json.RawMessage, ok bool, ts int64) []string {
+func (h *TrustlineHandler) HandleResponse(peerID string, p *Peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	peer := h.peers[peerID]
 	if peer == nil {
 		return nil
