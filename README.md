@@ -148,7 +148,7 @@ Peers use the same `ConnectionState` pattern as links and modules — `Status` o
   (peer IntentClose)
        |
   trustline.close sent
-  peer Disconnected = true
+  peer State cleared
   (both sides)
        |
   remove_peer again
@@ -157,7 +157,7 @@ Peers use the same `ConnectionState` pattern as links and modules — `Status` o
 
 The initiator creates the `Peer` locally in `add_peer` with `IntentConnect`. After link and module connect, `trustline.connect` is sent. The receiver creates the `Peer` when `trustline.connect` arrives — if the receiver has already called `accept_peer` (which pre-sets `IntentConnect`), mutual detection connects both sides immediately. Otherwise the peer is `incoming`, awaiting `accept_peer`.
 
-Disconnection uses `trustline.close` — `remove_peer` sets `IntentClose`, the sync marks both sides as disconnected. A second `remove_peer` deletes local peer data. Links are closed separately.
+Disconnection uses `trustline.close` — `remove_peer` sets `IntentClose`, the sync clears both sides' peer State. A second `remove_peer` deletes local peer data. Links are closed separately.
 
 ### Sync protocol
 
@@ -183,7 +183,7 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 `trustline.connect` — establish bilateral peer relationship. Same `ConnectionState` pattern as `link.connect`: mutual add → instant `connected`, incoming from unknown → `incoming` (NACKed, awaiting accept).
 
-`trustline.close` — close a peer relationship. Both sides mark peer as disconnected, retaining data (balance, limits) for display until explicitly removed.
+`trustline.close` — close a peer relationship. Both sides clear peer State, retaining data (balance, limits) for display until explicitly removed.
 
 `trustline.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
 
@@ -204,7 +204,7 @@ All endpoints accept JSON `{method, payload}`.
 - `trustline.add_peer` (`{peer}`) — create link + peer with `IntentConnect`, initiates `link.connect` → `link.module` → `trustline.connect`
 - `trustline.accept_peer` (`{peer}`) — accept incoming link + module + peer (sets `IntentConnect` at all three layers)
 - `trustline.reject_peer` (`{peer}`) — reject incoming link (sends `link.close`)
-- `trustline.remove_peer` (`{peer}`) — send `trustline.close`, peer marked disconnected. Call again to delete peer data.
+- `trustline.remove_peer` (`{peer}`) — send `trustline.close`, peer State cleared. Call again to delete peer data.
 - `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
 - `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
 - `trustline.payment` (`{peer, amount}`) — send payment to peer

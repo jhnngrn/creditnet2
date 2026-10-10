@@ -16,7 +16,6 @@ import (
 type Peer struct {
 	State            link.ConnectionState `json:"state"`
 	Queue            []string             `json:"queue,omitempty"`
-	Disconnected     bool                 `json:"disconnected,omitempty"`
 	CreditLimit      int64    `json:"credit_limit"`
 	CreditLimitIn    int64    `json:"credit_limit_in"`
 	Balance          int64    `json:"balance"`
@@ -45,14 +44,14 @@ type trustlineState struct {
 // HasPeer returns true if peer is a connected trustline peer.
 func (h *TrustlineHandler) HasPeer(peer string) bool {
 	p := h.peers[peer]
-	return p != nil && !p.Disconnected
+	return p != nil && p.State.Status == link.Connected
 }
 
 // Peers returns the list of connected trustline peer IDs.
 func (h *TrustlineHandler) Peers() []string {
 	out := make([]string, 0, len(h.peers))
 	for id, p := range h.peers {
-		if !p.Disconnected {
+		if p.State.Status == link.Connected {
 			out = append(out, id)
 		}
 	}
@@ -62,7 +61,7 @@ func (h *TrustlineHandler) Peers() []string {
 // GetPeer returns the peer data for a connected peer, or nil.
 func (h *TrustlineHandler) GetPeer(peer string) *Peer {
 	p := h.peers[peer]
-	if p == nil || p.Disconnected {
+	if p == nil || p.State.Status != link.Connected {
 		return nil
 	}
 	return p
@@ -117,7 +116,7 @@ func (h *TrustlineHandler) MarshalJSON() ([]byte, error) {
 // LinkDeleted is called when a link to peer is removed.
 func (h *TrustlineHandler) LinkDeleted(peer string) {
 	if p := h.peers[peer]; p != nil {
-		p.Disconnected = true
+		p.State = link.ConnectionState{}
 	}
 }
 
@@ -133,9 +132,6 @@ func (h *TrustlineHandler) HandleRequest(peerID string, p *Peer, method string, 
 			peer = &Peer{}
 			h.peers[peerID] = peer
 		}
-		if peer.Disconnected {
-			peer.Disconnected = false
-		}
 		if peer.State.IntentConnect || peer.State.Status == link.Waiting {
 			peer.State.Status = link.Connected
 			peer.State.IntentConnect = false
@@ -148,7 +144,6 @@ func (h *TrustlineHandler) HandleRequest(peerID string, p *Peer, method string, 
 		if peer == nil {
 			return true, nil, nil // already gone
 		}
-		peer.Disconnected = true
 		peer.State = link.ConnectionState{}
 		return true, nil, nil
 	case "set_credit_limit":
@@ -172,7 +167,7 @@ func (h *TrustlineHandler) onSetCreditLimit(peerID string, payload json.RawMessa
 		return false, nil
 	}
 	peer := h.peers[peerID]
-	if peer == nil || peer.Disconnected {
+	if peer == nil || peer.State.Status != link.Connected {
 		return false, fmt.Errorf("peer not connected")
 	}
 	if p.Amount < 0 {
@@ -190,7 +185,7 @@ func (h *TrustlineHandler) onSetDemurrage(peerID string, payload json.RawMessage
 		return false, nil
 	}
 	peer := h.peers[peerID]
-	if peer == nil || peer.Disconnected {
+	if peer == nil || peer.State.Status != link.Connected {
 		return false, fmt.Errorf("peer not connected")
 	}
 	if p.Rate < 0 {
@@ -212,7 +207,7 @@ func (h *TrustlineHandler) onPayment(peerID string, payload json.RawMessage, ts 
 		return false, nil
 	}
 	peer := h.peers[peerID]
-	if peer == nil || peer.Disconnected {
+	if peer == nil || peer.State.Status != link.Connected {
 		return false, fmt.Errorf("peer not connected")
 	}
 	peer.MaterializeDemurrage(ts)
@@ -244,7 +239,6 @@ func (h *TrustlineHandler) HandleResponse(peerID string, p *Peer, method string,
 		return nil
 	case "close":
 		if ok {
-			peer.Disconnected = true
 			peer.State = link.ConnectionState{}
 		} else {
 			peer.State.IntentClose = false
@@ -360,7 +354,7 @@ func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, er
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	if peer := h.peers[peerID]; peer != nil && !peer.Disconnected {
+	if peer := h.peers[peerID]; peer != nil && peer.State.Status == link.Connected {
 		return nil, fmt.Errorf("peer %s already exists", peerID)
 	}
 	if err := h.node.AddLink(peerID); err != nil {
@@ -374,9 +368,7 @@ func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, er
 	mod := &link.ConnectionState{IntentConnect: true}
 	lk.State.Modules["trustline"] = mod
 	peer := h.peers[peerID]
-	if peer != nil {
-		peer.Disconnected = false // reconnect
-	} else {
+	if peer == nil {
 		peer = &Peer{}
 		h.peers[peerID] = peer
 	}
@@ -442,7 +434,7 @@ func (h *TrustlineHandler) removePeer(payload json.RawMessage) (json.RawMessage,
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	if peer.Disconnected {
+	if peer.State.Status != link.Connected {
 		// Already disconnected — clean up local peer data.
 		delete(h.peers, peerID)
 		return Enc("ok"), nil
@@ -465,7 +457,7 @@ func (h *TrustlineHandler) setCreditLimit(payload json.RawMessage) (json.RawMess
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	if peer.Disconnected {
+	if peer.State.Status != link.Connected {
 		return nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if p.Amount < 0 {
@@ -493,7 +485,7 @@ func (h *TrustlineHandler) setDemurrage(payload json.RawMessage) (json.RawMessag
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	if peer.Disconnected {
+	if peer.State.Status != link.Connected {
 		return nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if p.Rate < 0 {
@@ -521,7 +513,7 @@ func (h *TrustlineHandler) payment(payload json.RawMessage) (json.RawMessage, er
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	if peer.Disconnected {
+	if peer.State.Status != link.Connected {
 		return nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if peer.PendingPayment != nil {
@@ -545,12 +537,8 @@ func (h *TrustlineHandler) status() (json.RawMessage, error) {
 	now := time.Now().Unix()
 	peers := make(map[string]any)
 	for id, p := range h.peers {
-		status := "connected"
-		if p.Disconnected {
-			status = "disconnected"
-		}
 		info := map[string]any{
-			"status":            status,
+			"peer_state":        p.State,
 			"credit_limit":      p.CreditLimit,
 			"credit_limit_in":   p.CreditLimitIn,
 			"balance":           p.Balance,
