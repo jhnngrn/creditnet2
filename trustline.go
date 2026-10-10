@@ -331,9 +331,9 @@ func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, er
 	// Request trustline module on this link.
 	lk := h.node.links[peerID]
 	if lk.State.Modules == nil {
-		lk.State.Modules = map[string]*link.Handshake{}
+		lk.State.Modules = map[string]*link.Connection{}
 	}
-	mod := &link.Handshake{IntentConnect: true}
+	mod := &link.Connection{IntentConnect: true}
 	lk.State.Modules["trustline"] = mod
 	peer := h.peers[peerID]
 	if peer != nil {
@@ -360,11 +360,11 @@ func (h *TrustlineHandler) acceptPeer(payload json.RawMessage) (json.RawMessage,
 	// Request trustline module on this link.
 	lk := h.node.links[peerID]
 	if lk.State.Modules == nil {
-		lk.State.Modules = map[string]*link.Handshake{}
+		lk.State.Modules = map[string]*link.Connection{}
 	}
 	mod := lk.State.Modules["trustline"]
 	if mod == nil {
-		mod = &link.Handshake{}
+		mod = &link.Connection{}
 		lk.State.Modules["trustline"] = mod
 	}
 	mod.IntentConnect = true

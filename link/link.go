@@ -22,26 +22,26 @@ var (
 // ---------------------------------------------------------------------------
 
 // LinkStatus — what the link IS.
-type LinkStatus string
+type ConnectionStatus string
 
 const (
-	Waiting   LinkStatus = "waiting"   // proposed, awaiting peer decision
-	Incoming  LinkStatus = "incoming"  // peer proposed, awaiting local decision
-	Connected LinkStatus = "connected" // bilaterally established
+	Waiting   ConnectionStatus = "waiting"   // proposed, awaiting peer decision
+	Incoming  ConnectionStatus = "incoming"  // peer proposed, awaiting local decision
+	Connected ConnectionStatus = "connected" // bilaterally established
 )
 
-// Handshake is the bilateral negotiation primitive: what IS (Status)
-// and what to SEND next (Queue).
-type Handshake struct {
-	Status        LinkStatus `json:"status,omitempty"`
-	IntentConnect bool       `json:"intent_connect,omitempty"`
-	IntentClose   bool       `json:"intent_close,omitempty"`
+// Connection is the bilateral connection state: what IS (Status)
+// and what to DO next (IntentConnect/IntentClose).
+type Connection struct {
+	Status        ConnectionStatus `json:"status,omitempty"`
+	IntentConnect bool             `json:"intent_connect,omitempty"`
+	IntentClose   bool             `json:"intent_close,omitempty"`
 }
 
-// LinkState is a Handshake (for the link itself) plus per-module handshakes.
+// LinkState is a Connection (for the link itself) plus per-module connections.
 type LinkState struct {
-	Handshake
-	Modules map[string]*Handshake `json:"modules,omitempty"`
+	Connection
+	Modules map[string]*Connection `json:"modules,omitempty"`
 }
 
 // QueuedMsg is a message queued for sending on a link.
@@ -63,8 +63,8 @@ type Link struct {
 
 // ModuleEnabled returns true if the named module is bilaterally active on this link.
 func (l *Link) ModuleEnabled(name string) bool {
-	mod := l.State.Modules[name]
-	return mod != nil && mod.Status == Connected
+	c := l.State.Modules[name]
+	return c != nil && c.Status == Connected
 }
 
 // Dominant returns true when this side owns the current counter slot.
