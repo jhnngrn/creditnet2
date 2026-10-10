@@ -32,8 +32,9 @@ const (
 
 // LinkState combines what the link is with what it wants to send.
 type LinkState struct {
-	Status LinkStatus `json:"status"`
-	Queue  []string   `json:"queue,omitempty"`
+	Status  LinkStatus            `json:"status"`
+	Queue   []string              `json:"queue,omitempty"`
+	Modules map[string]LinkStatus `json:"modules,omitempty"`
 }
 
 // QueuedMsg is a message queued for sending on a link.
@@ -44,19 +45,18 @@ type QueuedMsg struct {
 
 // Link holds the sync state for a bilateral connection.
 type Link struct {
-	State          LinkState       `json:"state"`
-	Counter        uint64          `json:"counter"`
-	TurnBit        uint64          `json:"turn_bit"`
-	Modules        map[string]LinkStatus `json:"modules,omitempty"` // waiting/incoming/connected
-	Pending        *QueuedMsg      `json:"pending,omitempty"`
-	CachedResponse *SyncResponse   `json:"cached_response,omitempty"`
-	ReqTimestamp   int64           `json:"req_ts"`
-	RespTimestamp  int64           `json:"resp_ts"`
+	State          LinkState     `json:"state"`
+	Counter        uint64        `json:"counter"`
+	TurnBit        uint64        `json:"turn_bit"`
+	Pending        *QueuedMsg    `json:"pending,omitempty"`
+	CachedResponse *SyncResponse `json:"cached_response,omitempty"`
+	ReqTimestamp   int64         `json:"req_ts"`
+	RespTimestamp  int64         `json:"resp_ts"`
 }
 
 // ModuleEnabled returns true if the named module is bilaterally active on this link.
 func (l *Link) ModuleEnabled(name string) bool {
-	return l.Modules[name] == Connected
+	return l.State.Modules[name] == Connected
 }
 
 // Dominant returns true when this side owns the current counter slot.

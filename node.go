@@ -486,8 +486,7 @@ func (n *Node) Status() json.RawMessage {
 	links := make(map[string]any)
 	for peer, l := range n.links {
 		links[peer] = map[string]any{
-			"state":   l.State,
-			"modules": l.Modules,
+			"state": l.State,
 		}
 	}
 	return Enc(map[string]any{

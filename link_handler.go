@@ -118,17 +118,17 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 	if _, supported := h.node.moduleMap[p.Name]; !supported {
 		return false, nil, nil // we don't speak this module
 	}
-	if lk.Modules == nil {
-		lk.Modules = map[string]link.LinkStatus{}
+	if lk.State.Modules == nil {
+		lk.State.Modules = map[string]link.LinkStatus{}
 	}
 	// Check if we have a pending proposal in queue (mutual).
 	if h.hasQueuedModule(lk, p.Name) {
 		h.dequeueModule(lk, p.Name)
-		lk.Modules[p.Name] = link.Connected
+		lk.State.Modules[p.Name] = link.Connected
 		return true, nil, nil
 	}
 	// Mark as incoming — awaiting local accept/reject.
-	lk.Modules[p.Name] = link.Incoming
+	lk.State.Modules[p.Name] = link.Incoming
 	return false, nil, nil // NACK — not accepted yet
 }
 
@@ -139,13 +139,13 @@ func (h *linkHandler) respModule(lk *link.Link, payload json.RawMessage, ok bool
 	if json.Unmarshal(payload, &p) != nil {
 		return
 	}
-	if lk.Modules == nil {
-		lk.Modules = map[string]link.LinkStatus{}
+	if lk.State.Modules == nil {
+		lk.State.Modules = map[string]link.LinkStatus{}
 	}
 	if ok {
-		lk.Modules[p.Name] = link.Connected
+		lk.State.Modules[p.Name] = link.Connected
 	} else {
-		lk.Modules[p.Name] = link.Waiting
+		lk.State.Modules[p.Name] = link.Waiting
 	}
 }
 
@@ -161,10 +161,10 @@ func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, er
 	if lk == nil {
 		return nil, fmt.Errorf("no link to %s", p.Peer)
 	}
-	if lk.Modules[p.Module] != link.Incoming {
+	if lk.State.Modules[p.Module] != link.Incoming {
 		return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 	}
-	delete(lk.Modules, p.Module)
+	delete(lk.State.Modules, p.Module)
 	link.Enqueue(&lk.State.Queue, "module:"+p.Module)
 	h.node.Kick(p.Peer)
 	return Enc("ok"), nil
@@ -182,10 +182,10 @@ func (h *linkHandler) rejectModule(payload json.RawMessage) (json.RawMessage, er
 	if lk == nil {
 		return nil, fmt.Errorf("no link to %s", p.Peer)
 	}
-	if lk.Modules[p.Module] != link.Incoming {
+	if lk.State.Modules[p.Module] != link.Incoming {
 		return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 	}
-	delete(lk.Modules, p.Module)
+	delete(lk.State.Modules, p.Module)
 	return Enc("ok"), nil
 }
 
