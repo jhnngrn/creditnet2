@@ -47,7 +47,7 @@ type Link struct {
 	State          LinkState       `json:"state"`
 	Counter        uint64          `json:"counter"`
 	TurnBit        uint64          `json:"turn_bit"`
-	Modules        map[string]bool `json:"modules,omitempty"` // false=pending, true=active
+	Modules        map[string]LinkStatus `json:"modules,omitempty"` // waiting/incoming/connected
 	Pending        *QueuedMsg      `json:"pending,omitempty"`
 	CachedResponse *SyncResponse   `json:"cached_response,omitempty"`
 	ReqTimestamp   int64           `json:"req_ts"`
@@ -56,7 +56,7 @@ type Link struct {
 
 // ModuleEnabled returns true if the named module is bilaterally active on this link.
 func (l *Link) ModuleEnabled(name string) bool {
-	return l.Modules[name] // true only if present and true
+	return l.Modules[name] == Connected
 }
 
 // Dominant returns true when this side owns the current counter slot.
