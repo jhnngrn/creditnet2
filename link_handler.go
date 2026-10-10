@@ -81,28 +81,6 @@ func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (jso
 		}
 		h.node.SetAllowInvites(p.Enabled)
 		return Enc("ok"), nil
-	case "accept_link":
-		var p struct {
-			Peer string `json:"peer"`
-		}
-		if err := json.Unmarshal(payload, &p); err != nil {
-			return nil, fmt.Errorf("bad request")
-		}
-		if err := h.node.AcceptLink(p.Peer); err != nil {
-			return nil, err
-		}
-		return Enc("ok"), nil
-	case "reject_link":
-		var p struct {
-			Peer string `json:"peer"`
-		}
-		if err := json.Unmarshal(payload, &p); err != nil {
-			return nil, fmt.Errorf("bad request")
-		}
-		if err := h.node.RejectLink(p.Peer); err != nil {
-			return nil, err
-		}
-		return Enc("ok"), nil
 	case "status":
 		return h.node.Status(), nil
 	}
