@@ -220,9 +220,6 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	if env.Resp != nil && lk.Pending != nil && env.Resp.Counter == lk.Counter {
 		pbKicks := n.dispatchResponse(env.From, lk.Pending, env.Resp)
 		lk.AcceptResponse(env.Resp.Timestamp)
-		if n.links[env.From] != nil {
-			lk.Pending = n.nextTx(env.From)
-		}
 		n.Commit()
 		for _, k := range pbKicks {
 			n.Kick(k)
