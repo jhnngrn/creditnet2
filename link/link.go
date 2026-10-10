@@ -32,9 +32,10 @@ const (
 
 // LinkState combines what the link is with what it wants to send.
 type LinkState struct {
-	Status  LinkStatus            `json:"status"`
-	Queue   []string              `json:"queue,omitempty"`
-	Modules map[string]LinkStatus `json:"modules,omitempty"`
+	Status      LinkStatus            `json:"status"`
+	Queue       []string              `json:"queue,omitempty"`
+	ModuleQueue []string              `json:"module_queue,omitempty"`
+	Modules     map[string]LinkStatus `json:"modules,omitempty"`
 }
 
 // QueuedMsg is a message queued for sending on a link.

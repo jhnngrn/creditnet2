@@ -3,7 +3,6 @@ package creditnet
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"creditnet/link"
 )
@@ -50,37 +49,36 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 		if ok {
 			lk.State.Status = link.Connected
 		}
-		// !ok: stays Waiting, peer has incoming
+		link.Dequeue(&lk.State.Queue)
 
 	case "close":
 		if ok {
 			h.node.DeleteLink(peer)
 			return nil
 		}
-		// !ok: refs > 0 on peer side
+		link.Dequeue(&lk.State.Queue)
 
 	case "module":
 		h.respModule(lk, payload, ok)
+		link.Dequeue(&lk.State.ModuleQueue)
 	}
-	link.Dequeue(&lk.State.Queue)
 	return nil
 }
 
 func (h *linkHandler) NextTx(peer string) *link.QueuedMsg {
 	lk := h.node.links[peer]
-	method := link.QueueHead(lk.State.Queue)
-	if method == "" {
-		return nil
+	// Link operations first (connect/close).
+	if method := link.QueueHead(lk.State.Queue); method != "" {
+		return &link.QueuedMsg{Method: method}
 	}
-	// Module proposal from queue (e.g. "module:trustline").
-	if name, ok := strings.CutPrefix(method, "module:"); ok {
+	// Module proposals.
+	if name := link.QueueHead(lk.State.ModuleQueue); name != "" {
 		return &link.QueuedMsg{
 			Method:  "module",
 			Payload: Enc(map[string]string{"name": name}),
 		}
 	}
-	// Link queue (connect/close).
-	return &link.QueuedMsg{Method: method}
+	return nil
 }
 
 func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
@@ -165,7 +163,7 @@ func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, er
 		return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 	}
 	delete(lk.State.Modules, p.Module)
-	link.Enqueue(&lk.State.Queue, "module:"+p.Module)
+	link.Enqueue(&lk.State.ModuleQueue, p.Module)
 	h.node.Kick(p.Peer)
 	return Enc("ok"), nil
 }
@@ -189,23 +187,21 @@ func (h *linkHandler) rejectModule(payload json.RawMessage) (json.RawMessage, er
 	return Enc("ok"), nil
 }
 
-// hasQueuedModule checks if a module proposal is pending in the link queue.
+// hasQueuedModule checks if a module proposal is pending in the module queue.
 func (h *linkHandler) hasQueuedModule(lk *link.Link, name string) bool {
-	entry := "module:" + name
-	for _, q := range lk.State.Queue {
-		if q == entry {
+	for _, m := range lk.State.ModuleQueue {
+		if m == name {
 			return true
 		}
 	}
 	return false
 }
 
-// dequeueModule removes a module proposal from the link queue.
+// dequeueModule removes a module proposal from the module queue.
 func (h *linkHandler) dequeueModule(lk *link.Link, name string) {
-	entry := "module:" + name
-	for i, q := range lk.State.Queue {
-		if q == entry {
-			lk.State.Queue = append(lk.State.Queue[:i], lk.State.Queue[i+1:]...)
+	for i, m := range lk.State.ModuleQueue {
+		if m == name {
+			lk.State.ModuleQueue = append(lk.State.ModuleQueue[:i], lk.State.ModuleQueue[i+1:]...)
 			return
 		}
 	}
