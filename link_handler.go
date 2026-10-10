@@ -23,9 +23,9 @@ func (h *linkHandler) HandleRequest(peer string, method string, payload json.Raw
 	lk := h.node.links[peer]
 	switch method {
 	case "connect":
-		if link.QueueHead(lk.State.Queue) == "connect" || lk.State.Status == link.Waiting {
+		if lk.State.IntentConnect || lk.State.Status == link.Waiting {
 			lk.State.Status = link.Connected
-			link.Dequeue(&lk.State.Queue)
+			lk.State.IntentConnect = false
 			return true, nil, nil
 		}
 		return false, nil, nil // Incoming → NACK (invite flow)
@@ -49,14 +49,14 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 		} else {
 			lk.State.Status = link.Waiting
 		}
-		link.Dequeue(&lk.State.Queue)
+		lk.State.IntentConnect = false
 
 	case "close":
 		if ok {
 			h.node.DeleteLink(peer)
 			return nil
 		}
-		link.Dequeue(&lk.State.Queue)
+		lk.State.IntentClose = false
 
 	case "module":
 		h.respModule(lk, payload, ok)
@@ -66,14 +66,17 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 
 func (h *linkHandler) NextTx(peer string) *link.QueuedMsg {
 	lk := h.node.links[peer]
-	// Link lifecycle from queue.
-	if method := link.QueueHead(lk.State.Queue); method != "" {
-		return &link.QueuedMsg{Method: method}
+	// Link lifecycle.
+	if lk.State.IntentClose {
+		return &link.QueuedMsg{Method: "close"}
+	}
+	if lk.State.IntentConnect {
+		return &link.QueuedMsg{Method: "connect"}
 	}
 	// Module proposals (only when connected).
 	if lk.State.Status == link.Connected {
 		for name, mod := range lk.State.Modules {
-			if link.QueueHead(mod.Queue) != "" {
+			if mod.IntentConnect {
 				return &link.QueuedMsg{
 					Method:  "module",
 					Payload: Enc(map[string]string{"name": name}),
@@ -124,9 +127,9 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 	}
 	mod := lk.State.Modules[p.Name]
 	// Mutual — we also want this module.
-	if mod != nil && (link.QueueHead(mod.Queue) == "connect" || mod.Status == link.Waiting) {
+	if mod != nil && (mod.IntentConnect || mod.Status == link.Waiting) {
 		mod.Status = link.Connected
-		link.Dequeue(&mod.Queue)
+		mod.IntentConnect = false
 		return true, nil, nil
 	}
 	// Mark as incoming — awaiting local accept/reject.
@@ -154,7 +157,7 @@ func (h *linkHandler) respModule(lk *link.Link, payload json.RawMessage, ok bool
 	} else {
 		mod.Status = link.Waiting
 	}
-	link.Dequeue(&mod.Queue)
+	mod.IntentConnect = false
 }
 
 func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, error) {
@@ -174,7 +177,7 @@ func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, er
 		return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 	}
 	mod.Status = ""
-	link.Enqueue(&mod.Queue, "connect")
+	mod.IntentConnect = true
 	h.node.Kick(p.Peer)
 	return Enc("ok"), nil
 }

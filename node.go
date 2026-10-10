@@ -431,7 +431,7 @@ func (n *Node) AddLink(peer string) error {
 		return fmt.Errorf("max links reached")
 	}
 	lk := link.NewLink(n.id, peer)
-	link.Enqueue(&lk.State.Queue, "connect")
+	lk.State.IntentConnect = true
 	n.links[peer] = lk
 	n.Kick(peer)
 	return nil
@@ -443,7 +443,7 @@ func (n *Node) RemoveLink(peer string) error {
 	if lk == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	link.Enqueue(&lk.State.Queue, "close")
+	lk.State.IntentClose = true
 	n.Kick(peer)
 	return nil
 }
@@ -458,7 +458,7 @@ func (n *Node) AcceptLink(peer string) error {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
 	lk.State.Status = ""
-	link.Enqueue(&lk.State.Queue, "connect")
+	lk.State.IntentConnect = true
 	n.Kick(peer)
 	return nil
 }
@@ -472,7 +472,7 @@ func (n *Node) RejectLink(peer string) error {
 	if lk.State.Status != link.Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	link.Enqueue(&lk.State.Queue, "close")
+	lk.State.IntentClose = true
 	n.Kick(peer)
 	return nil
 }

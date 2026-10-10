@@ -33,8 +33,9 @@ const (
 // Handshake is the bilateral negotiation primitive: what IS (Status)
 // and what to SEND next (Queue).
 type Handshake struct {
-	Status LinkStatus `json:"status,omitempty"`
-	Queue  []string   `json:"queue,omitempty"`
+	Status        LinkStatus `json:"status,omitempty"`
+	IntentConnect bool       `json:"intent_connect,omitempty"`
+	IntentClose   bool       `json:"intent_close,omitempty"`
 }
 
 // LinkState is a Handshake (for the link itself) plus per-module handshakes.

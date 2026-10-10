@@ -333,8 +333,7 @@ func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, er
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]*link.Handshake{}
 	}
-	mod := &link.Handshake{}
-	link.Enqueue(&mod.Queue, "connect")
+	mod := &link.Handshake{IntentConnect: true}
 	lk.State.Modules["trustline"] = mod
 	peer := h.peers[peerID]
 	if peer != nil {
@@ -368,7 +367,7 @@ func (h *TrustlineHandler) acceptPeer(payload json.RawMessage) (json.RawMessage,
 		mod = &link.Handshake{}
 		lk.State.Modules["trustline"] = mod
 	}
-	link.Enqueue(&mod.Queue, "connect")
+	mod.IntentConnect = true
 	h.node.Kick(peerID)
 	return Enc("ok"), nil
 }
