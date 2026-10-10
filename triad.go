@@ -1,0 +1,467 @@
+package creditnet
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// ---------------------------------------------------------------------------
+// Triad — three-party novation to eliminate circular debt
+// ---------------------------------------------------------------------------
+
+const (
+	MaxNovPerLink  = 3
+	MaxAmount      = uint64(1<<63 - 1)
+	NovateInterval = 5 * time.Minute
+)
+
+// Novation tracks a single three-party novation in progress.
+type Novation struct {
+	Amount  uint64   `json:"amount"`
+	Role    string   `json:"role"` // "intermediary", "debtor", "creditor"
+	InPeer  string   `json:"in_peer,omitempty"`
+	OutPeer string   `json:"out_peer,omitempty"`
+	Queue   []string `json:"queue,omitempty"`
+}
+
+func (n *Novation) pendingPeer() string {
+	if QueueHead(n.Queue) == "rollback" {
+		return n.InPeer
+	}
+	return n.OutPeer
+}
+
+type novCommitMsg struct {
+	NovationID   string `json:"novation_id"`
+	Debtor       string `json:"debtor"`
+	Intermediary string `json:"intermediary"`
+	Creditor     string `json:"creditor"`
+	Amount       uint64 `json:"amount"`
+}
+
+type novFinalizeMsg struct {
+	NovationID string `json:"novation_id"`
+}
+
+// TriadHandler implements Module and Reserver for novation.
+type TriadHandler struct {
+	Novations map[string]*Novation `json:"novations,omitempty"`
+	node      *Node
+	reader    TrustlineReader
+}
+
+// NewTriadHandler matches the ModuleFactory signature.
+func NewTriadHandler(n *Node, reader TrustlineReader, state json.RawMessage) Module {
+	h := &TriadHandler{
+		Novations: map[string]*Novation{},
+		node:      n,
+		reader:    reader,
+	}
+	if state != nil {
+		json.Unmarshal(state, h)
+	}
+	if h.Novations == nil {
+		h.Novations = map[string]*Novation{}
+	}
+	go h.novateLoop()
+	return h
+}
+
+// ---------------------------------------------------------------------------
+// Reserver — reports capacity reserved by in-flight novations
+// ---------------------------------------------------------------------------
+
+func (h *TriadHandler) Reserved(peer string) (in, out int64) {
+	for _, nov := range h.Novations {
+		if nov.InPeer == peer {
+			in += int64(nov.Amount)
+		}
+		if nov.OutPeer == peer {
+			out += int64(nov.Amount)
+		}
+	}
+	return
+}
+
+// ---------------------------------------------------------------------------
+// Module — HandleRequest
+// ---------------------------------------------------------------------------
+
+func (h *TriadHandler) HandleRequest(peer string, p *Peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+	switch method {
+	case "commit":
+		return h.reqCommit(peer, p, payload)
+	case "finalize":
+		return h.reqFinalize(peer, p, payload, ts)
+	case "rollback":
+		return h.reqRollback(peer, payload)
+	}
+	return false, nil, ErrBadMethod
+}
+
+func (h *TriadHandler) reqCommit(peer string, p *Peer, raw json.RawMessage) (bool, []string, error) {
+	var m novCommitMsg
+	if json.Unmarshal(raw, &m) != nil {
+		return false, nil, fmt.Errorf("bad payload")
+	}
+	if m.Amount == 0 || m.Amount > MaxAmount {
+		return false, nil, nil
+	}
+
+	switch h.node.ID() {
+	case m.Debtor:
+		// Commit from intermediary — I am debtor, forwarding to creditor.
+		if peer != m.Intermediary {
+			return false, nil, nil
+		}
+		// Check I owe intermediary enough: -eff - inReservations >= amount.
+		bwIn, _ := h.reader.Bandwidth(peer)
+		if bwIn-p.CreditLimit < int64(m.Amount) {
+			return false, nil, nil
+		}
+		if h.Novations[m.NovationID] != nil || !h.reader.HasPeer(m.Creditor) {
+			return false, nil, nil
+		}
+		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Creditor) >= MaxNovPerLink {
+			return false, nil, nil
+		}
+		h.Novations[m.NovationID] = &Novation{
+			Amount: m.Amount, Role: "debtor",
+			InPeer: peer, OutPeer: m.Creditor,
+			Queue: []string{"commit"},
+		}
+		return true, []string{m.Creditor}, nil
+
+	case m.Creditor:
+		// Commit from debtor — I am creditor, forwarding to intermediary.
+		if peer != m.Debtor {
+			return false, nil, nil
+		}
+		// Check incoming bandwidth from debtor (room for finalize balance increase).
+		bwIn, _ := h.reader.Bandwidth(peer)
+		if bwIn < int64(m.Amount) {
+			return false, nil, nil
+		}
+		// Check link to intermediary and outgoing debt to intermediary.
+		iPeer := h.reader.GetPeer(m.Intermediary)
+		if iPeer == nil {
+			return false, nil, nil
+		}
+		_, bwOut := h.reader.Bandwidth(m.Intermediary)
+		if bwOut-iPeer.CreditLimitIn < int64(m.Amount) {
+			return false, nil, nil
+		}
+		if h.Novations[m.NovationID] != nil {
+			return false, nil, nil
+		}
+		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Intermediary) >= MaxNovPerLink {
+			return false, nil, nil
+		}
+		h.Novations[m.NovationID] = &Novation{
+			Amount: m.Amount, Role: "creditor",
+			InPeer: peer, OutPeer: m.Intermediary,
+			Queue: []string{"commit"},
+		}
+		return true, []string{m.Intermediary}, nil
+
+	case m.Intermediary:
+		// Commit confirmation from creditor — all three committed, start finalize.
+		if peer != m.Creditor {
+			return false, nil, nil
+		}
+		nov := h.Novations[m.NovationID]
+		if nov == nil || nov.Role != "intermediary" {
+			return false, nil, nil
+		}
+		Enqueue(&nov.Queue, "finalize")
+		return true, []string{nov.OutPeer}, nil
+	}
+	return false, nil, nil
+}
+
+func (h *TriadHandler) reqFinalize(peer string, p *Peer, raw json.RawMessage, ts int64) (bool, []string, error) {
+	var m novFinalizeMsg
+	if json.Unmarshal(raw, &m) != nil {
+		return false, nil, fmt.Errorf("bad payload")
+	}
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
+		return false, nil, fmt.Errorf("novation %s not found", m.NovationID)
+	}
+	if nov.InPeer != peer {
+		return false, nil, fmt.Errorf("wrong peer")
+	}
+	p.AddBalance(int64(nov.Amount), ts)
+	nov.InPeer = ""
+	var kicks []string
+	if nov.OutPeer != "" {
+		Enqueue(&nov.Queue, "finalize")
+		kicks = []string{nov.OutPeer}
+	}
+	if nov.InPeer == "" && nov.OutPeer == "" {
+		delete(h.Novations, m.NovationID)
+	}
+	return true, kicks, nil
+}
+
+func (h *TriadHandler) reqRollback(peer string, raw json.RawMessage) (bool, []string, error) {
+	var m struct {
+		NovationID string `json:"novation_id"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return false, nil, fmt.Errorf("bad payload")
+	}
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
+		return false, nil, fmt.Errorf("unknown novation %s", m.NovationID)
+	}
+	if nov.OutPeer != peer {
+		return false, nil, fmt.Errorf("wrong peer")
+	}
+	if nov.Role == "intermediary" {
+		delete(h.Novations, m.NovationID)
+		return true, nil, nil
+	}
+	Enqueue(&nov.Queue, "rollback")
+	return true, []string{nov.InPeer}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Module — HandleResponse
+// ---------------------------------------------------------------------------
+
+func (h *TriadHandler) HandleResponse(peer string, p *Peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
+	switch method {
+	case "commit":
+		return h.respCommit(payload, ok)
+	case "finalize":
+		h.respFinalize(p, payload, ts)
+	case "rollback":
+		h.respRollback(payload)
+	}
+	return nil
+}
+
+func (h *TriadHandler) respCommit(raw json.RawMessage, ok bool) []string {
+	var m novCommitMsg
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
+		return nil
+	}
+	Dequeue(&nov.Queue)
+	if !ok {
+		if nov.Role == "intermediary" {
+			delete(h.Novations, m.NovationID)
+			return nil
+		}
+		Enqueue(&nov.Queue, "rollback")
+		return []string{nov.InPeer}
+	}
+	return nil
+}
+
+func (h *TriadHandler) respFinalize(p *Peer, raw json.RawMessage, ts int64) {
+	var m novFinalizeMsg
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
+		return
+	}
+	Dequeue(&nov.Queue)
+	p.AddBalance(-int64(nov.Amount), ts)
+	nov.OutPeer = ""
+	if nov.InPeer == "" {
+		delete(h.Novations, m.NovationID)
+	}
+}
+
+func (h *TriadHandler) respRollback(raw json.RawMessage) {
+	var m struct {
+		NovationID string `json:"novation_id"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	delete(h.Novations, m.NovationID)
+}
+
+// ---------------------------------------------------------------------------
+// Module — NextTx
+// ---------------------------------------------------------------------------
+
+func (h *TriadHandler) NextTx(peer string) *QueuedMsg {
+	for id, nov := range h.Novations {
+		if len(nov.Queue) > 0 && nov.pendingPeer() == peer {
+			return h.buildMsg(id, nov)
+		}
+	}
+	return nil
+}
+
+func (h *TriadHandler) buildMsg(id string, nov *Novation) *QueuedMsg {
+	switch QueueHead(nov.Queue) {
+	case "commit":
+		var d, i, c string
+		switch nov.Role {
+		case "intermediary":
+			d, i, c = nov.OutPeer, h.node.ID(), nov.InPeer
+		case "debtor":
+			d, i, c = h.node.ID(), nov.InPeer, nov.OutPeer
+		case "creditor":
+			d, i, c = nov.InPeer, nov.OutPeer, h.node.ID()
+		}
+		return &QueuedMsg{
+			Method:  "commit",
+			Payload: Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}),
+		}
+	case "finalize":
+		return &QueuedMsg{
+			Method:  "finalize",
+			Payload: Enc(novFinalizeMsg{NovationID: id}),
+		}
+	case "rollback":
+		return &QueuedMsg{
+			Method:  "rollback",
+			Payload: Enc(map[string]string{"novation_id": id}),
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Module — HandleAccount
+// ---------------------------------------------------------------------------
+
+func (h *TriadHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+	switch method {
+	case "status":
+		return Enc(map[string]any{"novations": len(h.Novations)}), nil
+	}
+	return nil, ErrBadMethod
+}
+
+// ---------------------------------------------------------------------------
+// Background novation loop
+// ---------------------------------------------------------------------------
+
+func (h *TriadHandler) novateLoop() {
+	ticker := time.NewTicker(NovateInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.node.Lock()
+		changed := h.cleanStale()
+		kicks := h.tryNovate()
+		if changed || len(kicks) > 0 {
+			h.node.Commit()
+		}
+		h.node.Unlock()
+		for _, k := range kicks {
+			h.node.Kick(k)
+		}
+	}
+}
+
+// cleanStale removes novation references to peers that are no longer connected.
+func (h *TriadHandler) cleanStale() bool {
+	changed := false
+	for id, nov := range h.Novations {
+		if nov.InPeer != "" && !h.reader.HasPeer(nov.InPeer) {
+			nov.InPeer = ""
+			changed = true
+		}
+		if nov.OutPeer != "" && !h.reader.HasPeer(nov.OutPeer) {
+			nov.OutPeer = ""
+			nov.Queue = nil
+			changed = true
+		}
+		if nov.InPeer == "" && nov.OutPeer == "" {
+			delete(h.Novations, id)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// tryNovate scans for circular debt and initiates novations as intermediary.
+func (h *TriadHandler) tryNovate() []string {
+	var kicks []string
+	peers := h.reader.Peers()
+	for _, debtor := range peers {
+		dPeer := h.reader.GetPeer(debtor)
+		if dPeer == nil {
+			continue
+		}
+		// avlD = eff(debtor) - outReservations: how much debtor owes us, unreserved.
+		_, dOut := h.reader.Bandwidth(debtor)
+		avlD := dOut - dPeer.CreditLimitIn
+		if avlD <= 0 || h.novLinkCount(debtor) >= MaxNovPerLink {
+			continue
+		}
+		for _, creditor := range peers {
+			if creditor == debtor {
+				continue
+			}
+			cPeer := h.reader.GetPeer(creditor)
+			if cPeer == nil {
+				continue
+			}
+			// avlC = -eff(creditor) - inReservations: how much we owe creditor, unreserved.
+			cIn, _ := h.reader.Bandwidth(creditor)
+			avlC := cIn - cPeer.CreditLimit
+			if avlC <= 0 || h.novLinkCount(creditor) >= MaxNovPerLink {
+				continue
+			}
+			amount := avlD
+			if avlC < amount {
+				amount = avlC
+			}
+			if amount <= 0 {
+				continue
+			}
+			novID := randomNovationID()
+			h.Novations[novID] = &Novation{
+				Amount:  uint64(amount),
+				Role:    "intermediary",
+				InPeer:  creditor,
+				OutPeer: debtor,
+				Queue:   []string{"commit"},
+			}
+			kicks = append(kicks, debtor)
+			avlD -= amount
+			if avlD <= 0 {
+				break
+			}
+		}
+	}
+	return kicks
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+func (h *TriadHandler) novLinkCount(peer string) int {
+	c := 0
+	for _, n := range h.Novations {
+		if n.InPeer == peer || n.OutPeer == peer {
+			c++
+		}
+	}
+	return c
+}
+
+func randomNovationID() string {
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	h := sha256.Sum256(nonce)
+	return hex.EncodeToString(h[:])
+}
