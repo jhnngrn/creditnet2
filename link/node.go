@@ -272,13 +272,13 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 	}
 
 	hasPending := link.Pending != nil
-	var extraKicks []string
 
 	// Piggybacked response.
 	if env.Resp != nil && link.Pending != nil && env.Resp.Counter == link.Counter {
 		pns, pmethod := SplitMethod(link.Pending.Method)
+		var pbKicks []string
 		if ph := n.handlerMap[pns]; ph != nil {
-			extraKicks = append(extraKicks, ph.HandleResponse(env.From, pmethod, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)...)
+			pbKicks = ph.HandleResponse(env.From, pmethod, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
 		}
 		link.Counter++
 		link.RespTimestamp = env.Resp.Timestamp
@@ -291,6 +291,11 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		if err := n.Commit(); err != nil {
 			n.mu.Unlock()
 			return nil, ErrPersistFailed
+		}
+		// Piggyback committed — dispatch its kicks now so they aren't
+		// lost if the request part below returns an error.
+		for _, k := range pbKicks {
+			n.Kick(k)
 		}
 		hasPending = false
 	}
@@ -331,7 +336,6 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		n.mu.Unlock()
 		return nil, reqErr
 	}
-	extraKicks = append(extraKicks, kicks...)
 
 	link.Counter++
 	link.ReqTimestamp = ts
@@ -345,7 +349,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 	}
 	n.mu.Unlock()
 	n.Kick(env.From)
-	for _, k := range extraKicks {
+	for _, k := range kicks {
 		n.Kick(k)
 	}
 	return &resp, nil
