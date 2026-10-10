@@ -85,8 +85,9 @@ func (a *nodeStoreAdapter) Load(id string) (json.RawMessage, error) {
 // ---------------------------------------------------------------------------
 
 // HandlerFactory creates a module handler for a newly loaded or created node.
-// The base handler is provided so modules can query peer state.
-type HandlerFactory func(n *link.Node, b *base.Handler) link.Handler
+// Modules receive a PeerView for querying trustline state and a BandwidthFunc
+// for checking available capacity (accounting for all reservations).
+type HandlerFactory func(n *link.Node, peers base.PeerView, bw base.BandwidthFunc) link.Handler
 
 type handlerReg struct {
 	name    string
@@ -134,8 +135,21 @@ func (s *Server) newNode(id string, raw json.RawMessage) *link.Node {
 	n.RegisterHandler("link", link.NewLinkHandler(n))
 	bh := base.NewHandler(n)
 	n.RegisterHandler("trustline", bh)
+
+	bw := func(peer string) (in, out int64) {
+		p := bh.GetPeer(peer)
+		if p == nil {
+			return 0, 0
+		}
+		eff := p.EffectiveBalance(time.Now().Unix())
+		ri, ro := n.SumReserved(peer)
+		in = p.CreditLimit - eff - ri
+		out = p.CreditLimitIn + eff - ro
+		return
+	}
+
 	for _, f := range s.factories {
-		n.RegisterHandler(f.name, f.factory(n, bh))
+		n.RegisterHandler(f.name, f.factory(n, bh, bw))
 	}
 	return n
 }

@@ -28,6 +28,22 @@ type Peer struct {
 }
 
 // ---------------------------------------------------------------------------
+// PeerView — read-only access to peer data for modules
+// ---------------------------------------------------------------------------
+
+// PeerView provides read-only access to trustline peer data.
+// Modules receive this instead of the full Handler.
+type PeerView interface {
+	HasPeer(peer string) bool
+	Peers() []string
+	GetPeer(peer string) *Peer
+}
+
+// BandwidthFunc returns available (in, out) capacity for a peer,
+// accounting for effective balance, credit limits, and all reservations.
+type BandwidthFunc func(peer string) (in, out int64)
+
+// ---------------------------------------------------------------------------
 // Handler — implements link.Handler and link.AccountHandler
 // ---------------------------------------------------------------------------
 
