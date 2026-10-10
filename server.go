@@ -65,14 +65,14 @@ func (c *Config) fill() error {
 // Server
 // ---------------------------------------------------------------------------
 
-// HandlerFactory creates a module handler for a newly loaded or created node.
+// ModuleFactory creates a module for a newly loaded or created node.
 // Modules receive a PeerView for querying trustline state, a BandwidthFunc
 // for checking available capacity, and their persisted state (nil if new).
-type HandlerFactory func(n *Node, peers PeerView, bw BandwidthFunc, state json.RawMessage) Handler
+type ModuleFactory func(n *Node, peers PeerView, bw BandwidthFunc, state json.RawMessage) Module
 
-type handlerReg struct {
+type moduleReg struct {
 	name    string
-	factory HandlerFactory
+	factory ModuleFactory
 }
 
 type Server struct {
@@ -81,7 +81,7 @@ type Server struct {
 	key       ed25519.PrivateKey
 	client    *http.Client
 	mux       *http.ServeMux
-	factories []handlerReg
+	factories []moduleReg
 
 	nmu   sync.RWMutex
 	nodes map[string]*Node
@@ -94,9 +94,9 @@ type Server struct {
 	keyCache map[string]cachedKey
 }
 
-// Register adds a handler factory. Call before Init/RunAndWait.
-func (s *Server) Register(name string, factory HandlerFactory) {
-	s.factories = append(s.factories, handlerReg{name: name, factory: factory})
+// Register adds a module factory. Call before Init/RunAndWait.
+func (s *Server) Register(name string, factory ModuleFactory) {
+	s.factories = append(s.factories, moduleReg{name: name, factory: factory})
 }
 
 // Send implements Transport.
@@ -116,13 +116,13 @@ func (s *Server) Send(peerDomain string, msg SyncRequest) ([]byte, error) {
 func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	n := newNode(id, raw, s, s.store)
 
-	// Register external module handlers from factories.
+	// Register external modules from factories.
 	if len(s.factories) > 0 {
-		bh := n.handlerMap["trustline"].(*TrustlineHandler)
+		bh := n.moduleMap["trustline"].(*TrustlineHandler)
 		for _, f := range s.factories {
-			h := f.factory(n, bh, bh.Bandwidth, handlerState(raw, f.name))
-			n.RegisterHandler(f.name, h)
-			if r, ok := h.(Reserver); ok {
+			m := f.factory(n, bh, bh.Bandwidth, handlerState(raw, f.name))
+			n.RegisterModule(f.name, m)
+			if r, ok := m.(Reserver); ok {
 				bh.RegisterReserver(r)
 			}
 		}

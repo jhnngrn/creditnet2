@@ -26,7 +26,7 @@ type Peer struct {
 }
 
 // ---------------------------------------------------------------------------
-// TrustlineHandler — implements Handler and AccountHandler
+// TrustlineHandler — implements Module and AccountModule
 // ---------------------------------------------------------------------------
 
 type TrustlineHandler struct {

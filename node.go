@@ -22,8 +22,8 @@ type Node struct {
 	sends        map[string]*peerSend
 	allowInvites bool
 
-	handlers   []handlerEntry
-	handlerMap map[string]Handler
+	modules   []moduleEntry
+	moduleMap map[string]Module
 
 	owners map[string]LinkOwner
 
@@ -44,9 +44,9 @@ type peerSend struct {
 	refractory bool
 }
 
-type handlerEntry struct {
-	name    string
-	handler Handler
+type moduleEntry struct {
+	name   string
+	module Module
 }
 
 type nodeState struct {
@@ -73,28 +73,27 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 		links:        st.Links,
 		sends:        map[string]*peerSend{},
 		allowInvites: invites,
-		handlerMap:   map[string]Handler{},
+		moduleMap:    map[string]Module{},
 		owners:       map[string]LinkOwner{},
 		transport:    transport,
 		store:        store,
 	}
 
-	// Register built-in handlers. Handler state is passed directly to
-	// constructors — no HandlerState() indirection.
-	n.RegisterHandler("link", newLinkHandler(n))
+	// Register built-in modules. State is passed directly to constructors.
+	n.RegisterModule("link", newLinkHandler(n))
 	bh := NewTrustlineHandler(n, st.Handlers["trustline"])
-	n.RegisterHandler("trustline", bh)
+	n.RegisterModule("trustline", bh)
 
 	return n
 }
 
 // ---------------------------------------------------------------------------
-// Handler registration
+// Module registration
 // ---------------------------------------------------------------------------
 
-func (n *Node) RegisterHandler(name string, h Handler) {
-	n.handlers = append(n.handlers, handlerEntry{name: name, handler: h})
-	n.handlerMap[name] = h
+func (n *Node) RegisterModule(name string, m Module) {
+	n.modules = append(n.modules, moduleEntry{name: name, module: m})
+	n.moduleMap[name] = m
 }
 
 // RegisterOwner registers lifecycle callbacks for a link protocol.
@@ -149,11 +148,11 @@ func (n *Node) AllowInvites() bool { return n.allowInvites }
 // Caller must hold Lock.
 func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.RawMessage, error) {
 	ns, method := SplitMethod(fullMethod)
-	handler := n.handlerMap[ns]
-	if handler == nil {
+	mod := n.moduleMap[ns]
+	if mod == nil {
 		return nil, ErrBadMethod
 	}
-	ah, ok := handler.(AccountHandler)
+	ah, ok := mod.(AccountModule)
 	if !ok {
 		return nil, ErrBadMethod
 	}
@@ -164,10 +163,10 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 func (n *Node) Commit() error {
 	ai := n.allowInvites
 	st := nodeState{ID: n.id, Links: n.links, AllowInvites: &ai}
-	if len(n.handlers) > 0 {
+	if len(n.modules) > 0 {
 		st.Handlers = make(map[string]json.RawMessage)
-		for _, entry := range n.handlers {
-			if data, err := json.Marshal(entry.handler); err == nil {
+		for _, entry := range n.modules {
+			if data, err := json.Marshal(entry.module); err == nil {
 				st.Handlers[entry.name] = data
 			}
 		}
@@ -186,9 +185,9 @@ func (n *Node) Commit() error {
 			if reloaded.AllowInvites != nil {
 				n.allowInvites = *reloaded.AllowInvites
 			}
-			for _, entry := range n.handlers {
+			for _, entry := range n.modules {
 				if state, ok := reloaded.Handlers[entry.name]; ok {
-					entry.handler.ResetState(state)
+					entry.module.ResetState(state)
 				}
 			}
 		}
@@ -274,7 +273,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 	if env.Resp != nil && link.Pending != nil && env.Resp.Counter == link.Counter {
 		pns, pmethod := SplitMethod(link.Pending.Method)
 		var pbKicks []string
-		if ph := n.handlerMap[pns]; ph != nil {
+		if ph := n.moduleMap[pns]; ph != nil {
 			pbKicks = ph.HandleResponse(env.From, pmethod, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
 		}
 		link.Counter++
@@ -323,12 +322,12 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 
 	// Dispatch by namespace.
 	ns, method := SplitMethod(env.Method)
-	handler := n.handlerMap[ns]
-	if handler == nil {
+	mod := n.moduleMap[ns]
+	if mod == nil {
 		n.mu.Unlock()
 		return nil, ErrBadMethod
 	}
-	ok, kicks, reqErr := handler.HandleRequest(env.From, method, env.Payload, ts)
+	ok, kicks, reqErr := mod.HandleRequest(env.From, method, env.Payload, ts)
 	if reqErr != nil {
 		n.mu.Unlock()
 		return nil, reqErr
@@ -425,7 +424,7 @@ func (n *Node) sendPending(peer string) {
 
 	var extraKicks []string
 	rns, rmethod := SplitMethod(msg.Method)
-	if rh := n.handlerMap[rns]; rh != nil {
+	if rh := n.moduleMap[rns]; rh != nil {
 		extraKicks = rh.HandleResponse(peer, rmethod, msg.Payload, resp.OK, resp.Timestamp)
 	}
 	link.Counter++
@@ -461,11 +460,11 @@ func (n *Node) nextTx(peer string) *QueuedMsg {
 	if link == nil {
 		return nil
 	}
-	for _, entry := range n.handlers {
+	for _, entry := range n.modules {
 		if entry.name != "link" && link.State.Status != Connected {
 			continue
 		}
-		if msg := entry.handler.NextTx(peer); msg != nil {
+		if msg := entry.module.NextTx(peer); msg != nil {
 			msg.Method = entry.name + "." + msg.Method
 			return msg
 		}
