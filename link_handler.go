@@ -123,7 +123,7 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 		return false, nil, nil // we don't speak this module
 	}
 	if lk.State.Modules == nil {
-		lk.State.Modules = map[string]*link.Connection{}
+		lk.State.Modules = map[string]*link.ConnectionState{}
 	}
 	mod := lk.State.Modules[p.Name]
 	// Mutual — we also want this module.
@@ -134,7 +134,7 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 	}
 	// Mark as incoming — awaiting local accept/reject.
 	if mod == nil {
-		mod = &link.Connection{}
+		mod = &link.ConnectionState{}
 		lk.State.Modules[p.Name] = mod
 	}
 	mod.Status = link.Incoming

@@ -30,18 +30,18 @@ const (
 	Connected ConnectionStatus = "connected" // bilaterally established
 )
 
-// Connection is the bilateral connection state: what IS (Status)
+// ConnectionState is the bilateral connection state: what IS (Status)
 // and what to DO next (IntentConnect/IntentClose).
-type Connection struct {
+type ConnectionState struct {
 	Status        ConnectionStatus `json:"status,omitempty"`
 	IntentConnect bool             `json:"intent_connect,omitempty"`
 	IntentClose   bool             `json:"intent_close,omitempty"`
 }
 
-// LinkState is a Connection (for the link itself) plus per-module connections.
+// LinkState is a ConnectionState (for the link itself) plus per-module connections.
 type LinkState struct {
-	Connection
-	Modules map[string]*Connection `json:"modules,omitempty"`
+	ConnectionState
+	Modules map[string]*ConnectionState `json:"modules,omitempty"`
 }
 
 // QueuedMsg is a message queued for sending on a link.
