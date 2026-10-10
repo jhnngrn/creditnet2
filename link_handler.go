@@ -3,6 +3,7 @@ package creditnet
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"creditnet/link"
 )
@@ -67,22 +68,19 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 
 func (h *linkHandler) NextTx(peer string) *link.QueuedMsg {
 	lk := h.node.links[peer]
-	// Link queue (connect/close).
-	if method := link.QueueHead(lk.State.Queue); method != "" {
-		return &link.QueuedMsg{Method: method}
+	method := link.QueueHead(lk.State.Queue)
+	if method == "" {
+		return nil
 	}
-	// Module proposals — only send for modules marked as waiting.
-	if lk.State.Status == link.Connected {
-		for name, status := range lk.Modules {
-			if status == link.Waiting {
-				return &link.QueuedMsg{
-					Method:  "module",
-					Payload: Enc(map[string]string{"name": name}),
-				}
-			}
+	// Module proposal from queue (e.g. "module:trustline").
+	if name, ok := strings.CutPrefix(method, "module:"); ok {
+		return &link.QueuedMsg{
+			Method:  "module",
+			Payload: Enc(map[string]string{"name": name}),
 		}
 	}
-	return nil
+	// Link queue (connect/close).
+	return &link.QueuedMsg{Method: method}
 }
 
 func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
@@ -123,8 +121,9 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 	if lk.Modules == nil {
 		lk.Modules = map[string]link.LinkStatus{}
 	}
-	if lk.Modules[p.Name] == link.Waiting {
-		// Mutual — both sides proposed. Connect immediately.
+	// Check if we have a pending proposal in queue (mutual).
+	if h.hasQueuedModule(lk, p.Name) {
+		h.dequeueModule(lk, p.Name)
 		lk.Modules[p.Name] = link.Connected
 		return true, nil, nil
 	}
@@ -140,10 +139,14 @@ func (h *linkHandler) respModule(lk *link.Link, payload json.RawMessage, ok bool
 	if json.Unmarshal(payload, &p) != nil {
 		return
 	}
+	if lk.Modules == nil {
+		lk.Modules = map[string]link.LinkStatus{}
+	}
 	if ok {
 		lk.Modules[p.Name] = link.Connected
+	} else {
+		lk.Modules[p.Name] = link.Waiting
 	}
-	// !ok: stays Waiting, peer has incoming
 }
 
 func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, error) {
@@ -161,8 +164,8 @@ func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, er
 	if lk.Modules[p.Module] != link.Incoming {
 		return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 	}
-	// Set to waiting and enqueue our own proposal — mutual connect on response.
-	lk.Modules[p.Module] = link.Waiting
+	delete(lk.Modules, p.Module)
+	link.Enqueue(&lk.State.Queue, "module:"+p.Module)
 	h.node.Kick(p.Peer)
 	return Enc("ok"), nil
 }
@@ -184,4 +187,26 @@ func (h *linkHandler) rejectModule(payload json.RawMessage) (json.RawMessage, er
 	}
 	delete(lk.Modules, p.Module)
 	return Enc("ok"), nil
+}
+
+// hasQueuedModule checks if a module proposal is pending in the link queue.
+func (h *linkHandler) hasQueuedModule(lk *link.Link, name string) bool {
+	entry := "module:" + name
+	for _, q := range lk.State.Queue {
+		if q == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// dequeueModule removes a module proposal from the link queue.
+func (h *linkHandler) dequeueModule(lk *link.Link, name string) {
+	entry := "module:" + name
+	for i, q := range lk.State.Queue {
+		if q == entry {
+			lk.State.Queue = append(lk.State.Queue[:i], lk.State.Queue[i+1:]...)
+			return
+		}
+	}
 }
