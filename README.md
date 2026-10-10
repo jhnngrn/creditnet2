@@ -94,8 +94,8 @@ recv link.connect  |  |  |                 |      |  RejectLink
            waiting) <--+      (deleted)    |         (deleted)
                        |                   |
                        v                   | AcceptLink
-                 +----------+              | (clears incoming,
-                 |connected |<-------------+ sets IntentConnect)
+                 +----------+              | (sets IntentConnect,
+                 |connected |<-------------+ status stays incoming)
                  +-----+----+
                        |
           RemoveLink   |
