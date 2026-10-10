@@ -14,8 +14,9 @@ import (
 // ---------------------------------------------------------------------------
 
 type Peer struct {
-	Queue            []string `json:"queue,omitempty"`
-	Disconnected     bool     `json:"disconnected,omitempty"`
+	State            link.ConnectionState `json:"state"`
+	Queue            []string             `json:"queue,omitempty"`
+	Disconnected     bool                 `json:"disconnected,omitempty"`
 	CreditLimit      int64    `json:"credit_limit"`
 	CreditLimitIn    int64    `json:"credit_limit_in"`
 	Balance          int64    `json:"balance"`
@@ -126,15 +127,29 @@ func (h *TrustlineHandler) LinkDeleted(peer string) {
 
 func (h *TrustlineHandler) HandleRequest(peerID string, p *Peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
-	case "peer":
-		if existing := h.peers[peerID]; existing != nil && !existing.Disconnected {
-			return true, nil, nil // already exists
+	case "connect":
+		peer := h.peers[peerID]
+		if peer == nil {
+			peer = &Peer{}
+			h.peers[peerID] = peer
 		}
-		if h.peers[peerID] != nil {
-			h.peers[peerID].Disconnected = false // reconnect
-		} else {
-			h.peers[peerID] = &Peer{}
+		if peer.Disconnected {
+			peer.Disconnected = false
 		}
+		if peer.State.IntentConnect || peer.State.Status == link.Waiting {
+			peer.State.Status = link.Connected
+			peer.State.IntentConnect = false
+			return true, nil, nil
+		}
+		peer.State.Status = link.Incoming
+		return false, nil, nil
+	case "close":
+		peer := h.peers[peerID]
+		if peer == nil {
+			return true, nil, nil // already gone
+		}
+		peer.Disconnected = true
+		peer.State = link.ConnectionState{}
 		return true, nil, nil
 	case "set_credit_limit":
 		ok, err := h.onSetCreditLimit(peerID, payload)
@@ -219,8 +234,22 @@ func (h *TrustlineHandler) HandleResponse(peerID string, p *Peer, method string,
 		return nil
 	}
 	switch method {
-	case "peer":
-		// nothing to do — our peer was created in addPeer
+	case "connect":
+		if ok {
+			peer.State.Status = link.Connected
+		} else {
+			peer.State.Status = link.Waiting
+		}
+		peer.State.IntentConnect = false
+		return nil
+	case "close":
+		if ok {
+			peer.Disconnected = true
+			peer.State = link.ConnectionState{}
+		} else {
+			peer.State.IntentClose = false
+		}
+		return nil
 	case "set_credit_limit":
 		if ok && peer.PendingLimit != nil {
 			peer.CreditLimit = *peer.PendingLimit
@@ -253,13 +282,22 @@ func (h *TrustlineHandler) NextTx(peerID string) *link.QueuedMsg {
 	if peer == nil {
 		return nil
 	}
+	// Peer lifecycle.
+	if peer.State.IntentClose {
+		return &link.QueuedMsg{Method: "close"}
+	}
+	if peer.State.IntentConnect {
+		return &link.QueuedMsg{Method: "connect"}
+	}
+	if peer.State.Status != link.Connected {
+		return nil
+	}
+	// Operations only when peer is connected.
 	method := link.QueueHead(peer.Queue)
 	if method == "" {
 		return nil
 	}
 	switch method {
-	case "peer":
-		return &link.QueuedMsg{Method: "peer"}
 	case "set_credit_limit":
 		if peer.PendingLimit == nil {
 			return nil
@@ -342,7 +380,7 @@ func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, er
 		peer = &Peer{}
 		h.peers[peerID] = peer
 	}
-	link.Enqueue(&peer.Queue, "peer")
+	peer.State.IntentConnect = true
 	return Enc("ok"), nil
 }
 
@@ -368,6 +406,13 @@ func (h *TrustlineHandler) acceptPeer(payload json.RawMessage) (json.RawMessage,
 		lk.State.Modules["trustline"] = mod
 	}
 	mod.IntentConnect = true
+	// Accept peer too — pre-set for mutual detection when trustline.connect arrives.
+	peer := h.peers[peerID]
+	if peer == nil {
+		peer = &Peer{}
+		h.peers[peerID] = peer
+	}
+	peer.State.IntentConnect = true
 	h.node.Kick(peerID)
 	return Enc("ok"), nil
 }
@@ -394,15 +439,16 @@ func (h *TrustlineHandler) removePeer(payload json.RawMessage) (json.RawMessage,
 	}
 	peerID := strings.ToLower(p.Peer)
 	peer := h.peers[peerID]
-	if peer != nil && peer.Disconnected {
-		// Link already gone — clean up local peer data.
+	if peer == nil {
+		return nil, fmt.Errorf("no peer %s", peerID)
+	}
+	if peer.Disconnected {
+		// Already disconnected — clean up local peer data.
 		delete(h.peers, peerID)
 		return Enc("ok"), nil
 	}
-	// Close the link (covers both connected and waiting).
-	if err := h.node.RemoveLink(peerID); err != nil {
-		return nil, err
-	}
+	peer.State.IntentClose = true
+	h.node.Kick(peerID)
 	return Enc("ok"), nil
 }
 
