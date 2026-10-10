@@ -35,8 +35,8 @@ and can be imported standalone.
 
 ```
 link/
-  link.go              Link, sync lifecycle (ValidateRequest, AcceptRequest,
-                       AcceptResponse), wire types, queue helpers, link errors
+  link.go              Link, ConnectionState, sync lifecycle (ValidateRequest,
+                       AcceptRequest, AcceptResponse), wire types, queue helpers
 
 types.go               identities, Module/Transport interfaces, errors, helpers
 node.go                Node: sync engine, handler dispatch, persistence
@@ -65,7 +65,7 @@ The link layer provides bilateral connections between nodes. Handlers register u
 
 ### Module negotiation
 
-Links start as bare connections. After a link reaches `connected`, the link handler automatically proposes each registered module to the peer via `link.module` messages. The peer responds OK if it supports the module. Both sides track module state per link (`false`=pending, `true`=active). Once a module is bilaterally active, the node dispatches sync messages for that module on the link.
+Links start as bare connections. Modules are proposed explicitly — when application code sets `IntentConnect` on a module's `ConnectionState`, the link handler sends a `link.module` message to the peer. The peer ACKs if it supports the module. Both sides track each module as a `ConnectionState` (same type as the link itself: `ConnectionStatus` + `IntentConnect`/`IntentClose`). Once a module is bilaterally `connected`, the node dispatches sync messages for that module on the link.
 
 This means application-level traffic (trustline operations, triad novations) only flows after both sides have agreed on the module. Adding a new module to the network is backward-compatible — nodes that don't know it simply NACK the proposal.
 
@@ -94,8 +94,8 @@ recv link.connect  |  |  |                 |      |  RejectLink
            waiting) <--+      (deleted)    |         (deleted)
                        |                   |
                        v                   | AcceptLink
-                 +----------+              | (sets waiting,
-                 |connected |<-------------+ enqueues connect)
+                 +----------+              | (clears incoming,
+                 |connected |<-------------+ sets IntentConnect)
                  +-----+----+
                        |
           RemoveLink   |
@@ -107,11 +107,13 @@ recv link.connect  |  |  |                 |      |  RejectLink
                    (deleted)
 ```
 
-**States:**
+**States** (ConnectionStatus):
 
-- **waiting** — outgoing `link.connect` queued. If NACKed, peer has the invite (`incoming` on their side).
+- **waiting** — sent `link.connect`, got NACKed. Peer has the invite (`incoming` on their side).
 - **incoming** — received `link.connect` from peer. Awaiting local decision (`AcceptLink` or `RejectLink`).
-- **connected** — bilaterally established. Module negotiation begins automatically.
+- **connected** — bilaterally established. Modules are proposed explicitly by application code.
+
+A new link starts with no status and `IntentConnect = true`. Status becomes `waiting` after a NACK, `connected` after mutual detection or ACK.
 
 On deletion (link.close completes), `LinkDeleted` is called on each module before the link is removed.
 
