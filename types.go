@@ -156,17 +156,14 @@ type Transport interface {
 // Module isolation interfaces
 // ---------------------------------------------------------------------------
 
-// PeerView provides read-only access to trustline peer data.
+// TrustlineReader provides read-only access to trustline state.
 // Modules receive this instead of the full TrustlineHandler.
-type PeerView interface {
+type TrustlineReader interface {
 	HasPeer(peer string) bool
 	Peers() []string
 	GetPeer(peer string) *Peer
+	Bandwidth(peer string) (in, out int64)
 }
-
-// BandwidthFunc returns available (in, out) capacity for a peer,
-// accounting for effective balance, credit limits, and all reservations.
-type BandwidthFunc func(peer string) (in, out int64)
 
 // Reserver reports capacity reserved by a module on a given peer.
 // Modules that hold temporary reservations (e.g. in-flight ripple hops)

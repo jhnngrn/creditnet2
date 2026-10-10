@@ -66,9 +66,9 @@ func (c *Config) fill() error {
 // ---------------------------------------------------------------------------
 
 // ModuleFactory creates a module for a newly loaded or created node.
-// Modules receive a PeerView for querying trustline state, a BandwidthFunc
-// for checking available capacity, and their persisted state (nil if new).
-type ModuleFactory func(n *Node, peers PeerView, bw BandwidthFunc, state json.RawMessage) Module
+// Modules receive a PeerView for querying trustline state (including
+// bandwidth) and their persisted state (nil if new).
+type ModuleFactory func(n *Node, peers TrustlineReader, state json.RawMessage) Module
 
 type moduleReg struct {
 	name    string
@@ -120,7 +120,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	if len(s.factories) > 0 {
 		bh := n.moduleMap["trustline"].(*TrustlineHandler)
 		for _, f := range s.factories {
-			m := f.factory(n, bh, bh.Bandwidth, handlerState(raw, f.name))
+			m := f.factory(n, bh, handlerState(raw, f.name))
 			n.RegisterModule(f.name, m)
 			if r, ok := m.(Reserver); ok {
 				bh.RegisterReserver(r)
