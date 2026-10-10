@@ -216,51 +216,26 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 		n.links[env.From] = lk
 	}
 
-	hasPending := lk.Pending != nil
-
 	// Piggybacked response.
 	if env.Resp != nil && lk.Pending != nil && env.Resp.Counter == lk.Counter {
-		pns, pmethod := SplitMethod(lk.Pending.Method)
-		var pbKicks []string
-		if pns == "link" {
-			pbKicks = n.lh.HandleResponse(env.From, pmethod, lk.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
-		} else if ph := n.moduleMap[pns]; ph != nil {
-			pbKicks = ph.HandleResponse(env.From, n.trustline.GetPeer(env.From), pmethod, lk.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
-		}
-		lk.Counter++
-		lk.RespTimestamp = env.Resp.Timestamp
-		lk.Pending = nil
+		pbKicks := n.dispatchResponse(env.From, lk.Pending, env.Resp)
+		lk.AcceptResponse(env.Resp.Timestamp)
 		if n.links[env.From] != nil {
-			if msg := n.nextTx(env.From); msg != nil {
-				lk.Pending = msg
-			}
+			lk.Promote(n.nextTx(env.From))
 		}
 		n.Commit()
-		// Piggyback committed — dispatch its kicks now so they aren't
-		// lost if the request part below returns an error.
 		for _, k := range pbKicks {
 			n.Kick(k)
 		}
-		hasPending = false
 	}
 
-	// Counter checks.
-	if env.Counter < lk.Counter {
-		if cr := lk.CachedResponse; cr != nil && cr.Counter == env.Counter {
-			resp := *cr
-			n.mu.Unlock()
-			return &resp, nil
-		}
+	// Validate counter and collision.
+	if cached, err := lk.ValidateRequest(env.Counter); err != nil {
 		n.mu.Unlock()
-		return nil, ErrStaleCounter
-	}
-	if env.Counter > lk.Counter {
+		return nil, err
+	} else if cached != nil {
 		n.mu.Unlock()
-		return nil, ErrCounterAhead
-	}
-	if hasPending && lk.Dominant() {
-		n.mu.Unlock()
-		return nil, ErrCollision
+		return cached, nil
 	}
 
 	ts := env.Timestamp
@@ -288,19 +263,27 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 		return nil, reqErr
 	}
 
-	lk.Counter++
-	lk.ReqTimestamp = ts
-	lk.Pending = nil
-
-	resp := link.SyncResponse{Counter: env.Counter, OK: ok, Timestamp: ts}
-	lk.CachedResponse = &resp
+	resp := lk.AcceptRequest(env.Counter, ok, ts)
 	n.Commit()
 	n.mu.Unlock()
 	n.Kick(env.From)
 	for _, k := range kicks {
 		n.Kick(k)
 	}
-	return &resp, nil
+	return resp, nil
+}
+
+// dispatchResponse dispatches a piggybacked response to the appropriate handler.
+// Caller must hold Lock.
+func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.SyncResponse) []string {
+	ns, method := SplitMethod(msg.Method)
+	if ns == "link" {
+		return n.lh.HandleResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
+	}
+	if rh := n.moduleMap[ns]; rh != nil {
+		return rh.HandleResponse(peer, n.trustline.GetPeer(peer), method, msg.Payload, resp.OK, resp.Timestamp)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -370,23 +353,13 @@ func (n *Node) sendPending(peer string) {
 		return
 	}
 
-	var extraKicks []string
-	rns, rmethod := SplitMethod(msg.Method)
-	if rns == "link" {
-		extraKicks = n.lh.HandleResponse(peer, rmethod, msg.Payload, resp.OK, resp.Timestamp)
-	} else if rh := n.moduleMap[rns]; rh != nil {
-		extraKicks = rh.HandleResponse(peer, n.trustline.GetPeer(peer), rmethod, msg.Payload, resp.OK, resp.Timestamp)
-	}
-	lk.Counter++
-	lk.RespTimestamp = resp.Timestamp
-	lk.Pending = nil
+	extraKicks := n.dispatchResponse(peer, msg, &resp)
+	lk.AcceptResponse(resp.Timestamp)
 
 	var kickPeer bool
 	if n.links[peer] != nil {
-		if next := n.nextTx(peer); next != nil {
-			lk.Pending = next
-			kickPeer = true
-		}
+		lk.Promote(n.nextTx(peer))
+		kickPeer = lk.Pending != nil
 	}
 	n.Commit()
 	n.setRetry(peer, counter, false)

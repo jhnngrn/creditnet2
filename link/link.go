@@ -2,7 +2,20 @@
 // and protocol types for a single link between two parties.
 package link
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+)
+
+// ---------------------------------------------------------------------------
+// Errors — link-level protocol errors
+// ---------------------------------------------------------------------------
+
+var (
+	ErrStaleCounter = errors.New("stale counter")
+	ErrCounterAhead = errors.New("counter ahead")
+	ErrCollision    = errors.New("collision")
+)
 
 // ---------------------------------------------------------------------------
 // Link — bilateral sync state
@@ -56,6 +69,58 @@ func NewLink(self, peer string) *Link {
 		bit = 1
 	}
 	return &Link{TurnBit: bit}
+}
+
+// ---------------------------------------------------------------------------
+// Sync lifecycle
+// ---------------------------------------------------------------------------
+
+// ValidateRequest checks whether an incoming request at the given counter
+// is valid for this link. Returns:
+//   - (*SyncResponse, nil) — stale counter but cached response exists
+//   - (nil, error) — invalid (stale without cache, ahead, or collision)
+//   - (nil, nil) — valid, proceed with dispatch
+func (l *Link) ValidateRequest(counter uint64) (*SyncResponse, error) {
+	if counter < l.Counter {
+		if l.CachedResponse != nil && l.CachedResponse.Counter == counter {
+			resp := *l.CachedResponse
+			return &resp, nil
+		}
+		return nil, ErrStaleCounter
+	}
+	if counter > l.Counter {
+		return nil, ErrCounterAhead
+	}
+	if l.Pending != nil && l.Dominant() {
+		return nil, ErrCollision
+	}
+	return nil, nil
+}
+
+// AcceptRequest finalizes an incoming request. Call after the handler
+// has processed the request. Returns the response to send back.
+func (l *Link) AcceptRequest(reqCounter uint64, ok bool, ts int64) *SyncResponse {
+	resp := SyncResponse{Counter: reqCounter, OK: ok, Timestamp: ts}
+	l.CachedResponse = &resp
+	l.Counter++
+	l.ReqTimestamp = ts
+	l.Pending = nil
+	return &resp
+}
+
+// AcceptResponse finalizes a received response to our outgoing message.
+// Call after the response handler has processed the response.
+func (l *Link) AcceptResponse(ts int64) {
+	l.Counter++
+	l.RespTimestamp = ts
+	l.Pending = nil
+}
+
+// Promote sets the next pending message. No-op if msg is nil.
+func (l *Link) Promote(msg *QueuedMsg) {
+	if msg != nil {
+		l.Pending = msg
+	}
 }
 
 // ---------------------------------------------------------------------------

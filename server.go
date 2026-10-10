@@ -304,7 +304,7 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 			HttpError(w, http.StatusForbidden, "invites disabled")
 		case errors.Is(syncErr, ErrMaxLinks):
 			HttpError(w, http.StatusBadRequest, "max links")
-		case errors.Is(syncErr, ErrStaleCounter), errors.Is(syncErr, ErrCounterAhead), errors.Is(syncErr, ErrCollision):
+		case errors.Is(syncErr, link.ErrStaleCounter), errors.Is(syncErr, link.ErrCounterAhead), errors.Is(syncErr, link.ErrCollision):
 			HttpError(w, http.StatusConflict, syncErr.Error())
 		case errors.Is(syncErr, ErrBadMethod):
 			HttpError(w, http.StatusBadRequest, syncErr.Error())
