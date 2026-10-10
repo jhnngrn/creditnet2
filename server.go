@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"creditnet/link"
 )
 
 // ---------------------------------------------------------------------------
@@ -100,7 +102,7 @@ func (s *Server) Register(name string, factory ModuleFactory) {
 }
 
 // Send implements Transport.
-func (s *Server) Send(peerDomain string, msg SyncRequest) ([]byte, error) {
+func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
 	status, body, err := s.postSigned(peerDomain, "/p2p/tx", msg)
 	if err != nil {
 		return nil, err
@@ -267,7 +269,7 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		HttpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	var env SyncRequest
+	var env link.SyncRequest
 	if json.Unmarshal(body, &env) != nil {
 		HttpError(w, http.StatusBadRequest, "malformed")
 		return

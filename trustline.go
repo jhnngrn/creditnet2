@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"creditnet/link"
 )
 
 // ---------------------------------------------------------------------------
@@ -91,15 +93,10 @@ func (h *TrustlineHandler) Bandwidth(peer string) (in, out int64) {
 }
 
 func NewTrustlineHandler(n *Node, state json.RawMessage) *TrustlineHandler {
-	h := &TrustlineHandler{
+	return &TrustlineHandler{
 		node:  n,
 		peers: loadPeers(state),
 	}
-	n.RegisterOwner("trustline", LinkOwner{
-		OnConnect: h.onConnect,
-		OnClose:   h.onClose,
-	})
-	return h
 }
 
 func loadPeers(raw json.RawMessage) map[string]*Peer {
@@ -116,17 +113,8 @@ func (h *TrustlineHandler) MarshalJSON() ([]byte, error) {
 	return json.Marshal(trustlineState{Peers: h.peers})
 }
 
-// ---------------------------------------------------------------------------
-// Owner callbacks (constructor / destructor)
-// ---------------------------------------------------------------------------
-
-// onConnect is called when a link with protocol "trustline" reaches Connected.
-func (h *TrustlineHandler) onConnect(peer string, lk *Link) {
-	h.peers[peer] = &Peer{}
-}
-
-// onClose is called before a link with protocol "trustline" is deleted.
-func (h *TrustlineHandler) onClose(peer string, lk *Link) {
+// LinkDeleted is called when a link to peer is removed.
+func (h *TrustlineHandler) LinkDeleted(peer string) {
 	if p := h.peers[peer]; p != nil {
 		p.Disconnected = true
 	}
@@ -138,6 +126,16 @@ func (h *TrustlineHandler) onClose(peer string, lk *Link) {
 
 func (h *TrustlineHandler) HandleRequest(peerID string, p *Peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
+	case "peer":
+		if existing := h.peers[peerID]; existing != nil && !existing.Disconnected {
+			return true, nil, nil // already exists
+		}
+		if h.peers[peerID] != nil {
+			h.peers[peerID].Disconnected = false // reconnect
+		} else {
+			h.peers[peerID] = &Peer{}
+		}
+		return true, nil, nil
 	case "set_credit_limit":
 		ok, err := h.onSetCreditLimit(peerID, payload)
 		return ok, nil, err
@@ -221,6 +219,8 @@ func (h *TrustlineHandler) HandleResponse(peerID string, p *Peer, method string,
 		return nil
 	}
 	switch method {
+	case "peer":
+		// nothing to do — our peer was created in addPeer
 	case "set_credit_limit":
 		if ok && peer.PendingLimit != nil {
 			peer.CreditLimit = *peer.PendingLimit
@@ -239,7 +239,7 @@ func (h *TrustlineHandler) HandleResponse(peerID string, p *Peer, method string,
 		peer.PendingPayment = nil
 	}
 	if h.peers[peerID] != nil {
-		Dequeue(&peer.Queue)
+		link.Dequeue(&peer.Queue)
 	}
 	return nil
 }
@@ -248,21 +248,23 @@ func (h *TrustlineHandler) HandleResponse(peerID string, p *Peer, method string,
 // Sync — NextTx
 // ---------------------------------------------------------------------------
 
-func (h *TrustlineHandler) NextTx(peerID string) *QueuedMsg {
+func (h *TrustlineHandler) NextTx(peerID string) *link.QueuedMsg {
 	peer := h.peers[peerID]
 	if peer == nil {
 		return nil
 	}
-	method := QueueHead(peer.Queue)
+	method := link.QueueHead(peer.Queue)
 	if method == "" {
 		return nil
 	}
 	switch method {
+	case "peer":
+		return &link.QueuedMsg{Method: "peer"}
 	case "set_credit_limit":
 		if peer.PendingLimit == nil {
 			return nil
 		}
-		return &QueuedMsg{
+		return &link.QueuedMsg{
 			Method:  "set_credit_limit",
 			Payload: Enc(map[string]int64{"amount": *peer.PendingLimit}),
 		}
@@ -270,7 +272,7 @@ func (h *TrustlineHandler) NextTx(peerID string) *QueuedMsg {
 		if peer.PendingDemurrage == nil {
 			return nil
 		}
-		return &QueuedMsg{
+		return &link.QueuedMsg{
 			Method:  "set_demurrage",
 			Payload: Enc(map[string]int64{"rate": *peer.PendingDemurrage}),
 		}
@@ -278,7 +280,7 @@ func (h *TrustlineHandler) NextTx(peerID string) *QueuedMsg {
 		if peer.PendingPayment == nil {
 			return nil
 		}
-		return &QueuedMsg{
+		return &link.QueuedMsg{
 			Method:  "payment",
 			Payload: Enc(map[string]int64{"amount": *peer.PendingPayment}),
 		}
@@ -323,9 +325,17 @@ func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, er
 	if peer := h.peers[peerID]; peer != nil && !peer.Disconnected {
 		return nil, fmt.Errorf("peer %s already exists", peerID)
 	}
-	if err := h.node.AddLink(peerID, "trustline"); err != nil {
+	if err := h.node.AddLink(peerID); err != nil {
 		return nil, err
 	}
+	peer := h.peers[peerID]
+	if peer != nil {
+		peer.Disconnected = false // reconnect
+	} else {
+		peer = &Peer{}
+		h.peers[peerID] = peer
+	}
+	link.Enqueue(&peer.Queue, "peer")
 	return Enc("ok"), nil
 }
 
@@ -399,7 +409,7 @@ func (h *TrustlineHandler) setCreditLimit(payload json.RawMessage) (json.RawMess
 		return nil, fmt.Errorf("credit limit change already pending")
 	}
 	peer.PendingLimit = &p.Amount
-	Enqueue(&peer.Queue, "set_credit_limit")
+	link.Enqueue(&peer.Queue, "set_credit_limit")
 	h.node.Kick(peerID)
 	return Enc("ok"), nil
 }
@@ -427,7 +437,7 @@ func (h *TrustlineHandler) setDemurrage(payload json.RawMessage) (json.RawMessag
 		return nil, fmt.Errorf("demurrage change already pending")
 	}
 	peer.PendingDemurrage = &p.Rate
-	Enqueue(&peer.Queue, "set_demurrage")
+	link.Enqueue(&peer.Queue, "set_demurrage")
 	h.node.Kick(peerID)
 	return Enc("ok"), nil
 }
@@ -459,7 +469,7 @@ func (h *TrustlineHandler) payment(payload json.RawMessage) (json.RawMessage, er
 		return nil, fmt.Errorf("insufficient credit")
 	}
 	peer.PendingPayment = &p.Amount
-	Enqueue(&peer.Queue, "payment")
+	link.Enqueue(&peer.Queue, "payment")
 	h.node.Kick(peerID)
 	return Enc("ok"), nil
 }

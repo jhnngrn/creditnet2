@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"creditnet/link"
 )
 
 // ---------------------------------------------------------------------------
@@ -51,82 +53,6 @@ func IdentityInDomain(identity, domain string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Wire envelopes
-// ---------------------------------------------------------------------------
-
-type SyncRequest struct {
-	From      string          `json:"from"`
-	To        string          `json:"to"`
-	Counter   uint64          `json:"counter"`
-	Method    string          `json:"method"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
-	Timestamp int64           `json:"timestamp"`
-	Resp      *SyncResponse   `json:"resp,omitempty"`
-}
-
-type SyncResponse struct {
-	Counter   uint64 `json:"counter"`
-	OK        bool   `json:"ok"`
-	Timestamp int64  `json:"timestamp"`
-}
-
-// ---------------------------------------------------------------------------
-// Link — bilateral sync primitive
-// ---------------------------------------------------------------------------
-
-// LinkStatus — what the link IS.
-type LinkStatus string
-
-const (
-	Waiting   LinkStatus = "waiting"   // exists, not yet connected
-	Incoming  LinkStatus = "incoming"  // peer initiated, awaiting local decision
-	Connected LinkStatus = "connected" // bilaterally established
-)
-
-// LinkState combines what the link is with what it wants to send.
-type LinkState struct {
-	Status LinkStatus `json:"status"`
-	Queue  []string   `json:"queue,omitempty"`
-}
-
-type QueuedMsg struct {
-	Method  string          `json:"method"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-}
-
-// Link holds the sync state for a bilateral connection.
-type Link struct {
-	State          LinkState     `json:"state"`
-	Counter        uint64        `json:"counter"`
-	TurnBit        uint64        `json:"turn_bit"`
-	Owner          string        `json:"protocol,omitempty"` // registered LinkOwner name
-	Pending        *QueuedMsg    `json:"pending,omitempty"`
-	CachedResponse *SyncResponse `json:"cached_response,omitempty"`
-	ReqTimestamp   int64         `json:"req_ts"`
-	RespTimestamp  int64         `json:"resp_ts"`
-}
-
-// LinkOwner provides lifecycle callbacks for links with a given protocol.
-// OnConnect is called when the link reaches Connected (constructor).
-// OnClose is called before the link is deleted (destructor).
-type LinkOwner struct {
-	OnConnect func(peer string, lk *Link)
-	OnClose   func(peer string, lk *Link)
-}
-
-// Dominant returns true when this side owns the current counter slot.
-func (l *Link) Dominant() bool { return l.Counter%2 == l.TurnBit }
-
-// NewLink creates a Link with the turn bit derived from identity ordering.
-func NewLink(self, peer string) *Link {
-	var bit uint64
-	if self > peer {
-		bit = 1
-	}
-	return &Link{TurnBit: bit}
-}
-
-// ---------------------------------------------------------------------------
 // Interfaces
 // ---------------------------------------------------------------------------
 
@@ -139,12 +65,13 @@ type Module interface {
 	HandleRequest(peer string, p *Peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
 	HandleResponse(peer string, p *Peer, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
-	NextTx(peer string) *QueuedMsg
+	NextTx(peer string) *link.QueuedMsg
+	LinkDeleted(peer string)
 }
 
 // Transport sends sync messages to peers.
 type Transport interface {
-	Send(peerDomain string, msg SyncRequest) ([]byte, error)
+	Send(peerDomain string, msg link.SyncRequest) ([]byte, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -188,12 +115,6 @@ var (
 
 func Enc(v any) json.RawMessage { d, _ := json.Marshal(v); return d }
 func NowSecs() int64            { return time.Now().Unix() }
-
-// Queue helpers
-
-func Enqueue(q *[]string, method string) { *q = append(*q, method) }
-func Dequeue(q *[]string)                { if len(*q) > 0 { *q = (*q)[1:] } }
-func QueueHead(q []string) string        { if len(q) > 0 { return q[0] }; return "" }
 
 func SplitMethod(method string) (ns, name string) {
 	i := strings.Index(method, ".")

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"creditnet/link"
 )
 
 // ---------------------------------------------------------------------------
@@ -29,7 +31,7 @@ type Novation struct {
 }
 
 func (n *Novation) pendingPeer() string {
-	if QueueHead(n.Queue) == "rollback" {
+	if link.QueueHead(n.Queue) == "rollback" {
 		return n.InPeer
 	}
 	return n.OutPeer
@@ -86,6 +88,9 @@ func (h *TriadHandler) Reserved(peer string) (in, out int64) {
 	}
 	return
 }
+
+// LinkDeleted is called when a link to peer is removed.
+func (h *TriadHandler) LinkDeleted(peer string) {}
 
 // ---------------------------------------------------------------------------
 // Module — HandleRequest
@@ -177,7 +182,7 @@ func (h *TriadHandler) reqCommit(peer string, p *Peer, raw json.RawMessage) (boo
 		if nov == nil || nov.Role != "intermediary" {
 			return false, nil, nil
 		}
-		Enqueue(&nov.Queue, "finalize")
+		link.Enqueue(&nov.Queue, "finalize")
 		return true, []string{nov.OutPeer}, nil
 	}
 	return false, nil, nil
@@ -199,7 +204,7 @@ func (h *TriadHandler) reqFinalize(peer string, p *Peer, raw json.RawMessage, ts
 	nov.InPeer = ""
 	var kicks []string
 	if nov.OutPeer != "" {
-		Enqueue(&nov.Queue, "finalize")
+		link.Enqueue(&nov.Queue, "finalize")
 		kicks = []string{nov.OutPeer}
 	}
 	if nov.InPeer == "" && nov.OutPeer == "" {
@@ -226,7 +231,7 @@ func (h *TriadHandler) reqRollback(peer string, raw json.RawMessage) (bool, []st
 		delete(h.Novations, m.NovationID)
 		return true, nil, nil
 	}
-	Enqueue(&nov.Queue, "rollback")
+	link.Enqueue(&nov.Queue, "rollback")
 	return true, []string{nov.InPeer}, nil
 }
 
@@ -255,13 +260,13 @@ func (h *TriadHandler) respCommit(raw json.RawMessage, ok bool) []string {
 	if nov == nil {
 		return nil
 	}
-	Dequeue(&nov.Queue)
+	link.Dequeue(&nov.Queue)
 	if !ok {
 		if nov.Role == "intermediary" {
 			delete(h.Novations, m.NovationID)
 			return nil
 		}
-		Enqueue(&nov.Queue, "rollback")
+		link.Enqueue(&nov.Queue, "rollback")
 		return []string{nov.InPeer}
 	}
 	return nil
@@ -276,7 +281,7 @@ func (h *TriadHandler) respFinalize(p *Peer, raw json.RawMessage, ts int64) {
 	if nov == nil {
 		return
 	}
-	Dequeue(&nov.Queue)
+	link.Dequeue(&nov.Queue)
 	p.AddBalance(-int64(nov.Amount), ts)
 	nov.OutPeer = ""
 	if nov.InPeer == "" {
@@ -298,7 +303,7 @@ func (h *TriadHandler) respRollback(raw json.RawMessage) {
 // Module — NextTx
 // ---------------------------------------------------------------------------
 
-func (h *TriadHandler) NextTx(peer string) *QueuedMsg {
+func (h *TriadHandler) NextTx(peer string) *link.QueuedMsg {
 	for id, nov := range h.Novations {
 		if len(nov.Queue) > 0 && nov.pendingPeer() == peer {
 			return h.buildMsg(id, nov)
@@ -307,8 +312,8 @@ func (h *TriadHandler) NextTx(peer string) *QueuedMsg {
 	return nil
 }
 
-func (h *TriadHandler) buildMsg(id string, nov *Novation) *QueuedMsg {
-	switch QueueHead(nov.Queue) {
+func (h *TriadHandler) buildMsg(id string, nov *Novation) *link.QueuedMsg {
+	switch link.QueueHead(nov.Queue) {
 	case "commit":
 		var d, i, c string
 		switch nov.Role {
@@ -319,17 +324,17 @@ func (h *TriadHandler) buildMsg(id string, nov *Novation) *QueuedMsg {
 		case "creditor":
 			d, i, c = nov.InPeer, nov.OutPeer, h.node.ID()
 		}
-		return &QueuedMsg{
+		return &link.QueuedMsg{
 			Method:  "commit",
 			Payload: Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}),
 		}
 	case "finalize":
-		return &QueuedMsg{
+		return &link.QueuedMsg{
 			Method:  "finalize",
 			Payload: Enc(novFinalizeMsg{NovationID: id}),
 		}
 	case "rollback":
-		return &QueuedMsg{
+		return &link.QueuedMsg{
 			Method:  "rollback",
 			Payload: Enc(map[string]string{"novation_id": id}),
 		}

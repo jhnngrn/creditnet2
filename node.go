@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"creditnet/link"
 )
 
 const retryDelay = 60 * time.Second
@@ -18,17 +20,15 @@ const retryDelay = 60 * time.Second
 type Node struct {
 	mu           sync.Mutex
 	id           string
-	links        map[string]*Link
+	links        map[string]*link.Link
 	sends        map[string]*peerSend
 	allowInvites bool
 
-	link      *linkHandler
+	lh        *linkHandler
 	trustline *TrustlineHandler
 
 	modules   []moduleEntry
 	moduleMap map[string]Module
-
-	owners map[string]LinkOwner
 
 	transport Transport
 	store     Store
@@ -54,7 +54,7 @@ type moduleEntry struct {
 
 type nodeState struct {
 	ID           string                     `json:"id"`
-	Links        map[string]*Link           `json:"links"`
+	Links        map[string]*link.Link      `json:"links"`
 	AllowInvites *bool                      `json:"allow_invites,omitempty"`
 	Handlers     map[string]json.RawMessage `json:"handlers,omitempty"`
 }
@@ -65,7 +65,7 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 		json.Unmarshal(raw, &st)
 	}
 	if st.Links == nil {
-		st.Links = map[string]*Link{}
+		st.Links = map[string]*link.Link{}
 	}
 	invites := true
 	if st.AllowInvites != nil {
@@ -77,13 +77,12 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 		sends:        map[string]*peerSend{},
 		allowInvites: invites,
 		moduleMap:    map[string]Module{},
-		owners:       map[string]LinkOwner{},
 		transport:    transport,
 		store:        store,
 	}
 
 	// Built-in handlers.
-	n.link = newLinkHandler(n)
+	n.lh = newLinkHandler(n)
 	n.trustline = NewTrustlineHandler(n, st.Handlers["trustline"])
 	n.RegisterModule("trustline", n.trustline)
 
@@ -99,35 +98,15 @@ func (n *Node) RegisterModule(name string, m Module) {
 	n.moduleMap[name] = m
 }
 
-// RegisterOwner registers lifecycle callbacks for a link protocol.
-func (n *Node) RegisterOwner(name string, owner LinkOwner) {
-	n.owners[name] = owner
-}
-
-// NotifyLinkConnected calls the OnConnect callback for the link's owner.
-// Caller must hold Lock.
-func (n *Node) NotifyLinkConnected(peer string) {
-	lk := n.links[peer]
-	if lk == nil || lk.Owner == "" {
-		return
-	}
-	if owner, ok := n.owners[lk.Owner]; ok && owner.OnConnect != nil {
-		owner.OnConnect(peer, lk)
-	}
-}
-
 // Links returns the node's links map. Caller must hold Lock.
-func (n *Node) Links() map[string]*Link {
+func (n *Node) Links() map[string]*link.Link {
 	return n.links
 }
 
-// DeleteLink removes a link, calling OnClose first. Caller must hold Lock.
+// DeleteLink removes a link. Caller must hold Lock.
 func (n *Node) DeleteLink(peer string) {
-	lk := n.links[peer]
-	if lk != nil && lk.Owner != "" {
-		if owner, ok := n.owners[lk.Owner]; ok && owner.OnClose != nil {
-			owner.OnClose(peer, lk)
-		}
+	for _, entry := range n.modules {
+		entry.module.LinkDeleted(peer)
 	}
 	if s := n.sends[peer]; s != nil {
 		if s.timer != nil {
@@ -142,9 +121,9 @@ func (n *Node) DeleteLink(peer string) {
 // Locking & persistence
 // ---------------------------------------------------------------------------
 
-func (n *Node) Lock()            { n.mu.Lock() }
-func (n *Node) Unlock()          { n.mu.Unlock() }
-func (n *Node) ID() string       { return n.id }
+func (n *Node) Lock()             { n.mu.Lock() }
+func (n *Node) Unlock()           { n.mu.Unlock() }
+func (n *Node) ID() string        { return n.id }
 func (n *Node) AllowInvites() bool { return n.allowInvites }
 
 // HandleAccount dispatches a user-facing API call by namespace.
@@ -152,7 +131,7 @@ func (n *Node) AllowInvites() bool { return n.allowInvites }
 func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.RawMessage, error) {
 	ns, method := SplitMethod(fullMethod)
 	if ns == "link" {
-		return n.link.HandleAccount(method, payload)
+		return n.lh.HandleAccount(method, payload)
 	}
 	mod := n.moduleMap[ns]
 	if mod == nil {
@@ -211,14 +190,14 @@ func (n *Node) QuickReject(from, method string) bool {
 
 // HandleSync processes an incoming sync request. The caller is responsible
 // for authentication (signature verification).
-func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
+func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	n.mu.Lock()
 
-	link := n.links[env.From]
-	if link == nil {
+	lk := n.links[env.From]
+	if lk == nil {
 		if env.Method == "link.close" {
 			n.mu.Unlock()
-			return &SyncResponse{Counter: env.Counter, OK: true, Timestamp: NowSecs()}, nil
+			return &link.SyncResponse{Counter: env.Counter, OK: true, Timestamp: NowSecs()}, nil
 		}
 		if env.Method != "link.connect" {
 			n.mu.Unlock()
@@ -232,40 +211,28 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrMaxLinks
 		}
-		// Read protocol from connect payload.
-		var cp struct {
-			Protocol string `json:"protocol"`
-		}
-		if env.Payload != nil {
-			json.Unmarshal(env.Payload, &cp)
-		}
-		if _, ok := n.owners[cp.Protocol]; !ok {
-			n.mu.Unlock()
-			return nil, fmt.Errorf("unknown protocol %q", cp.Protocol)
-		}
-		link = NewLink(n.id, env.From)
-		link.State.Status = Incoming
-		link.Owner = cp.Protocol
-		n.links[env.From] = link
+		lk = link.NewLink(n.id, env.From)
+		lk.State.Status = link.Incoming
+		n.links[env.From] = lk
 	}
 
-	hasPending := link.Pending != nil
+	hasPending := lk.Pending != nil
 
 	// Piggybacked response.
-	if env.Resp != nil && link.Pending != nil && env.Resp.Counter == link.Counter {
-		pns, pmethod := SplitMethod(link.Pending.Method)
+	if env.Resp != nil && lk.Pending != nil && env.Resp.Counter == lk.Counter {
+		pns, pmethod := SplitMethod(lk.Pending.Method)
 		var pbKicks []string
 		if pns == "link" {
-			pbKicks = n.link.HandleResponse(env.From, pmethod, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
+			pbKicks = n.lh.HandleResponse(env.From, pmethod, lk.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
 		} else if ph := n.moduleMap[pns]; ph != nil {
-			pbKicks = ph.HandleResponse(env.From, n.trustline.GetPeer(env.From), pmethod, link.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
+			pbKicks = ph.HandleResponse(env.From, n.trustline.GetPeer(env.From), pmethod, lk.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
 		}
-		link.Counter++
-		link.RespTimestamp = env.Resp.Timestamp
-		link.Pending = nil
+		lk.Counter++
+		lk.RespTimestamp = env.Resp.Timestamp
+		lk.Pending = nil
 		if n.links[env.From] != nil {
 			if msg := n.nextTx(env.From); msg != nil {
-				link.Pending = msg
+				lk.Pending = msg
 			}
 		}
 		n.Commit()
@@ -278,8 +245,8 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 	}
 
 	// Counter checks.
-	if env.Counter < link.Counter {
-		if cr := link.CachedResponse; cr != nil && cr.Counter == env.Counter {
+	if env.Counter < lk.Counter {
+		if cr := lk.CachedResponse; cr != nil && cr.Counter == env.Counter {
 			resp := *cr
 			n.mu.Unlock()
 			return &resp, nil
@@ -287,17 +254,17 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		n.mu.Unlock()
 		return nil, ErrStaleCounter
 	}
-	if env.Counter > link.Counter {
+	if env.Counter > lk.Counter {
 		n.mu.Unlock()
 		return nil, ErrCounterAhead
 	}
-	if hasPending && link.Dominant() {
+	if hasPending && lk.Dominant() {
 		n.mu.Unlock()
 		return nil, ErrCollision
 	}
 
 	ts := env.Timestamp
-	if link.Dominant() {
+	if lk.Dominant() {
 		ts = NowSecs()
 	}
 
@@ -307,10 +274,10 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 	var kicks []string
 	var reqErr error
 	if ns == "link" {
-		ok, kicks, reqErr = n.link.HandleRequest(env.From, method, env.Payload, ts)
+		ok, kicks, reqErr = n.lh.HandleRequest(env.From, method, env.Payload, ts)
 	} else {
 		mod := n.moduleMap[ns]
-		if mod == nil {
+		if mod == nil || !lk.ModuleEnabled(ns) {
 			n.mu.Unlock()
 			return nil, ErrBadMethod
 		}
@@ -321,12 +288,12 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 		return nil, reqErr
 	}
 
-	link.Counter++
-	link.ReqTimestamp = ts
-	link.Pending = nil
+	lk.Counter++
+	lk.ReqTimestamp = ts
+	lk.Pending = nil
 
-	resp := SyncResponse{Counter: env.Counter, OK: ok, Timestamp: ts}
-	link.CachedResponse = &resp
+	resp := link.SyncResponse{Counter: env.Counter, OK: ok, Timestamp: ts}
+	lk.CachedResponse = &resp
 	n.Commit()
 	n.mu.Unlock()
 	n.Kick(env.From)
@@ -342,12 +309,12 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 
 func (n *Node) sendPending(peer string) {
 	n.mu.Lock()
-	link := n.links[peer]
-	if link == nil {
+	lk := n.links[peer]
+	if lk == nil {
 		n.mu.Unlock()
 		return
 	}
-	if s := n.sends[peer]; s != nil && s.counter == link.Counter {
+	if s := n.sends[peer]; s != nil && s.counter == lk.Counter {
 		if s.inFlight || s.refractory {
 			n.mu.Unlock()
 			return
@@ -356,24 +323,24 @@ func (n *Node) sendPending(peer string) {
 		delete(n.sends, peer)
 	}
 	promoted := false
-	if link.Pending == nil {
+	if lk.Pending == nil {
 		msg := n.nextTx(peer)
 		if msg == nil {
 			n.mu.Unlock()
 			return
 		}
-		link.Pending = msg
+		lk.Pending = msg
 		promoted = true
 	}
-	counter := link.Counter
+	counter := lk.Counter
 	n.sends[peer] = &peerSend{counter: counter, inFlight: true}
-	msg := link.Pending
-	env := SyncRequest{
+	msg := lk.Pending
+	env := link.SyncRequest{
 		From: n.id, To: peer, Counter: counter,
 		Method: msg.Method, Payload: msg.Payload,
 		Timestamp: NowSecs(),
 	}
-	if cr := link.CachedResponse; cr != nil {
+	if cr := lk.CachedResponse; cr != nil {
 		env.Resp = cr
 	}
 	if promoted {
@@ -390,14 +357,14 @@ func (n *Node) sendPending(peer string) {
 		n.mu.Unlock()
 		return
 	}
-	var resp SyncResponse
+	var resp link.SyncResponse
 	if json.Unmarshal(body, &resp) != nil {
 		n.setRetry(peer, counter, true)
 		n.mu.Unlock()
 		return
 	}
-	link = n.links[peer]
-	if link == nil || link.Pending != msg || link.Counter != counter || resp.Counter != counter {
+	lk = n.links[peer]
+	if lk == nil || lk.Pending != msg || lk.Counter != counter || resp.Counter != counter {
 		delete(n.sends, peer)
 		n.mu.Unlock()
 		return
@@ -406,18 +373,18 @@ func (n *Node) sendPending(peer string) {
 	var extraKicks []string
 	rns, rmethod := SplitMethod(msg.Method)
 	if rns == "link" {
-		extraKicks = n.link.HandleResponse(peer, rmethod, msg.Payload, resp.OK, resp.Timestamp)
+		extraKicks = n.lh.HandleResponse(peer, rmethod, msg.Payload, resp.OK, resp.Timestamp)
 	} else if rh := n.moduleMap[rns]; rh != nil {
 		extraKicks = rh.HandleResponse(peer, n.trustline.GetPeer(peer), rmethod, msg.Payload, resp.OK, resp.Timestamp)
 	}
-	link.Counter++
-	link.RespTimestamp = resp.Timestamp
-	link.Pending = nil
+	lk.Counter++
+	lk.RespTimestamp = resp.Timestamp
+	lk.Pending = nil
 
 	var kickPeer bool
 	if n.links[peer] != nil {
 		if next := n.nextTx(peer); next != nil {
-			link.Pending = next
+			lk.Pending = next
 			kickPeer = true
 		}
 	}
@@ -434,21 +401,24 @@ func (n *Node) sendPending(peer string) {
 
 // nextTx returns the next message to send for a peer, asking each
 // handler in registration order. The namespace prefix is added.
-func (n *Node) nextTx(peer string) *QueuedMsg {
-	link := n.links[peer]
-	if link == nil {
+func (n *Node) nextTx(peer string) *link.QueuedMsg {
+	lk := n.links[peer]
+	if lk == nil {
 		return nil
 	}
 	// Link handler runs regardless of status.
-	if msg := n.link.NextTx(peer); msg != nil {
+	if msg := n.lh.NextTx(peer); msg != nil {
 		msg.Method = "link." + msg.Method
 		return msg
 	}
-	// Modules only run on connected links.
-	if link.State.Status != Connected {
+	// Modules only run on connected links with the module enabled.
+	if lk.State.Status != link.Connected {
 		return nil
 	}
 	for _, entry := range n.modules {
+		if !lk.ModuleEnabled(entry.name) {
+			continue
+		}
 		if msg := entry.module.NextTx(peer); msg != nil {
 			msg.Method = entry.name + "." + msg.Method
 			return msg
@@ -474,7 +444,7 @@ func (n *Node) KickAll() {
 // Account operations (caller must hold Lock)
 // ---------------------------------------------------------------------------
 
-func (n *Node) AddLink(peer string, owner string) error {
+func (n *Node) AddLink(peer string) error {
 	if _, _, err := ParseIdentity(peer); err != nil {
 		return err
 	}
@@ -488,13 +458,9 @@ func (n *Node) AddLink(peer string, owner string) error {
 	if len(n.links) >= MaxLinks {
 		return fmt.Errorf("max links reached")
 	}
-	if _, ok := n.owners[owner]; !ok {
-		return fmt.Errorf("unknown protocol %q", owner)
-	}
-	lk := NewLink(n.id, peer)
-	lk.State.Status = Waiting
-	lk.Owner = owner
-	Enqueue(&lk.State.Queue, "connect")
+	lk := link.NewLink(n.id, peer)
+	lk.State.Status = link.Waiting
+	link.Enqueue(&lk.State.Queue, "connect")
 	n.links[peer] = lk
 	n.Kick(peer)
 	return nil
@@ -502,40 +468,40 @@ func (n *Node) AddLink(peer string, owner string) error {
 
 func (n *Node) RemoveLink(peer string) error {
 	peer = strings.ToLower(peer)
-	link := n.links[peer]
-	if link == nil {
+	lk := n.links[peer]
+	if lk == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	Enqueue(&link.State.Queue, "close")
+	link.Enqueue(&lk.State.Queue, "close")
 	n.Kick(peer)
 	return nil
 }
 
 func (n *Node) AcceptLink(peer string) error {
 	peer = strings.ToLower(peer)
-	link := n.links[peer]
-	if link == nil {
+	lk := n.links[peer]
+	if lk == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	if link.State.Status != Incoming {
+	if lk.State.Status != link.Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	link.State.Status = Waiting
-	Enqueue(&link.State.Queue, "connect")
+	lk.State.Status = link.Waiting
+	link.Enqueue(&lk.State.Queue, "connect")
 	n.Kick(peer)
 	return nil
 }
 
 func (n *Node) RejectLink(peer string) error {
 	peer = strings.ToLower(peer)
-	link := n.links[peer]
-	if link == nil {
+	lk := n.links[peer]
+	if lk == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	if link.State.Status != Incoming {
+	if lk.State.Status != link.Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	Enqueue(&link.State.Queue, "close")
+	link.Enqueue(&lk.State.Queue, "close")
 	n.Kick(peer)
 	return nil
 }
@@ -548,8 +514,8 @@ func (n *Node) Status() json.RawMessage {
 	links := make(map[string]any)
 	for peer, l := range n.links {
 		links[peer] = map[string]any{
-			"state":    l.State,
-			"protocol": l.Owner,
+			"state":   l.State,
+			"modules": l.Modules,
 		}
 	}
 	return Enc(map[string]any{

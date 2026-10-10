@@ -3,10 +3,12 @@ package creditnet
 import (
 	"encoding/json"
 	"fmt"
+
+	"creditnet/link"
 )
 
 // ---------------------------------------------------------------------------
-// linkHandler — handles link.connect, link.close
+// linkHandler — handles link.connect, link.close, link.module
 // ---------------------------------------------------------------------------
 
 type linkHandler struct {
@@ -21,12 +23,11 @@ func (h *linkHandler) HandleRequest(peer string, method string, payload json.Raw
 	lk := h.node.links[peer]
 	switch method {
 	case "connect":
-		if lk.State.Status == Waiting {
-			lk.State.Status = Connected
-			if QueueHead(lk.State.Queue) == "connect" {
-				Dequeue(&lk.State.Queue) // mutual connect — no need to send own
+		if lk.State.Status == link.Waiting {
+			lk.State.Status = link.Connected
+			if link.QueueHead(lk.State.Queue) == "connect" {
+				link.Dequeue(&lk.State.Queue) // mutual connect — no need to send own
 			}
-			h.node.NotifyLinkConnected(peer)
 			return true, nil, nil
 		}
 		return false, nil, nil // Incoming → NACK (invite flow)
@@ -34,6 +35,9 @@ func (h *linkHandler) HandleRequest(peer string, method string, payload json.Raw
 	case "close":
 		h.node.DeleteLink(peer)
 		return true, nil, nil
+
+	case "module":
+		return h.reqModule(peer, lk, payload)
 	}
 	return false, nil, ErrBadMethod
 }
@@ -43,8 +47,7 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 	switch method {
 	case "connect":
 		if ok {
-			lk.State.Status = Connected
-			h.node.NotifyLinkConnected(peer)
+			lk.State.Status = link.Connected
 		}
 		// !ok: stays Waiting, peer has incoming
 
@@ -54,19 +57,34 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 			return nil
 		}
 		// !ok: refs > 0 on peer side
+
+	case "module":
+		h.respModule(lk, payload, ok)
 	}
-	Dequeue(&lk.State.Queue)
+	link.Dequeue(&lk.State.Queue)
 	return nil
 }
 
-func (h *linkHandler) NextTx(peer string) *QueuedMsg {
+func (h *linkHandler) NextTx(peer string) *link.QueuedMsg {
 	lk := h.node.links[peer]
-	if method := QueueHead(lk.State.Queue); method != "" {
-		msg := &QueuedMsg{Method: method}
-		if method == "connect" && lk.Owner != "" {
-			msg.Payload = Enc(map[string]string{"protocol": lk.Owner})
+	// Link queue (connect/close).
+	if method := link.QueueHead(lk.State.Queue); method != "" {
+		return &link.QueuedMsg{Method: method}
+	}
+	// Module requests for connected links.
+	if lk.State.Status == link.Connected {
+		for _, entry := range h.node.modules {
+			if _, requested := lk.Modules[entry.name]; !requested {
+				if lk.Modules == nil {
+					lk.Modules = map[string]bool{}
+				}
+				lk.Modules[entry.name] = false // pending
+				return &link.QueuedMsg{
+					Method:  "module",
+					Payload: Enc(map[string]string{"name": entry.name}),
+				}
+			}
 		}
-		return msg
 	}
 	return nil
 }
@@ -86,4 +104,39 @@ func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (jso
 		return h.node.Status(), nil
 	}
 	return nil, ErrBadMethod
+}
+
+// ---------------------------------------------------------------------------
+// Module negotiation
+// ---------------------------------------------------------------------------
+
+func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMessage) (bool, []string, error) {
+	var p struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
+		return false, nil, fmt.Errorf("bad payload")
+	}
+	if _, supported := h.node.moduleMap[p.Name]; !supported {
+		return false, nil, nil // we don't speak this module
+	}
+	if lk.Modules == nil {
+		lk.Modules = map[string]bool{}
+	}
+	lk.Modules[p.Name] = true
+	return true, nil, nil
+}
+
+func (h *linkHandler) respModule(lk *link.Link, payload json.RawMessage, ok bool) {
+	var p struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(payload, &p) != nil {
+		return
+	}
+	if ok {
+		lk.Modules[p.Name] = true
+	} else {
+		delete(lk.Modules, p.Name)
+	}
 }
