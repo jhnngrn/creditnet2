@@ -331,9 +331,11 @@ func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, er
 	// Request trustline module on this link.
 	lk := h.node.links[peerID]
 	if lk.State.Modules == nil {
-		lk.State.Modules = map[string]link.LinkStatus{}
+		lk.State.Modules = map[string]*link.Handshake{}
 	}
-	lk.State.Modules["trustline"] = link.Connecting
+	mod := &link.Handshake{}
+	link.Enqueue(&mod.Queue, "connect")
+	lk.State.Modules["trustline"] = mod
 	peer := h.peers[peerID]
 	if peer != nil {
 		peer.Disconnected = false // reconnect
@@ -359,9 +361,14 @@ func (h *TrustlineHandler) acceptPeer(payload json.RawMessage) (json.RawMessage,
 	// Request trustline module on this link.
 	lk := h.node.links[peerID]
 	if lk.State.Modules == nil {
-		lk.State.Modules = map[string]link.LinkStatus{}
+		lk.State.Modules = map[string]*link.Handshake{}
 	}
-	lk.State.Modules["trustline"] = link.Connecting
+	mod := lk.State.Modules["trustline"]
+	if mod == nil {
+		mod = &link.Handshake{}
+		lk.State.Modules["trustline"] = mod
+	}
+	link.Enqueue(&mod.Queue, "connect")
 	h.node.Kick(peerID)
 	return Enc("ok"), nil
 }

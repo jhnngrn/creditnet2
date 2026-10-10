@@ -25,17 +25,22 @@ var (
 type LinkStatus string
 
 const (
-	Connecting    LinkStatus = "connecting"    // intent to connect/propose, NextTx acts
-	Waiting       LinkStatus = "waiting"       // proposed, awaiting peer decision
-	Incoming      LinkStatus = "incoming"      // peer proposed, awaiting local decision
-	Connected     LinkStatus = "connected"     // bilaterally established
-	Disconnecting LinkStatus = "disconnecting" // intent to close, NextTx acts
+	Waiting   LinkStatus = "waiting"   // proposed, awaiting peer decision
+	Incoming  LinkStatus = "incoming"  // peer proposed, awaiting local decision
+	Connected LinkStatus = "connected" // bilaterally established
 )
 
-// LinkState combines what the link is with what it wants to send.
+// Handshake is the bilateral negotiation primitive: what IS (Status)
+// and what to SEND next (Queue).
+type Handshake struct {
+	Status LinkStatus `json:"status,omitempty"`
+	Queue  []string   `json:"queue,omitempty"`
+}
+
+// LinkState is a Handshake (for the link itself) plus per-module handshakes.
 type LinkState struct {
-	Status  LinkStatus            `json:"status"`
-	Modules map[string]LinkStatus `json:"modules,omitempty"`
+	Handshake
+	Modules map[string]*Handshake `json:"modules,omitempty"`
 }
 
 // QueuedMsg is a message queued for sending on a link.
@@ -57,7 +62,8 @@ type Link struct {
 
 // ModuleEnabled returns true if the named module is bilaterally active on this link.
 func (l *Link) ModuleEnabled(name string) bool {
-	return l.State.Modules[name] == Connected
+	mod := l.State.Modules[name]
+	return mod != nil && mod.Status == Connected
 }
 
 // Dominant returns true when this side owns the current counter slot.
