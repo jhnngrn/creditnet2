@@ -140,7 +140,6 @@ type Module interface {
 	HandleResponse(peer string, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 	NextTx(peer string) *QueuedMsg
-	ResetState(json.RawMessage)
 }
 
 // Transport sends sync messages to peers.

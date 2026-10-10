@@ -70,8 +70,6 @@ func (h *linkHandler) NextTx(peer string) *QueuedMsg {
 	return nil
 }
 
-func (h *linkHandler) ResetState(json.RawMessage) {}
-
 func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {
 	case "set_allow_invites":

@@ -168,26 +168,7 @@ func (n *Node) Commit() error {
 		}
 	}
 	if err := n.store.SaveNode(n.id, st); err != nil {
-		// Rollback from persisted state.
-		raw, lerr := n.store.LoadNode(n.id)
-		if lerr != nil {
-			log.Fatalf("node %s: save failed and cannot reload state: %v (save: %v)", n.id, lerr, err)
-		}
-		var reloaded nodeState
-		if json.Unmarshal(raw, &reloaded) == nil {
-			if reloaded.Links != nil {
-				n.links = reloaded.Links
-			}
-			if reloaded.AllowInvites != nil {
-				n.allowInvites = *reloaded.AllowInvites
-			}
-			for _, entry := range n.modules {
-				if state, ok := reloaded.Handlers[entry.name]; ok {
-					entry.module.ResetState(state)
-				}
-			}
-		}
-		return err
+		log.Fatalf("node %s: persist failed: %v", n.id, err)
 	}
 	return nil
 }
