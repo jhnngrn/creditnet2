@@ -176,7 +176,6 @@ func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, er
 	if mod == nil || mod.Status != link.Incoming {
 		return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 	}
-	mod.Status = ""
 	mod.IntentConnect = true
 	h.node.Kick(p.Peer)
 	return Enc("ok"), nil

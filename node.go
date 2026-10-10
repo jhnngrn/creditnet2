@@ -454,7 +454,6 @@ func (n *Node) AcceptLink(peer string) error {
 	if lk.State.Status != link.Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	lk.State.Status = ""
 	lk.State.IntentConnect = true
 	n.Kick(peer)
 	return nil
