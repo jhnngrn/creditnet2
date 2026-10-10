@@ -221,7 +221,7 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 		pbKicks := n.dispatchResponse(env.From, lk.Pending, env.Resp)
 		lk.AcceptResponse(env.Resp.Timestamp)
 		if n.links[env.From] != nil {
-			lk.Promote(n.nextTx(env.From))
+			lk.Pending = n.nextTx(env.From)
 		}
 		n.Commit()
 		for _, k := range pbKicks {
@@ -307,12 +307,11 @@ func (n *Node) sendPending(peer string) {
 	}
 	promoted := false
 	if lk.Pending == nil {
-		msg := n.nextTx(peer)
-		if msg == nil {
+		lk.Pending = n.nextTx(peer)
+		if lk.Pending == nil {
 			n.mu.Unlock()
 			return
 		}
-		lk.Pending = msg
 		promoted = true
 	}
 	counter := lk.Counter
@@ -358,7 +357,7 @@ func (n *Node) sendPending(peer string) {
 
 	var kickPeer bool
 	if n.links[peer] != nil {
-		lk.Promote(n.nextTx(peer))
+		lk.Pending = n.nextTx(peer)
 		kickPeer = lk.Pending != nil
 	}
 	n.Commit()

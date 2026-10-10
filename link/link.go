@@ -116,12 +116,6 @@ func (l *Link) AcceptResponse(ts int64) {
 	l.Pending = nil
 }
 
-// Promote sets the next pending message. No-op if msg is nil.
-func (l *Link) Promote(msg *QueuedMsg) {
-	if msg != nil {
-		l.Pending = msg
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Wire envelopes
