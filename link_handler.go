@@ -23,11 +23,8 @@ func (h *linkHandler) HandleRequest(peer string, method string, payload json.Raw
 	lk := h.node.links[peer]
 	switch method {
 	case "connect":
-		if lk.State.Status == link.Waiting {
+		if lk.State.Status == link.Connecting || lk.State.Status == link.Waiting {
 			lk.State.Status = link.Connected
-			if link.QueueHead(lk.State.Queue) == "connect" {
-				link.Dequeue(&lk.State.Queue) // mutual connect — no need to send own
-			}
 			return true, nil, nil
 		}
 		return false, nil, nil // Incoming → NACK (invite flow)
@@ -48,34 +45,40 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 	case "connect":
 		if ok {
 			lk.State.Status = link.Connected
+		} else {
+			lk.State.Status = link.Waiting
 		}
-		link.Dequeue(&lk.State.Queue)
 
 	case "close":
 		if ok {
 			h.node.DeleteLink(peer)
 			return nil
 		}
-		link.Dequeue(&lk.State.Queue)
 
 	case "module":
 		h.respModule(lk, payload, ok)
-		link.Dequeue(&lk.State.ModuleQueue)
 	}
 	return nil
 }
 
 func (h *linkHandler) NextTx(peer string) *link.QueuedMsg {
 	lk := h.node.links[peer]
-	// Link operations first (connect/close).
-	if method := link.QueueHead(lk.State.Queue); method != "" {
-		return &link.QueuedMsg{Method: method}
+	// Link lifecycle.
+	switch lk.State.Status {
+	case link.Connecting:
+		return &link.QueuedMsg{Method: "connect"}
+	case link.Disconnecting:
+		return &link.QueuedMsg{Method: "close"}
 	}
-	// Module proposals.
-	if name := link.QueueHead(lk.State.ModuleQueue); name != "" {
-		return &link.QueuedMsg{
-			Method:  "module",
-			Payload: Enc(map[string]string{"name": name}),
+	// Module proposals (only when connected).
+	if lk.State.Status == link.Connected {
+		for name, status := range lk.State.Modules {
+			if status == link.Connecting {
+				return &link.QueuedMsg{
+					Method:  "module",
+					Payload: Enc(map[string]string{"name": name}),
+				}
+			}
 		}
 	}
 	return nil
@@ -119,9 +122,8 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]link.LinkStatus{}
 	}
-	// Check if we have a pending proposal in queue (mutual).
-	if h.hasQueuedModule(lk, p.Name) {
-		h.dequeueModule(lk, p.Name)
+	// Mutual — we already want this module.
+	if lk.State.Modules[p.Name] == link.Connecting || lk.State.Modules[p.Name] == link.Waiting {
 		lk.State.Modules[p.Name] = link.Connected
 		return true, nil, nil
 	}
@@ -162,8 +164,7 @@ func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, er
 	if lk.State.Modules[p.Module] != link.Incoming {
 		return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 	}
-	delete(lk.State.Modules, p.Module)
-	link.Enqueue(&lk.State.ModuleQueue, p.Module)
+	lk.State.Modules[p.Module] = link.Connecting
 	h.node.Kick(p.Peer)
 	return Enc("ok"), nil
 }
@@ -185,24 +186,4 @@ func (h *linkHandler) rejectModule(payload json.RawMessage) (json.RawMessage, er
 	}
 	delete(lk.State.Modules, p.Module)
 	return Enc("ok"), nil
-}
-
-// hasQueuedModule checks if a module proposal is pending in the module queue.
-func (h *linkHandler) hasQueuedModule(lk *link.Link, name string) bool {
-	for _, m := range lk.State.ModuleQueue {
-		if m == name {
-			return true
-		}
-	}
-	return false
-}
-
-// dequeueModule removes a module proposal from the module queue.
-func (h *linkHandler) dequeueModule(lk *link.Link, name string) {
-	for i, m := range lk.State.ModuleQueue {
-		if m == name {
-			lk.State.ModuleQueue = append(lk.State.ModuleQueue[:i], lk.State.ModuleQueue[i+1:]...)
-			return
-		}
-	}
 }

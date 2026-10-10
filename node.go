@@ -431,8 +431,7 @@ func (n *Node) AddLink(peer string) error {
 		return fmt.Errorf("max links reached")
 	}
 	lk := link.NewLink(n.id, peer)
-	lk.State.Status = link.Waiting
-	link.Enqueue(&lk.State.Queue, "connect")
+	lk.State.Status = link.Connecting
 	n.links[peer] = lk
 	n.Kick(peer)
 	return nil
@@ -444,7 +443,7 @@ func (n *Node) RemoveLink(peer string) error {
 	if lk == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
-	link.Enqueue(&lk.State.Queue, "close")
+	lk.State.Status = link.Disconnecting
 	n.Kick(peer)
 	return nil
 }
@@ -458,8 +457,7 @@ func (n *Node) AcceptLink(peer string) error {
 	if lk.State.Status != link.Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	lk.State.Status = link.Waiting
-	link.Enqueue(&lk.State.Queue, "connect")
+	lk.State.Status = link.Connecting
 	n.Kick(peer)
 	return nil
 }
@@ -473,7 +471,7 @@ func (n *Node) RejectLink(peer string) error {
 	if lk.State.Status != link.Incoming {
 		return fmt.Errorf("link to %s is not incoming", peer)
 	}
-	link.Enqueue(&lk.State.Queue, "close")
+	lk.State.Status = link.Disconnecting
 	n.Kick(peer)
 	return nil
 }

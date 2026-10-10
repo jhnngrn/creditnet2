@@ -25,17 +25,17 @@ var (
 type LinkStatus string
 
 const (
-	Waiting   LinkStatus = "waiting"   // exists, not yet connected
-	Incoming  LinkStatus = "incoming"  // peer initiated, awaiting local decision
-	Connected LinkStatus = "connected" // bilaterally established
+	Connecting    LinkStatus = "connecting"    // intent to connect/propose, NextTx acts
+	Waiting       LinkStatus = "waiting"       // proposed, awaiting peer decision
+	Incoming      LinkStatus = "incoming"      // peer proposed, awaiting local decision
+	Connected     LinkStatus = "connected"     // bilaterally established
+	Disconnecting LinkStatus = "disconnecting" // intent to close, NextTx acts
 )
 
 // LinkState combines what the link is with what it wants to send.
 type LinkState struct {
-	Status      LinkStatus            `json:"status"`
-	Queue       []string              `json:"queue,omitempty"`
-	ModuleQueue []string              `json:"module_queue,omitempty"`
-	Modules     map[string]LinkStatus `json:"modules,omitempty"`
+	Status  LinkStatus            `json:"status"`
+	Modules map[string]LinkStatus `json:"modules,omitempty"`
 }
 
 // QueuedMsg is a message queued for sending on a link.
