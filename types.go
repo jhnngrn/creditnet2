@@ -130,21 +130,17 @@ func NewLink(self, peer string) *Link {
 // Interfaces
 // ---------------------------------------------------------------------------
 
-// Module processes sync methods for a namespace.
+// Module processes sync methods and account API calls for a namespace.
 // HandleRequest returns (ok, kicks, err) where kicks is a list of peers
 // that need kicking on other links (cross-link kicks, e.g. novation routing).
 // HandleResponse returns kicks for the same purpose.
+// HandleAccount handles user-facing API calls (via /api/account).
 type Module interface {
 	HandleRequest(peer string, method string, payload json.RawMessage, ts int64) (bool, []string, error)
 	HandleResponse(peer string, method string, payload json.RawMessage, ok bool, ts int64) []string
+	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 	NextTx(peer string) *QueuedMsg
 	ResetState(json.RawMessage)
-}
-
-// AccountModule is optionally implemented by modules that also handle
-// user-facing API calls (via /api/account).
-type AccountModule interface {
-	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 }
 
 // Transport sends sync messages to peers.

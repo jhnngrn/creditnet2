@@ -152,11 +152,7 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 	if mod == nil {
 		return nil, ErrBadMethod
 	}
-	ah, ok := mod.(AccountModule)
-	if !ok {
-		return nil, ErrBadMethod
-	}
-	return ah.HandleAccount(method, payload)
+	return mod.HandleAccount(method, payload)
 }
 
 // Commit persists the node state. Caller must hold Lock.
