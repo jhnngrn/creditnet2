@@ -29,17 +29,22 @@ Flags:
 
 ## Architecture
 
-Everything lives in one package (`creditnet`) at the module root. The sync
-protocol, trustline logic, and application layer (HTTP, auth, persistence)
-are all in the same package — no cross-package indirection.
+Two packages: `creditnet` (module root) and `creditnet/link` (bilateral
+sync primitive). The link package has zero dependencies back to creditnet
+and can be imported standalone.
 
 ```
-types.go               wire types, Link, Handler interfaces, errors, helpers
+link/
+  link.go              Link, sync lifecycle (ValidateRequest, AcceptRequest,
+                       AcceptResponse), wire types, queue helpers, link errors
+
+types.go               identities, Module/Transport interfaces, errors, helpers
 node.go                Node: sync engine, handler dispatch, persistence
-link_handler.go        link lifecycle (connect/close)
+link_handler.go        link lifecycle (connect/close/module negotiation)
 trustline.go           TrustlineHandler: credit limits, balances, payments
+triad.go               TriadHandler: three-party novation for circular debt
 demurrage.go           demurrage computation (decay over time)
-server.go              Server, Config, handler factory registration, P2P
+server.go              Server, Config, module factory registration, P2P
 account.go             namespace-routed account API dispatch
 keys.go                Ed25519 signing and verification
 users.go               auth, sessions, admin, argon2 password hashing
@@ -47,115 +52,105 @@ store.go               persistence (file-based)
 run.go                 Boot/RunAndWait helpers
 
 cmd/
-  base/                server with base handler
+  base/                server with built-in trustline module
 ```
 
-Handlers register under a namespace and receive sync dispatch. The link
-handler is registered as `"link"`, the trustline handler as `"trustline"`,
-and external modules add their own namespaces via `HandlerFactory`.
+Modules register under a namespace and receive sync dispatch. The trustline
+module is built in. External modules (like triad) register via
+`Server.Register(name, ModuleFactory)` before Init.
 
 ## Link layer
 
 The link layer provides bilateral connections between nodes. Handlers register under a namespace and receive sync dispatch.
 
-### Link ownership
+### Module negotiation
 
-Every link has an **owner** — a registered protocol that determines what runs on top of the link. The owner is identified by a string (e.g. `"trustline"`) stored in the link's `Owner` field and sent on the wire as `"protocol"` in the `link.connect` payload.
+Links start as bare connections. After a link reaches `connected`, the link handler automatically proposes each registered module to the peer via `link.module` messages. The peer responds OK if it supports the module. Both sides track module state per link (`false`=pending, `true`=active). Once a module is bilaterally active, the node dispatches sync messages for that module on the link.
 
-Owners register lifecycle callbacks via `RegisterOwner`:
-
-- **OnConnect** (constructor) — called when the link reaches `connected`. Creates per-peer state for the protocol (e.g. trustline creates a `Peer` with credit data).
-- **OnClose** (destructor) — called before the link is deleted. Cleans up per-peer state (e.g. trustline marks the peer as disconnected).
-
-This separates concerns: the link layer handles the connection lifecycle, and the owner handles what happens at each transition. Peers only exist when a link is connected — no orphaned state.
+This means application-level traffic (trustline operations, triad novations) only flows after both sides have agreed on the module. Adding a new module to the network is backward-compatible — nodes that don't know it simply NACK the proposal.
 
 ### Connected gate
 
-The node's `nextTx` always asks the link handler for pending messages (connect/close work regardless of connection state). For all other handlers, `nextTx` requires `link.State.Status == Connected` before asking. This means application-level sync methods (credit limits, payments, etc.) are only sent on connected links, without each handler needing to check connection state itself.
+The node's `nextTx` always asks the link handler for pending messages (connect/close/module work regardless of connection state). For modules, `nextTx` requires `link.State.Status == Connected` and the module bilaterally active before asking. This means application-level sync methods (credit limits, payments, etc.) are only sent on connected links with the module enabled, without each module needing to check connection state itself.
 
 ### Link state machine
 
 ```
-                 add_peer / AddLink          incoming link.connect
-                 (with protocol)             (with protocol in payload)
-                        |                         |
-                        v                         v
-                  +-----------+             +----------+
-                  |  waiting  |             | incoming  |
-                  +--+--+--+-+             +-+------+-+
-                     |  |  |                 |      |
-  recv link.connect  |  |  |                 |      |  reject_link
-  (mutual) ----------+  |  | RemoveLink     |      |  or RemoveLink
-                         |  | (link.close)   |      |  (link.close)
-            resp OK -----+  +------+        |      +------+
-                         |          |        |             |
-                         |     resp OK       |        resp OK
-            resp NACK    |          |        |             |
-            (stays       |          v        |             v
-             waiting) <--+      (deleted)    |         (deleted)
-                         |                   |
-                         v                   | accept_link
-                   +----------+              |
-                   |connected | <-- OnConnect+---> waiting
-                   +-----+----+
-                         |
-            RemoveLink   |
-            (link.close) |
-                         |
-                    resp OK
-                         |
-                         v
-                  OnClose + (deleted)
+                   AddLink               incoming link.connect
+                      |                         |
+                      v                         v
+                +-----------+             +----------+
+                |  waiting  |             | incoming  |
+                +--+--+--+-+             +-+------+-+
+                   |  |  |                 |      |
+recv link.connect  |  |  |                 |      |  RejectLink
+(mutual) ----------+  |  | RemoveLink     |      |  or RemoveLink
+                       |  | (link.close)   |      |  (link.close)
+          resp OK -----+  +------+        |      +------+
+                       |          |        |             |
+                       |     resp OK       |        resp OK
+          resp NACK    |          |        |             |
+          (stays       |          v        |             v
+           waiting) <--+      (deleted)    |         (deleted)
+                       |                   |
+                       v                   | AcceptLink
+                 +----------+              | (sets waiting,
+                 |connected |<-------------+ enqueues connect)
+                 +-----+----+
+                       |
+          RemoveLink   |
+          (link.close) |
+                       |
+                  resp OK
+                       |
+                       v
+                   (deleted)
 ```
 
 **States:**
 
-- **waiting** — outgoing `link.connect` queued (carries protocol in payload). If NACKed, peer has the invite (`incoming` on their side).
-- **incoming** — received `link.connect` from peer. Protocol validated against registered owners. Awaiting local decision (`accept_link` or `reject_link`).
-- **connected** — bilaterally established. `OnConnect` fires, creating per-peer state for the protocol.
+- **waiting** — outgoing `link.connect` queued. If NACKed, peer has the invite (`incoming` on their side).
+- **incoming** — received `link.connect` from peer. Awaiting local decision (`AcceptLink` or `RejectLink`).
+- **connected** — bilaterally established. Module negotiation begins automatically.
 
-On deletion (close completes), `OnClose` fires before the link is removed.
+On deletion (link.close completes), `LinkDeleted` is called on each module before the link is removed.
 
 ## Trustline layer
 
-The trustline handler registers as a link owner with protocol `"trustline"` and provides lifecycle callbacks that manage per-peer data.
-
-When a link with protocol `"trustline"` reaches `connected`, the `OnConnect` callback creates a `Peer` with default values (zero balances, no limits). When the link is deleted, `OnClose` marks the peer as `disconnected`. There is no separate peer state machine — the link layer drives the lifecycle.
-
-Peer data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
+The trustline handler registers as a module under the `"trustline"` namespace. It manages per-peer credit data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
 
 ### Peer lifecycle
 
 ```
   add_peer                        incoming link.connect
-  (creates link with              (from peer with protocol="trustline")
-   protocol="trustline")
-       |                                |
-       v                                v
-  link waiting                     link incoming
-  (no peer yet)                    (no peer yet)
-       |                                |
-  link.connect completes           accept_peer / reject_peer
-       |                           (AcceptLink / RejectLink)
-       v                                |
-  OnConnect                        link connects -> OnConnect
-  (creates Peer)                   (creates Peer)
-       |                                |
-       v                                v
-  peer exists                      peer exists
-  (connected)                      (connected)
+  (creates link +                 (from peer)
+   local Peer, enqueues                |
+   trustline.peer sync)                v
+       |                          link incoming
+       v                          (no peer yet)
+  link waiting                         |
+  peer exists locally             accept_peer / reject_peer
+       |                          (AcceptLink / RejectLink)
+       |                               |
+  link.connect completes          link connects
+  + module negotiation            + module negotiation
+  + trustline.peer sent           + incoming trustline.peer
+       |                          creates Peer
+       v                               |
+  peer synced                          v
+  bilaterally                     peer exists
        |
   remove_peer
   (RemoveLink -> link.close)
        |
-  OnClose
+  LinkDeleted
   (peer.Disconnected = true)
        |
   remove_peer again
   (deletes peer data)
 ```
 
-No peer exists until a link connects. Peers are born in `OnConnect` and marked disconnected in `OnClose`. A disconnected peer retains its data (balance, limits) for display until explicitly removed.
+The initiator creates the `Peer` locally in `add_peer` and syncs it to the remote via `trustline.peer`. The receiver creates the `Peer` when the `trustline.peer` sync arrives. `LinkDeleted` marks a peer as disconnected, retaining its data (balance, limits) for display until explicitly removed with a second `remove_peer`.
 
 ### Sync protocol
 
@@ -171,11 +166,15 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 **link namespace:**
 
-`link.connect` — establish bilateral connection. Payload carries `{"protocol": "trustline"}` to identify the link owner. Mutual add -> instant `connected` + `OnConnect`. Incoming from unknown -> `incoming` (NACKed, protocol stored on link).
+`link.connect` — establish bilateral connection. Mutual add -> instant `connected`. Incoming from unknown -> `incoming` (NACKed, awaiting accept/reject).
 
-`link.close` — close a connection. `OnClose` fires, then the link is deleted. If the peer has no link, a synthetic ACK is returned.
+`link.module` — bilateral module negotiation. Sent automatically after a link connects. Payload carries `{"name": "trustline"}`. Peer ACKs if it supports the module, enabling it on the link.
+
+`link.close` — close a connection. `LinkDeleted` is called on each module, then the link is removed. If the peer has no link, a synthetic ACK is returned.
 
 **trustline namespace:**
+
+`trustline.peer` — establish bilateral peer relationship. Sent after link connects and module is enabled. Receiver creates a `Peer` if one doesn't exist.
 
 `trustline.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
 
@@ -193,16 +192,15 @@ All endpoints accept JSON `{method, payload}`.
 
 **POST /api/account** — requires bearer token. Methods are namespace-routed (`namespace.method`):
 
-- `trustline.add_peer` (`{peer}`) — create link with protocol `"trustline"`, queue `link.connect`
-- `trustline.accept_peer` (`{peer}`) — accept incoming link (peer created by `OnConnect` when link connects)
+- `trustline.add_peer` (`{peer}`) — create link, queue `link.connect` and `trustline.peer` sync
+- `trustline.accept_peer` (`{peer}`) — accept incoming link
 - `trustline.reject_peer` (`{peer}`) — reject incoming link (sends `link.close`)
-- `trustline.remove_peer` (`{peer}`) — close link (`link.close`), peer marked disconnected by `OnClose`. Call again to delete peer data.
+- `trustline.remove_peer` (`{peer}`) — close link (`link.close`), peer marked disconnected. Call again to delete peer data.
 - `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
 - `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
 - `trustline.payment` (`{peer, amount}`) — send payment to peer
 - `trustline.status` — peers with credit data, link state, incoming invites
-- `link.accept_link` (`{peer}`) — accept incoming link
-- `link.reject_link` (`{peer}`) — reject incoming link
+- `triad.status` — active novation count
 - `link.set_allow_invites` (`{enabled}`) — toggle incoming invites (default: true)
 - `link.status` — raw link state and allow_invites setting
 
