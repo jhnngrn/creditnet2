@@ -66,7 +66,7 @@ func (c *Config) fill() error {
 // ---------------------------------------------------------------------------
 
 // ModuleFactory creates a module for a newly loaded or created node.
-// Modules receive a PeerView for querying trustline state (including
+// Modules receive a TrustlineReader for querying trustline state (including
 // bandwidth) and their persisted state (nil if new).
 type ModuleFactory func(n *Node, peers TrustlineReader, state json.RawMessage) Module
 
@@ -307,8 +307,6 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 			HttpError(w, http.StatusConflict, syncErr.Error())
 		case errors.Is(syncErr, ErrBadMethod):
 			HttpError(w, http.StatusBadRequest, syncErr.Error())
-		case errors.Is(syncErr, ErrPersistFailed):
-			HttpError(w, http.StatusInternalServerError, "persist failed")
 		default:
 			HttpError(w, http.StatusBadRequest, syncErr.Error())
 		}

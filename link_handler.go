@@ -51,6 +51,7 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 	case "close":
 		if ok {
 			h.node.DeleteLink(peer)
+			return nil
 		}
 		// !ok: refs > 0 on peer side
 	}

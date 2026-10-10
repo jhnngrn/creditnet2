@@ -156,7 +156,7 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 }
 
 // Commit persists the node state. Caller must hold Lock.
-func (n *Node) Commit() error {
+func (n *Node) Commit() {
 	ai := n.allowInvites
 	st := nodeState{ID: n.id, Links: n.links, AllowInvites: &ai}
 	if len(n.modules) > 0 {
@@ -170,7 +170,6 @@ func (n *Node) Commit() error {
 	if err := n.store.SaveNode(n.id, st); err != nil {
 		log.Fatalf("node %s: persist failed: %v", n.id, err)
 	}
-	return nil
 }
 
 func (n *Node) Kick(peer string) { go n.sendPending(peer) }
@@ -261,10 +260,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 				link.Pending = msg
 			}
 		}
-		if err := n.Commit(); err != nil {
-			n.mu.Unlock()
-			return nil, ErrPersistFailed
-		}
+		n.Commit()
 		// Piggyback committed — dispatch its kicks now so they aren't
 		// lost if the request part below returns an error.
 		for _, k := range pbKicks {
@@ -316,10 +312,7 @@ func (n *Node) HandleSync(env SyncRequest) (*SyncResponse, error) {
 
 	resp := SyncResponse{Counter: env.Counter, OK: ok, Timestamp: ts}
 	link.CachedResponse = &resp
-	if err := n.Commit(); err != nil {
-		n.mu.Unlock()
-		return nil, ErrPersistFailed
-	}
+	n.Commit()
 	n.mu.Unlock()
 	n.Kick(env.From)
 	for _, k := range kicks {
@@ -369,11 +362,7 @@ func (n *Node) sendPending(peer string) {
 		env.Resp = cr
 	}
 	if promoted {
-		if err := n.Commit(); err != nil {
-			delete(n.sends, peer)
-			n.mu.Unlock()
-			return
-		}
+		n.Commit()
 	}
 	n.mu.Unlock()
 
@@ -415,11 +404,7 @@ func (n *Node) sendPending(peer string) {
 			kickPeer = true
 		}
 	}
-	if err := n.Commit(); err != nil {
-		delete(n.sends, peer)
-		n.mu.Unlock()
-		return
-	}
+	n.Commit()
 	n.setRetry(peer, counter, false)
 	n.mu.Unlock()
 	if kickPeer {

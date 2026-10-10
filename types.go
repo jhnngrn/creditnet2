@@ -179,7 +179,6 @@ var (
 	ErrCounterAhead    = errors.New("counter ahead")
 	ErrCollision       = errors.New("collision")
 	ErrBadMethod       = errors.New("unknown sync method")
-	ErrPersistFailed   = errors.New("persist failed")
 	ErrNotFound        = errors.New("not found")
 )
 

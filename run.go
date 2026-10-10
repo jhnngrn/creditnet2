@@ -11,8 +11,8 @@ import (
 	"syscall"
 )
 
-// Run parses flags, initializes the server, and blocks until signal.
-// Call Register on the returned server before calling Run.
+// Boot parses flags and initializes the server.
+// Call Register on the returned server before calling RunAndWait.
 func Boot() (*Server, error) {
 	domain := flag.String("domain", "", "Server domain (required)")
 	dataDir := flag.String("data", "/var/lib/creditnet", "Data directory")

@@ -24,11 +24,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	n.Lock()
 	result, appErr := n.HandleAccount(req.Method, req.Payload)
 	if appErr == nil {
-		if err := n.Commit(); err != nil {
-			n.Unlock()
-			HttpError(w, http.StatusInternalServerError, "persist failed")
-			return
-		}
+		n.Commit()
 	}
 	n.Unlock()
 	if appErr != nil {
