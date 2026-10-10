@@ -137,6 +137,10 @@ func (h *TrustlineHandler) HandleRequest(peerID string, p *Peer, method string, 
 			peer.State.IntentConnect = false
 			return true, nil, nil
 		}
+		if h.node.InviteMode() == InviteModeOpen {
+			peer.State.Status = link.Connected
+			return true, nil, nil
+		}
 		peer.State.Status = link.Incoming
 		return false, nil, nil
 	case "close":
@@ -572,7 +576,7 @@ func (h *TrustlineHandler) status() (json.RawMessage, error) {
 	}
 
 	return Enc(map[string]any{
-		"peers":         peers,
-		"allow_invites": h.node.AllowInvites(),
+		"peers":       peers,
+		"invite_mode": h.node.InviteMode(),
 	}), nil
 }

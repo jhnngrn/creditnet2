@@ -122,3 +122,15 @@ func SplitMethod(method string) (ns, name string) {
 }
 
 const MaxLinks = 64
+
+// ---------------------------------------------------------------------------
+// InviteMode
+// ---------------------------------------------------------------------------
+
+type InviteMode string
+
+const (
+	InviteModeClosed InviteMode = "closed" // reject all incoming
+	InviteModeInvite InviteMode = "invite" // incoming, manual accept
+	InviteModeOpen   InviteMode = "open"   // auto-accept all
+)

@@ -19,10 +19,10 @@ const retryDelay = 60 * time.Second
 
 type Node struct {
 	mu           sync.Mutex
-	id           string
-	links        map[string]*link.Link
-	sends        map[string]*peerSend
-	allowInvites bool
+	id         string
+	links      map[string]*link.Link
+	sends      map[string]*peerSend
+	inviteMode InviteMode
 
 	lh        *linkHandler
 	trustline *TrustlineHandler
@@ -53,10 +53,10 @@ type moduleEntry struct {
 }
 
 type nodeState struct {
-	ID           string                     `json:"id"`
-	Links        map[string]*link.Link      `json:"links"`
-	AllowInvites *bool                      `json:"allow_invites,omitempty"`
-	Handlers     map[string]json.RawMessage `json:"handlers,omitempty"`
+	ID         string                     `json:"id"`
+	Links      map[string]*link.Link      `json:"links"`
+	InviteMode InviteMode                 `json:"invite_mode,omitempty"`
+	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
 }
 
 func newNode(id string, raw json.RawMessage, transport Transport, store Store) *Node {
@@ -67,18 +67,18 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 	if st.Links == nil {
 		st.Links = map[string]*link.Link{}
 	}
-	invites := true
-	if st.AllowInvites != nil {
-		invites = *st.AllowInvites
+	mode := st.InviteMode
+	if mode == "" {
+		mode = InviteModeInvite
 	}
 	n := &Node{
-		id:           id,
-		links:        st.Links,
-		sends:        map[string]*peerSend{},
-		allowInvites: invites,
-		moduleMap:    map[string]Module{},
-		transport:    transport,
-		store:        store,
+		id:         id,
+		links:      st.Links,
+		sends:      map[string]*peerSend{},
+		inviteMode: mode,
+		moduleMap:  map[string]Module{},
+		transport:  transport,
+		store:      store,
 	}
 
 	// Built-in handlers.
@@ -121,10 +121,10 @@ func (n *Node) DeleteLink(peer string) {
 // Locking & persistence
 // ---------------------------------------------------------------------------
 
-func (n *Node) Lock()             { n.mu.Lock() }
-func (n *Node) Unlock()           { n.mu.Unlock() }
-func (n *Node) ID() string        { return n.id }
-func (n *Node) AllowInvites() bool { return n.allowInvites }
+func (n *Node) Lock()                 { n.mu.Lock() }
+func (n *Node) Unlock()               { n.mu.Unlock() }
+func (n *Node) ID() string            { return n.id }
+func (n *Node) InviteMode() InviteMode { return n.inviteMode }
 
 // HandleAccount dispatches a user-facing API call by namespace.
 // Caller must hold Lock.
@@ -142,8 +142,7 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 
 // Commit persists the node state. Caller must hold Lock.
 func (n *Node) Commit() {
-	ai := n.allowInvites
-	st := nodeState{ID: n.id, Links: n.links, AllowInvites: &ai}
+	st := nodeState{ID: n.id, Links: n.links, InviteMode: n.inviteMode}
 	if len(n.modules) > 0 {
 		st.Handlers = make(map[string]json.RawMessage)
 		for _, entry := range n.modules {
@@ -203,7 +202,7 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrNoLink
 		}
-		if !n.allowInvites {
+		if n.inviteMode == InviteModeClosed {
 			n.mu.Unlock()
 			return nil, ErrInvitesDisabled
 		}
@@ -473,8 +472,8 @@ func (n *Node) RejectLink(peer string) error {
 	return nil
 }
 
-func (n *Node) SetAllowInvites(enabled bool) {
-	n.allowInvites = enabled
+func (n *Node) SetInviteMode(mode InviteMode) {
+	n.inviteMode = mode
 }
 
 func (n *Node) Status() json.RawMessage {
@@ -485,7 +484,7 @@ func (n *Node) Status() json.RawMessage {
 		}
 	}
 	return Enc(map[string]any{
-		"links":         links,
-		"allow_invites": n.allowInvites,
+		"links":       links,
+		"invite_mode": n.inviteMode,
 	})
 }

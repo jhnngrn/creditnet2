@@ -28,6 +28,10 @@ func (h *linkHandler) HandleRequest(peer string, method string, payload json.Raw
 			lk.State.IntentConnect = false
 			return true, nil, nil
 		}
+		if h.node.InviteMode() == InviteModeOpen {
+			lk.State.Status = link.Connected
+			return true, nil, nil
+		}
 		return false, nil, nil // Incoming → NACK (invite flow)
 
 	case "close":
@@ -89,14 +93,19 @@ func (h *linkHandler) NextTx(peer string) *link.QueuedMsg {
 
 func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {
-	case "set_allow_invites":
+	case "set_invite_mode":
 		var p struct {
-			Enabled bool `json:"enabled"`
+			Mode InviteMode `json:"mode"`
 		}
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return nil, fmt.Errorf("bad request")
 		}
-		h.node.SetAllowInvites(p.Enabled)
+		switch p.Mode {
+		case InviteModeClosed, InviteModeInvite, InviteModeOpen:
+		default:
+			return nil, fmt.Errorf("invalid mode %q", p.Mode)
+		}
+		h.node.SetInviteMode(p.Mode)
 		return Enc("ok"), nil
 	case "accept_module":
 		return h.acceptModule(payload)
@@ -130,6 +139,15 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 	if mod != nil && (mod.IntentConnect || mod.Status == link.Waiting) {
 		mod.Status = link.Connected
 		mod.IntentConnect = false
+		return true, nil, nil
+	}
+	// Open mode — auto-accept supported modules.
+	if h.node.InviteMode() == InviteModeOpen {
+		if mod == nil {
+			mod = &link.ConnectionState{}
+			lk.State.Modules[p.Name] = mod
+		}
+		mod.Status = link.Connected
 		return true, nil, nil
 	}
 	// Mark as incoming — awaiting local accept/reject.

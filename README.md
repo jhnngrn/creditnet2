@@ -117,6 +117,14 @@ A new link starts with no status and `IntentConnect = true`. Status becomes `wai
 
 On deletion (link.close completes), `LinkDeleted` is called on each module before the link is removed.
 
+### Invite mode
+
+Three-state `InviteMode` controls how a node handles incoming connections from unknown peers:
+
+- **closed** — reject all incoming `link.connect` from unknown peers (before signature verification).
+- **invite** — accept the link as `incoming`, NACK it, and wait for manual `accept_peer` / `reject_peer`. This is the default.
+- **open** — auto-accept at every layer. `link.connect` → ACK (connected), `link.module` → ACK (module enabled), `trustline.connect` → ACK (peer connected). No manual step needed.
+
 ## Trustline layer
 
 The trustline handler registers as a module under the `"trustline"` namespace. It manages per-peer credit data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
@@ -173,15 +181,15 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches to the ha
 
 **link namespace:**
 
-`link.connect` — establish bilateral connection. Mutual add -> instant `connected`. Incoming from unknown -> `incoming` (NACKed, awaiting accept/reject).
+`link.connect` — establish bilateral connection. Mutual add → instant `connected`. Incoming from unknown → `incoming` (NACKed, awaiting accept/reject). In `open` mode, auto-ACKed.
 
-`link.module` — bilateral module negotiation. Sent automatically after a link connects. Payload carries `{"name": "trustline"}`. Peer ACKs if it supports the module, enabling it on the link.
+`link.module` — bilateral module negotiation. Sent automatically after a link connects. Payload carries `{"name": "trustline"}`. Peer ACKs if it supports the module, enabling it on the link. In `open` mode, supported modules are auto-ACKed.
 
 `link.close` — close a connection. `LinkDeleted` is called on each module, then the link is removed. If the peer has no link, a synthetic ACK is returned.
 
 **trustline namespace:**
 
-`trustline.connect` — establish bilateral peer relationship. Same `ConnectionState` pattern as `link.connect`: mutual add → instant `connected`, incoming from unknown → `incoming` (NACKed, awaiting accept).
+`trustline.connect` — establish bilateral peer relationship. Same `ConnectionState` pattern as `link.connect`: mutual add → instant `connected`, incoming from unknown → `incoming` (NACKed, awaiting accept). In `open` mode, auto-ACKed.
 
 `trustline.close` — close a peer relationship. Both sides clear peer State, retaining data (balance, limits) for display until explicitly removed.
 
@@ -210,8 +218,8 @@ All endpoints accept JSON `{method, payload}`.
 - `trustline.payment` (`{peer, amount}`) — send payment to peer
 - `trustline.status` — peers with credit data, link state, incoming invites
 - `triad.status` — active novation count
-- `link.set_allow_invites` (`{enabled}`) — toggle incoming invites (default: true)
-- `link.status` — raw link state and allow_invites setting
+- `link.set_invite_mode` (`{mode}`) — set invite mode: `"closed"`, `"invite"` (default), or `"open"`
+- `link.status` — raw link state and invite mode
 
 **POST /p2p/tx** — bilateral sync (`link.*`, `trustline.*`)
 
