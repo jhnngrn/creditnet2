@@ -1,4 +1,4 @@
-package link
+package creditnet
 
 import (
 	"encoding/json"
@@ -78,9 +78,9 @@ type SyncResponse struct {
 type LinkStatus string
 
 const (
-	Waiting   LinkStatus = "waiting"    // exists, not yet connected
-	Incoming  LinkStatus = "incoming"   // peer initiated, awaiting local decision
-	Connected LinkStatus = "connected"  // bilaterally established
+	Waiting   LinkStatus = "waiting"   // exists, not yet connected
+	Incoming  LinkStatus = "incoming"  // peer initiated, awaiting local decision
+	Connected LinkStatus = "connected" // bilaterally established
 )
 
 // LinkState combines what the link is with what it wants to send.
@@ -152,10 +152,27 @@ type Transport interface {
 	Send(peerDomain string, msg SyncRequest) ([]byte, error)
 }
 
-// NodeStore persists and loads node state.
-type NodeStore interface {
-	Save(id string, state any) error
-	Load(id string) (json.RawMessage, error)
+// ---------------------------------------------------------------------------
+// Module isolation interfaces
+// ---------------------------------------------------------------------------
+
+// PeerView provides read-only access to trustline peer data.
+// Modules receive this instead of the full TrustlineHandler.
+type PeerView interface {
+	HasPeer(peer string) bool
+	Peers() []string
+	GetPeer(peer string) *Peer
+}
+
+// BandwidthFunc returns available (in, out) capacity for a peer,
+// accounting for effective balance, credit limits, and all reservations.
+type BandwidthFunc func(peer string) (in, out int64)
+
+// Reserver reports capacity reserved by a module on a given peer.
+// Modules that hold temporary reservations (e.g. in-flight ripple hops)
+// implement this so the bandwidth computation can subtract them.
+type Reserver interface {
+	Reserved(peer string) (in, out int64)
 }
 
 // ---------------------------------------------------------------------------
@@ -163,14 +180,15 @@ type NodeStore interface {
 // ---------------------------------------------------------------------------
 
 var (
-	ErrNoLink           = errors.New("no link")
-	ErrMaxLinks         = errors.New("max links")
-	ErrInvitesDisabled  = errors.New("invites disabled")
-	ErrStaleCounter     = errors.New("stale counter")
-	ErrCounterAhead     = errors.New("counter ahead")
-	ErrCollision        = errors.New("collision")
-	ErrBadMethod        = errors.New("unknown sync method")
-	ErrPersistFailed    = errors.New("persist failed")
+	ErrNoLink          = errors.New("no link")
+	ErrMaxLinks        = errors.New("max links")
+	ErrInvitesDisabled = errors.New("invites disabled")
+	ErrStaleCounter    = errors.New("stale counter")
+	ErrCounterAhead    = errors.New("counter ahead")
+	ErrCollision       = errors.New("collision")
+	ErrBadMethod       = errors.New("unknown sync method")
+	ErrPersistFailed   = errors.New("persist failed")
+	ErrNotFound        = errors.New("not found")
 )
 
 // ---------------------------------------------------------------------------

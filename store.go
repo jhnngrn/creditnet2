@@ -1,15 +1,12 @@
-package core
+package creditnet
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
-
-var ErrNotFound = errors.New("not found")
 
 type Store interface {
 	SaveNode(id string, v any) error

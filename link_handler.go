@@ -1,4 +1,4 @@
-package link
+package creditnet
 
 import (
 	"encoding/json"
@@ -13,8 +13,7 @@ type linkHandler struct {
 	node *Node
 }
 
-// NewLinkHandler creates a Handler for the "link" namespace.
-func NewLinkHandler(n *Node) Handler {
+func newLinkHandler(n *Node) Handler {
 	return &linkHandler{node: n}
 }
 

@@ -1,4 +1,4 @@
-package core
+package creditnet
 
 import (
 	"context"
@@ -12,9 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"creditnet/base"
-	"creditnet/link"
 )
 
 // ---------------------------------------------------------------------------
@@ -27,10 +24,10 @@ type Config struct {
 	DataDir string
 	Store   Store
 
-	SessionTTL time.Duration
-	KeyCacheTTL   time.Duration
-	HTTPTimeout   time.Duration
-	PeerScheme    string
+	SessionTTL  time.Duration
+	KeyCacheTTL time.Duration
+	HTTPTimeout time.Duration
+	PeerScheme  string
 
 	AdminUser string
 	AdminPass string
@@ -65,29 +62,13 @@ func (c *Config) fill() error {
 }
 
 // ---------------------------------------------------------------------------
-// nodeStoreAdapter — bridges core.Store to link.NodeStore
-// ---------------------------------------------------------------------------
-
-type nodeStoreAdapter struct {
-	store Store
-}
-
-func (a *nodeStoreAdapter) Save(id string, state any) error {
-	return a.store.SaveNode(id, state)
-}
-
-func (a *nodeStoreAdapter) Load(id string) (json.RawMessage, error) {
-	return a.store.LoadNode(id)
-}
-
-// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
 // HandlerFactory creates a module handler for a newly loaded or created node.
-// Modules receive a PeerView for querying trustline state and a BandwidthFunc
-// for checking available capacity (accounting for all reservations).
-type HandlerFactory func(n *link.Node, peers base.PeerView, bw base.BandwidthFunc) link.Handler
+// Modules receive a PeerView for querying trustline state, a BandwidthFunc
+// for checking available capacity, and their persisted state (nil if new).
+type HandlerFactory func(n *Node, peers PeerView, bw BandwidthFunc, state json.RawMessage) Handler
 
 type handlerReg struct {
 	name    string
@@ -103,7 +84,7 @@ type Server struct {
 	factories []handlerReg
 
 	nmu   sync.RWMutex
-	nodes map[string]*link.Node
+	nodes map[string]*Node
 
 	umu      sync.Mutex
 	users    map[string]*UserRecord
@@ -118,8 +99,8 @@ func (s *Server) Register(name string, factory HandlerFactory) {
 	s.factories = append(s.factories, handlerReg{name: name, factory: factory})
 }
 
-// Send implements link.Transport.
-func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
+// Send implements Transport.
+func (s *Server) Send(peerDomain string, msg SyncRequest) ([]byte, error) {
 	status, body, err := s.postSigned(peerDomain, "/p2p/tx", msg)
 	if err != nil {
 		return nil, err
@@ -130,20 +111,38 @@ func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
 	return body, nil
 }
 
-func (s *Server) newNode(id string, raw json.RawMessage) *link.Node {
-	n := link.NewNode(id, raw, s, &nodeStoreAdapter{s.store})
-	n.RegisterHandler("link", link.NewLinkHandler(n))
-	bh := base.NewHandler(n)
-	n.RegisterHandler("trustline", bh)
+// newNode creates a Node from persisted state (or nil for new).
+// Method on Server so it has access to registered factories.
+func (s *Server) newNode(id string, raw json.RawMessage) *Node {
+	n := newNode(id, raw, s, s.store)
 
-	for _, f := range s.factories {
-		h := f.factory(n, bh, bh.Bandwidth)
-		n.RegisterHandler(f.name, h)
-		if r, ok := h.(base.Reserver); ok {
-			bh.RegisterReserver(r)
+	// Register external module handlers from factories.
+	if len(s.factories) > 0 {
+		bh := n.handlerMap["trustline"].(*TrustlineHandler)
+		for _, f := range s.factories {
+			h := f.factory(n, bh, bh.Bandwidth, handlerState(raw, f.name))
+			n.RegisterHandler(f.name, h)
+			if r, ok := h.(Reserver); ok {
+				bh.RegisterReserver(r)
+			}
 		}
 	}
+
 	return n
+}
+
+// handlerState extracts a handler's persisted state from the node's raw JSON.
+func handlerState(raw json.RawMessage, name string) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	var st struct {
+		Handlers map[string]json.RawMessage `json:"handlers"`
+	}
+	if json.Unmarshal(raw, &st) != nil {
+		return nil
+	}
+	return st.Handlers[name]
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -168,7 +167,7 @@ func NewServer(cfg Config) (*Server, error) {
 	return &Server{
 		cfg: cfg, store: store, key: key,
 		client:   &http.Client{Timeout: cfg.HTTPTimeout},
-		nodes:    map[string]*link.Node{},
+		nodes:    map[string]*Node{},
 		users:    users,
 		sessions: map[string]*session{},
 		keyCache: map[string]cachedKey{},
@@ -185,7 +184,7 @@ func (s *Server) Init() error {
 		if err != nil {
 			return err
 		}
-		user, domain, err := link.ParseIdentity(id)
+		user, domain, err := ParseIdentity(id)
 		if err != nil || domain != s.cfg.Domain {
 			continue
 		}
@@ -245,20 +244,19 @@ func (s *Server) logf(format string, args ...any) {
 	}
 }
 
-func (s *Server) getNode(user string) *link.Node {
+func (s *Server) getNode(user string) *Node {
 	s.nmu.RLock()
 	defer s.nmu.RUnlock()
 	return s.nodes[user]
 }
 
-func (s *Server) nodeByIdentity(id string) *link.Node {
-	user, domain, err := link.ParseIdentity(id)
+func (s *Server) nodeByIdentity(id string) *Node {
+	user, domain, err := ParseIdentity(id)
 	if err != nil || domain != s.cfg.Domain {
 		return nil
 	}
 	return s.getNode(user)
 }
-
 
 // ---------------------------------------------------------------------------
 // P2P sync handler
@@ -270,12 +268,12 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		HttpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	var env link.SyncRequest
+	var env SyncRequest
 	if json.Unmarshal(body, &env) != nil {
 		HttpError(w, http.StatusBadRequest, "malformed")
 		return
 	}
-	if !link.IdentityInDomain(env.From, sigDomain) {
+	if !IdentityInDomain(env.From, sigDomain) {
 		HttpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -299,17 +297,17 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 	resp, syncErr := n.HandleSync(env)
 	if syncErr != nil {
 		switch {
-		case errors.Is(syncErr, link.ErrNoLink):
+		case errors.Is(syncErr, ErrNoLink):
 			HttpError(w, http.StatusNotFound, "no link")
-		case errors.Is(syncErr, link.ErrInvitesDisabled):
+		case errors.Is(syncErr, ErrInvitesDisabled):
 			HttpError(w, http.StatusForbidden, "invites disabled")
-		case errors.Is(syncErr, link.ErrMaxLinks):
+		case errors.Is(syncErr, ErrMaxLinks):
 			HttpError(w, http.StatusBadRequest, "max links")
-		case errors.Is(syncErr, link.ErrStaleCounter), errors.Is(syncErr, link.ErrCounterAhead), errors.Is(syncErr, link.ErrCollision):
+		case errors.Is(syncErr, ErrStaleCounter), errors.Is(syncErr, ErrCounterAhead), errors.Is(syncErr, ErrCollision):
 			HttpError(w, http.StatusConflict, syncErr.Error())
-		case errors.Is(syncErr, link.ErrBadMethod):
+		case errors.Is(syncErr, ErrBadMethod):
 			HttpError(w, http.StatusBadRequest, syncErr.Error())
-		case errors.Is(syncErr, link.ErrPersistFailed):
+		case errors.Is(syncErr, ErrPersistFailed):
 			HttpError(w, http.StatusInternalServerError, "persist failed")
 		default:
 			HttpError(w, http.StatusBadRequest, syncErr.Error())

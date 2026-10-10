@@ -3,13 +3,13 @@ package main
 import (
 	"log"
 
-	"creditnet/core"
+	"creditnet"
 )
 
 func main() {
-	srv, err := core.Boot()
+	srv, err := creditnet.Boot()
 	if err != nil {
 		log.Fatal(err)
 	}
-	core.RunAndWait(srv)
+	creditnet.RunAndWait(srv)
 }

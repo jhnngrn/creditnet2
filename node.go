@@ -1,4 +1,4 @@
-package link
+package creditnet
 
 import (
 	"encoding/json"
@@ -22,14 +22,13 @@ type Node struct {
 	sends        map[string]*peerSend
 	allowInvites bool
 
-	handlers      []handlerEntry
-	handlerMap    map[string]Handler
-	handlerStates map[string]json.RawMessage
+	handlers   []handlerEntry
+	handlerMap map[string]Handler
 
 	owners map[string]LinkOwner
 
 	transport Transport
-	store     NodeStore
+	store     Store
 }
 
 // peerSend tracks the outgoing send lifecycle for a peer at a given counter.
@@ -57,7 +56,7 @@ type nodeState struct {
 	Handlers     map[string]json.RawMessage `json:"handlers,omitempty"`
 }
 
-func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStore) *Node {
+func newNode(id string, raw json.RawMessage, transport Transport, store Store) *Node {
 	var st nodeState
 	if raw != nil {
 		json.Unmarshal(raw, &st)
@@ -69,17 +68,24 @@ func NewNode(id string, raw json.RawMessage, transport Transport, store NodeStor
 	if st.AllowInvites != nil {
 		invites = *st.AllowInvites
 	}
-	return &Node{
-		id:            id,
-		links:         st.Links,
-		sends:         map[string]*peerSend{},
-		allowInvites:  invites,
-		handlerMap:    map[string]Handler{},
-		handlerStates: st.Handlers,
-		owners:        map[string]LinkOwner{},
-		transport:     transport,
-		store:         store,
+	n := &Node{
+		id:           id,
+		links:        st.Links,
+		sends:        map[string]*peerSend{},
+		allowInvites: invites,
+		handlerMap:   map[string]Handler{},
+		owners:       map[string]LinkOwner{},
+		transport:    transport,
+		store:        store,
 	}
+
+	// Register built-in handlers. Handler state is passed directly to
+	// constructors — no HandlerState() indirection.
+	n.RegisterHandler("link", newLinkHandler(n))
+	bh := NewTrustlineHandler(n, st.Handlers["trustline"])
+	n.RegisterHandler("trustline", bh)
+
+	return n
 }
 
 // ---------------------------------------------------------------------------
@@ -108,15 +114,6 @@ func (n *Node) NotifyLinkConnected(peer string) {
 	}
 }
 
-// HandlerState returns the persisted state for a handler namespace.
-// Used by callers to pass saved state when constructing a handler.
-func (n *Node) HandlerState(name string) json.RawMessage {
-	if n.handlerStates == nil {
-		return nil
-	}
-	return n.handlerStates[name]
-}
-
 // Links returns the node's links map. Caller must hold Lock.
 func (n *Node) Links() map[string]*Link {
 	return n.links
@@ -143,9 +140,9 @@ func (n *Node) DeleteLink(peer string) {
 // Locking & persistence
 // ---------------------------------------------------------------------------
 
-func (n *Node) Lock()         { n.mu.Lock() }
-func (n *Node) Unlock()       { n.mu.Unlock() }
-func (n *Node) ID() string    { return n.id }
+func (n *Node) Lock()            { n.mu.Lock() }
+func (n *Node) Unlock()          { n.mu.Unlock() }
+func (n *Node) ID() string       { return n.id }
 func (n *Node) AllowInvites() bool { return n.allowInvites }
 
 // HandleAccount dispatches a user-facing API call by namespace.
@@ -175,9 +172,9 @@ func (n *Node) Commit() error {
 			}
 		}
 	}
-	if err := n.store.Save(n.id, st); err != nil {
+	if err := n.store.SaveNode(n.id, st); err != nil {
 		// Rollback from persisted state.
-		raw, lerr := n.store.Load(n.id)
+		raw, lerr := n.store.LoadNode(n.id)
 		if lerr != nil {
 			log.Fatalf("node %s: save failed and cannot reload state: %v (save: %v)", n.id, lerr, err)
 		}

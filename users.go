@@ -1,4 +1,4 @@
-package core
+package creditnet
 
 import (
 	"crypto/rand"
@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"creditnet/link"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -53,7 +52,7 @@ var errUserExists = errors.New("user already exists")
 
 func (s *Server) createUser(username, password string, admin bool) error {
 	username = strings.ToLower(username)
-	if !link.ValidUsername(username) { return fmt.Errorf("invalid username %q", username) }
+	if !ValidUsername(username) { return fmt.Errorf("invalid username %q", username) }
 	s.umu.Lock()
 	if _, ok := s.users[username]; ok { s.umu.Unlock(); return errUserExists }
 	if len(s.users) >= MaxUsers { s.umu.Unlock(); return fmt.Errorf("max users reached") }

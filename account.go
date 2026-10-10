@@ -1,4 +1,4 @@
-package core
+package creditnet
 
 import (
 	"encoding/json"

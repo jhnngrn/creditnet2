@@ -1,4 +1,4 @@
-package base
+package creditnet
 
 import "math/bits"
 

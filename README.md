@@ -6,7 +6,7 @@ The fix is simple: force every node-to-node interaction through a sequential, pe
 
 The cost is that all interaction hits storage. But if you accept that cost, the entire class of distributed sync problems disappears. Developers write peer-to-peer applications as if all nodes were on the same machine — no sync logic, no conflict resolution, no defensive coding against network failures. The protocol handles it.
 
-creditnet is a federated bilateral credit network built on this protocol. Each server hosts users identified as `alice@example.com`. Each user is a node with bilateral links to other nodes. The sync protocol lives in `link/` as a standalone package. Application logic is built as modules on top — credit limits, balances, payments, or anything else. Because the sync layer has already solved delivery, ordering and crash recovery, a module is just regular request/response logic with no distributed systems complexity. Anyone can write a module with their own custom logic and plug it in.
+creditnet is a federated bilateral credit network built on this protocol. Each server hosts users identified as `alice@example.com`. Each user is a node with bilateral links to other nodes. Application logic is built as modules on top — credit limits, balances, payments, or anything else. Because the sync layer has already solved delivery, ordering and crash recovery, a module is just regular request/response logic with no distributed systems complexity. Anyone can write a module with their own custom logic and plug it in.
 
 ## Build
 
@@ -29,33 +29,34 @@ Flags:
 
 ## Architecture
 
+Everything lives in one package (`creditnet`) at the module root. The sync
+protocol, trustline logic, and application layer (HTTP, auth, persistence)
+are all in the same package — no cross-package indirection.
+
 ```
-link/                    generic bilateral sync protocol
-  types.go               wire types, Link, LinkOwner, Handler interfaces
-  node.go                Node: sync engine, handler dispatch, owner registry
-  handlers.go            linkHandler: link lifecycle (connect/close)
-
-base/                    foundation layer — peers, credit, payments
-  base.go                Handler: sync + account API for credit operations
-  demurrage.go           demurrage computation (decay over time)
-
-core/                    application layer (HTTP, auth, persistence)
-  server.go              server, config, handler factory registration, P2P
-  account.go             namespace-routed account API dispatch
-  keys.go                Ed25519 signing and verification
-  users.go               auth, sessions, admin, argon2 password hashing
-  store.go               persistence (file-based)
-  run.go                 Boot/RunAndWait helpers
+types.go               wire types, Link, Handler interfaces, errors, helpers
+node.go                Node: sync engine, handler dispatch, persistence
+link_handler.go        link lifecycle (connect/close)
+trustline.go           TrustlineHandler: credit limits, balances, payments
+demurrage.go           demurrage computation (decay over time)
+server.go              Server, Config, handler factory registration, P2P
+account.go             namespace-routed account API dispatch
+keys.go                Ed25519 signing and verification
+users.go               auth, sessions, admin, argon2 password hashing
+store.go               persistence (file-based)
+run.go                 Boot/RunAndWait helpers
 
 cmd/
-  base/                  server with base handler
+  base/                server with base handler
 ```
 
-`link/` is a standalone package — no dependency on `core/` or `base/`. It defines `Handler`, `AccountHandler`, `Transport` and `NodeStore` interfaces. `base/` imports `link/` only. `core/` imports `link/` only — handlers are registered via factories from `cmd/`.
+Handlers register under a namespace and receive sync dispatch. The link
+handler is registered as `"link"`, the trustline handler as `"trustline"`,
+and external modules add their own namespaces via `HandlerFactory`.
 
 ## Link layer
 
-The link layer (`link/`) provides bilateral connections between nodes. Handlers register under a namespace and receive sync dispatch. The link handler itself is registered as `"link"`, base as `"trustline"`, and modules add their own namespaces.
+The link layer provides bilateral connections between nodes. Handlers register under a namespace and receive sync dispatch.
 
 ### Link ownership
 
@@ -63,8 +64,8 @@ Every link has an **owner** — a registered protocol that determines what runs 
 
 Owners register lifecycle callbacks via `RegisterOwner`:
 
-- **OnConnect** (constructor) — called when the link reaches `connected`. Creates per-peer state for the protocol (e.g. base creates a `Peer` with credit data).
-- **OnClose** (destructor) — called before the link is deleted. Cleans up per-peer state (e.g. base marks the peer as disconnected).
+- **OnConnect** (constructor) — called when the link reaches `connected`. Creates per-peer state for the protocol (e.g. trustline creates a `Peer` with credit data).
+- **OnClose** (destructor) — called before the link is deleted. Cleans up per-peer state (e.g. trustline marks the peer as disconnected).
 
 This separates concerns: the link layer handles the connection lifecycle, and the owner handles what happens at each transition. Peers only exist when a link is connected — no orphaned state.
 
@@ -115,9 +116,9 @@ The node's `nextTx` always asks the link handler for pending messages (connect/c
 
 On deletion (close completes), `OnClose` fires before the link is removed.
 
-## Base layer
+## Trustline layer
 
-Base (`base/`) is the foundation that everything else builds on. It registers as a link owner with protocol `"trustline"` and provides lifecycle callbacks that manage per-peer data.
+The trustline handler registers as a link owner with protocol `"trustline"` and provides lifecycle callbacks that manage per-peer data.
 
 When a link with protocol `"trustline"` reaches `connected`, the `OnConnect` callback creates a `Peer` with default values (zero balances, no limits). When the link is deleted, `OnClose` marks the peer as `disconnected`. There is no separate peer state machine — the link layer drives the lifecycle.
 
