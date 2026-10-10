@@ -136,20 +136,12 @@ func (s *Server) newNode(id string, raw json.RawMessage) *link.Node {
 	bh := base.NewHandler(n)
 	n.RegisterHandler("trustline", bh)
 
-	bw := func(peer string) (in, out int64) {
-		p := bh.GetPeer(peer)
-		if p == nil {
-			return 0, 0
-		}
-		eff := p.EffectiveBalance(time.Now().Unix())
-		ri, ro := n.SumReserved(peer)
-		in = p.CreditLimit - eff - ri
-		out = p.CreditLimitIn + eff - ro
-		return
-	}
-
 	for _, f := range s.factories {
-		n.RegisterHandler(f.name, f.factory(n, bh, bw))
+		h := f.factory(n, bh, bh.Bandwidth)
+		n.RegisterHandler(f.name, h)
+		if r, ok := h.(base.Reserver); ok {
+			bh.RegisterReserver(r)
+		}
 	}
 	return n
 }

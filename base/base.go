@@ -43,13 +43,21 @@ type PeerView interface {
 // accounting for effective balance, credit limits, and all reservations.
 type BandwidthFunc func(peer string) (in, out int64)
 
+// Reserver reports capacity reserved by a module on a given peer.
+// Modules that hold temporary reservations (e.g. in-flight ripple hops)
+// implement this so the bandwidth computation can subtract them.
+type Reserver interface {
+	Reserved(peer string) (in, out int64)
+}
+
 // ---------------------------------------------------------------------------
 // Handler — implements link.Handler and link.AccountHandler
 // ---------------------------------------------------------------------------
 
 type Handler struct {
-	node  *link.Node
-	peers map[string]*Peer
+	node      *link.Node
+	peers     map[string]*Peer
+	reservers []Reserver
 }
 
 type handlerState struct {
@@ -80,6 +88,31 @@ func (h *Handler) GetPeer(peer string) *Peer {
 		return nil
 	}
 	return p
+}
+
+// RegisterReserver adds a Reserver whose reservations are subtracted
+// from available bandwidth. Call after creating module handlers.
+func (h *Handler) RegisterReserver(r Reserver) {
+	h.reservers = append(h.reservers, r)
+}
+
+// Bandwidth returns available (in, out) capacity for a peer,
+// accounting for effective balance, credit limits, and all reservations.
+func (h *Handler) Bandwidth(peer string) (in, out int64) {
+	p := h.GetPeer(peer)
+	if p == nil {
+		return 0, 0
+	}
+	eff := p.EffectiveBalance(time.Now().Unix())
+	var ri, ro int64
+	for _, r := range h.reservers {
+		i, o := r.Reserved(peer)
+		ri += i
+		ro += o
+	}
+	in = p.CreditLimit - eff - ri
+	out = p.CreditLimitIn + eff - ro
+	return
 }
 
 func NewHandler(n *link.Node) *Handler {

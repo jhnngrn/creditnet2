@@ -563,19 +563,6 @@ func (n *Node) SetAllowInvites(enabled bool) {
 	n.allowInvites = enabled
 }
 
-// SumReserved sums reserved (in, out) across all handlers that implement
-// Reserver. Caller must hold Lock.
-func (n *Node) SumReserved(peer string) (in, out int64) {
-	for _, entry := range n.handlers {
-		if r, ok := entry.handler.(Reserver); ok {
-			ri, ro := r.Reserved(peer)
-			in += ri
-			out += ro
-		}
-	}
-	return
-}
-
 func (n *Node) Status() json.RawMessage {
 	links := make(map[string]any)
 	for peer, l := range n.links {

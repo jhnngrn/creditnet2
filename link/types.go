@@ -147,13 +147,6 @@ type AccountHandler interface {
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 }
 
-// Reserver reports capacity reserved by a module on a given peer.
-// Modules that hold temporary reservations (e.g. in-flight ripple hops)
-// implement this so the bandwidth function can subtract them.
-type Reserver interface {
-	Reserved(peer string) (in, out int64)
-}
-
 // Transport sends sync messages to peers.
 type Transport interface {
 	Send(peerDomain string, msg SyncRequest) ([]byte, error)
