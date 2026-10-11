@@ -113,6 +113,9 @@ func (h *Handler) HandleRequest(peer string, p *creditnet.Trustline, method stri
 }
 
 func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMessage) (bool, []string, error) {
+	if p == nil {
+		return false, nil, fmt.Errorf("trustline not connected")
+	}
 	var m novCommitMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
@@ -193,6 +196,9 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 }
 
 func (h *Handler) reqFinalize(peer string, p *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+	if p == nil {
+		return false, nil, fmt.Errorf("trustline not connected")
+	}
 	var m novFinalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")

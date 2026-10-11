@@ -803,6 +803,9 @@ func (h *Handler) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 // ---------------------------------------------------------------------------
 
 func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+	if t == nil {
+		return false, nil, fmt.Errorf("trustline not connected")
+	}
 	var m struct {
 		ID       string `json:"clearing_id"`
 		Preimage string `json:"preimage"`
@@ -914,6 +917,9 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 // ---------------------------------------------------------------------------
 
 func (h *Handler) reqCancel(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+	if t == nil {
+		return false, nil, fmt.Errorf("trustline not connected")
+	}
 	var m struct {
 		ID       string `json:"clearing_id"`
 		Preimage string `json:"preimage"`
@@ -1030,6 +1036,9 @@ func (h *Handler) respRollback(raw json.RawMessage) {
 // ---------------------------------------------------------------------------
 
 func (h *Handler) reqCleanup(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+	if t == nil {
+		return false, nil, fmt.Errorf("trustline not connected")
+	}
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
