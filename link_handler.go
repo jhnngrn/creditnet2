@@ -28,7 +28,7 @@ func (h *linkHandler) HandleRequest(peer string, method string, payload json.Raw
 			lk.State.IntentConnect = false
 			return true, nil, nil
 		}
-		if h.node.InviteMode() == InviteModeOpen {
+		if h.node.inviteMode == InviteModeOpen {
 			lk.State.Status = link.Connected
 			return true, nil, nil
 		}
@@ -142,7 +142,7 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 		return true, nil, nil
 	}
 	// Open mode — auto-accept supported modules.
-	if h.node.InviteMode() == InviteModeOpen {
+	if h.node.inviteMode == InviteModeOpen {
 		if mod == nil {
 			mod = &link.ConnectionState{}
 			lk.State.Modules[p.Name] = mod

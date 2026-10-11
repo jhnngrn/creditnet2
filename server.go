@@ -121,10 +121,10 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	// Register external modules from factories.
 	if len(s.factories) > 0 {
 		for _, f := range s.factories {
-			m := f.factory(n.id, n.ScheduleFunc(), n.trustline.trustlines, n.trustline.Bandwidth, handlerState(raw, f.name))
+			m := f.factory(n.id, n.ScheduleFunc(), n.trustlines, n.Bandwidth, handlerState(raw, f.name))
 			n.RegisterModule(f.name, m)
 			if r, ok := m.(Reserver); ok {
-				n.trustline.RegisterReserver(r)
+				n.RegisterReserver(r)
 			}
 		}
 	}

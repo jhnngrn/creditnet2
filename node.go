@@ -24,8 +24,10 @@ type Node struct {
 	sends      map[string]*peerSend
 	inviteMode InviteMode
 
-	lh        *linkHandler
-	trustline *TrustlineHandler
+	trustlines map[string]*Trustline
+	reservers  []Reserver
+
+	lh *linkHandler
 
 	modules   []moduleEntry
 	moduleMap map[string]Module
@@ -76,6 +78,7 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 		links:      st.Links,
 		sends:      map[string]*peerSend{},
 		inviteMode: mode,
+		trustlines: loadTrustlines(st.Handlers["trustline"]),
 		moduleMap:  map[string]Module{},
 		transport:  transport,
 		store:      store,
@@ -83,8 +86,6 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 
 	// Built-in handlers.
 	n.lh = newLinkHandler(n)
-	n.trustline = NewTrustlineHandler(n, st.Handlers["trustline"])
-	n.RegisterModule("trustline", n.trustline)
 
 	return n
 }
@@ -105,6 +106,7 @@ func (n *Node) Links() map[string]*link.Link {
 
 // DeleteLink removes a link. Caller must hold Lock.
 func (n *Node) DeleteLink(peer string) {
+	n.trustlineLinkDeleted(peer)
 	for _, entry := range n.modules {
 		entry.module.LinkDeleted(peer)
 	}
@@ -124,14 +126,16 @@ func (n *Node) DeleteLink(peer string) {
 func (n *Node) Lock()                 { n.mu.Lock() }
 func (n *Node) Unlock()               { n.mu.Unlock() }
 func (n *Node) ID() string            { return n.id }
-func (n *Node) InviteMode() InviteMode { return n.inviteMode }
 
 // HandleAccount dispatches a user-facing API call by namespace.
 // Caller must hold Lock.
 func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.RawMessage, error) {
 	ns, method := SplitMethod(fullMethod)
-	if ns == "link" {
+	switch ns {
+	case "link":
 		return n.lh.HandleAccount(method, payload)
+	case "trustline":
+		return n.handleTrustlineAccount(method, payload)
 	}
 	mod := n.moduleMap[ns]
 	if mod == nil {
@@ -143,12 +147,15 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 // Commit persists the node state. Caller must hold Lock.
 func (n *Node) Commit() {
 	st := nodeState{ID: n.id, Links: n.links, InviteMode: n.inviteMode}
-	if len(n.modules) > 0 {
-		st.Handlers = make(map[string]json.RawMessage)
-		for _, entry := range n.modules {
-			if data, err := json.Marshal(entry.module); err == nil {
-				st.Handlers[entry.name] = data
-			}
+	st.Handlers = make(map[string]json.RawMessage)
+	// Trustline state.
+	if data, err := json.Marshal(trustlineState{Trustlines: n.trustlines}); err == nil {
+		st.Handlers["trustline"] = data
+	}
+	// External modules.
+	for _, entry := range n.modules {
+		if data, err := json.Marshal(entry.module); err == nil {
+			st.Handlers[entry.name] = data
 		}
 	}
 	if err := n.store.SaveNode(n.id, st); err != nil {
@@ -263,15 +270,22 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	var ok bool
 	var kicks []string
 	var reqErr error
-	if ns == "link" {
+	switch ns {
+	case "link":
 		ok, kicks, reqErr = n.lh.HandleRequest(env.From, method, env.Payload, ts)
-	} else {
+	case "trustline":
+		if !lk.ModuleEnabled(ns) {
+			n.mu.Unlock()
+			return nil, ErrBadMethod
+		}
+		ok, kicks, reqErr = n.handleTrustlineRequest(env.From, method, env.Payload, ts)
+	default:
 		mod := n.moduleMap[ns]
 		if mod == nil || !lk.ModuleEnabled(ns) {
 			n.mu.Unlock()
 			return nil, ErrBadMethod
 		}
-		ok, kicks, reqErr = mod.HandleRequest(env.From, n.trustline.GetTrustline(env.From), method, env.Payload, ts)
+		ok, kicks, reqErr = mod.HandleRequest(env.From, n.GetTrustline(env.From), method, env.Payload, ts)
 	}
 	if reqErr != nil {
 		n.mu.Unlock()
@@ -292,11 +306,14 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 // Caller must hold Lock.
 func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.SyncResponse) []string {
 	ns, method := SplitMethod(msg.Method)
-	if ns == "link" {
+	switch ns {
+	case "link":
 		return n.lh.HandleResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
+	case "trustline":
+		return n.handleTrustlineResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
 	}
 	if rh := n.moduleMap[ns]; rh != nil {
-		return rh.HandleResponse(peer, n.trustline.GetTrustline(peer), method, msg.Payload, resp.OK, resp.Timestamp)
+		return rh.HandleResponse(peer, n.GetTrustline(peer), method, msg.Payload, resp.OK, resp.Timestamp)
 	}
 	return nil
 }
@@ -398,7 +415,14 @@ func (n *Node) nextTx(peer string) *link.QueuedMsg {
 		msg.Method = "link." + msg.Method
 		return msg
 	}
-	// Modules only run on connected links with the module enabled.
+	// Trustline runs on links with trustline module enabled.
+	if lk.ModuleEnabled("trustline") {
+		if msg := n.trustlineNextTx(peer); msg != nil {
+			msg.Method = "trustline." + msg.Method
+			return msg
+		}
+	}
+	// External modules only run on connected links with the module enabled.
 	if lk.State.Status != link.Connected {
 		return nil
 	}
