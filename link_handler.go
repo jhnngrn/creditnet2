@@ -128,10 +128,8 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
 		return false, nil, fmt.Errorf("bad payload")
 	}
-	if p.Name != "trustline" {
-		if _, supported := h.node.moduleMap[p.Name]; !supported {
-			return false, nil, nil // we don't speak this module
-		}
+	if !h.node.ModuleSupported(p.Name) {
+		return false, nil, nil // we don't speak this module
 	}
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]*link.ConnectionState{}

@@ -99,6 +99,15 @@ func (n *Node) RegisterModule(name string, m Module) {
 	n.moduleMap[name] = m
 }
 
+// ModuleSupported returns true if the node handles this module namespace.
+func (n *Node) ModuleSupported(name string) bool {
+	if name == "trustline" {
+		return true
+	}
+	_, ok := n.moduleMap[name]
+	return ok
+}
+
 // Links returns the node's links map. Caller must hold Lock.
 func (n *Node) Links() map[string]*link.Link {
 	return n.links
