@@ -343,6 +343,9 @@ func (h *Handler) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, [
 	}
 
 	// New path — accept and forward.
+	if m.Gas == 0 {
+		return false, nil, nil
+	}
 	if m.Penalty*2000 < m.Amount*PenaltyRate {
 		return false, nil, nil
 	}
@@ -350,7 +353,7 @@ func (h *Handler) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, [
 		return false, nil, nil
 	}
 
-	p = &Path{Amount: m.Amount, Penalty: m.Penalty, Hops: m.Hops + 1, Depth: m.Depth, Gas: m.Gas, Expiry: ts + int64(PathTTL.Seconds())}
+	p = &Path{Amount: m.Amount, Penalty: m.Penalty, Hops: m.Hops + 1, Depth: m.Depth, Gas: m.Gas - 1, Expiry: ts + int64(PathTTL.Seconds())}
 	if m.Direction == 0 {
 		p.InPeer = peer
 	} else {
