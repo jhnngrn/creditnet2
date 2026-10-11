@@ -65,7 +65,7 @@ binaries under `cmd/` combine different sets of modules.
 
 ## Link layer
 
-The link layer provides bilateral connections between nodes. Handlers register under a namespace and receive sync dispatch.
+The link layer provides bilateral connections between nodes.
 
 ### Module negotiation
 
@@ -183,7 +183,7 @@ Response piggybacking: when sending a new request, the peer includes its respons
 
 ### Sync methods
 
-Sync methods are namespace-routed: `namespace.method`. Node dispatches to the handler registered under that namespace.
+Sync methods are namespace-routed: `namespace.method`. Node dispatches by namespace prefix.
 
 **link namespace:**
 
