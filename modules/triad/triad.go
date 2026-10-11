@@ -2,7 +2,6 @@ package triad
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -481,6 +480,5 @@ func (h *Handler) novLinkCount(peer string) int {
 func randomNovationID() string {
 	nonce := make([]byte, 32)
 	rand.Read(nonce)
-	hash := sha256.Sum256(nonce)
-	return hex.EncodeToString(hash[:])
+	return hex.EncodeToString(nonce)
 }
