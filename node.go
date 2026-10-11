@@ -271,7 +271,7 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrBadMethod
 		}
-		ok, kicks, reqErr = mod.HandleRequest(env.From, n.trustline.GetPeer(env.From), method, env.Payload, ts)
+		ok, kicks, reqErr = mod.HandleRequest(env.From, n.trustline.GetTrustline(env.From), method, env.Payload, ts)
 	}
 	if reqErr != nil {
 		n.mu.Unlock()
@@ -296,7 +296,7 @@ func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.Syn
 		return n.lh.HandleResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
 	}
 	if rh := n.moduleMap[ns]; rh != nil {
-		return rh.HandleResponse(peer, n.trustline.GetPeer(peer), method, msg.Payload, resp.OK, resp.Timestamp)
+		return rh.HandleResponse(peer, n.trustline.GetTrustline(peer), method, msg.Payload, resp.OK, resp.Timestamp)
 	}
 	return nil
 }

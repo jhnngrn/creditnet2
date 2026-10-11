@@ -36,60 +36,60 @@ func demurrageDecay(absBalance uint64, rate uint64, elapsedSecs int64) uint64 {
 
 // MaterializeDemurrage updates Balance to reflect decay up to timestamp ts.
 // Must be called with a shared timestamp (from sync) for consistency.
-func (p *Peer) MaterializeDemurrage(ts int64) {
-	if p.DemurrageTime == 0 || p.Balance == 0 {
-		p.DemurrageTime = ts
+func (t *Trustline) MaterializeDemurrage(ts int64) {
+	if t.DemurrageTime == 0 || t.Balance == 0 {
+		t.DemurrageTime = ts
 		return
 	}
-	elapsed := ts - p.DemurrageTime
+	elapsed := ts - t.DemurrageTime
 	if elapsed <= 0 {
 		return
 	}
 	var rate int64
-	if p.Balance > 0 {
-		rate = p.Demurrage // peer owes me — my rate
+	if t.Balance > 0 {
+		rate = t.Demurrage // peer owes me — my rate
 	} else {
-		rate = p.DemurrageIn // I owe peer — peer's rate
+		rate = t.DemurrageIn // I owe peer — peer's rate
 	}
 	if rate <= 0 {
-		p.DemurrageTime = ts
+		t.DemurrageTime = ts
 		return
 	}
-	abs := p.Balance
+	abs := t.Balance
 	if abs < 0 {
 		abs = -abs
 	}
 	decay := demurrageDecay(uint64(abs), uint64(rate), elapsed)
 	if decay >= uint64(abs) {
-		p.Balance = 0
-	} else if p.Balance > 0 {
-		p.Balance -= int64(decay)
+		t.Balance = 0
+	} else if t.Balance > 0 {
+		t.Balance -= int64(decay)
 	} else {
-		p.Balance += int64(decay)
+		t.Balance += int64(decay)
 	}
-	p.DemurrageTime = ts
+	t.DemurrageTime = ts
 }
 
 // EffectiveBalance returns balance after demurrage decay at the given time
 // without modifying the peer. Used for reads and validation.
-func (p *Peer) EffectiveBalance(nowSecs int64) int64 {
-	if p.DemurrageTime == 0 || p.Balance == 0 {
-		return p.Balance
+func (t *Trustline) EffectiveBalance(nowSecs int64) int64 {
+	if t.DemurrageTime == 0 || t.Balance == 0 {
+		return t.Balance
 	}
-	elapsed := nowSecs - p.DemurrageTime
+	elapsed := nowSecs - t.DemurrageTime
 	if elapsed <= 0 {
-		return p.Balance
+		return t.Balance
 	}
 	var rate int64
-	if p.Balance > 0 {
-		rate = p.Demurrage
+	if t.Balance > 0 {
+		rate = t.Demurrage
 	} else {
-		rate = p.DemurrageIn
+		rate = t.DemurrageIn
 	}
 	if rate <= 0 {
-		return p.Balance
+		return t.Balance
 	}
-	abs := p.Balance
+	abs := t.Balance
 	if abs < 0 {
 		abs = -abs
 	}
@@ -97,14 +97,14 @@ func (p *Peer) EffectiveBalance(nowSecs int64) int64 {
 	if decay >= uint64(abs) {
 		return 0
 	}
-	if p.Balance > 0 {
-		return p.Balance - int64(decay)
+	if t.Balance > 0 {
+		return t.Balance - int64(decay)
 	}
-	return p.Balance + int64(decay)
+	return t.Balance + int64(decay)
 }
 
 // AddBalance materializes demurrage at ts, then applies delta.
-func (p *Peer) AddBalance(delta int64, ts int64) {
-	p.MaterializeDemurrage(ts)
-	p.Balance += delta
+func (t *Trustline) AddBalance(delta int64, ts int64) {
+	t.MaterializeDemurrage(ts)
+	t.Balance += delta
 }

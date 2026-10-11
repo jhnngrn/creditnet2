@@ -67,8 +67,8 @@ type ScheduleFunc func(delay time.Duration, fn func() []string)
 // HandleResponse returns kicks for the same purpose.
 // HandleAccount handles user-facing API calls (via /api/account).
 type Module interface {
-	HandleRequest(peer string, p *Peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
-	HandleResponse(peer string, p *Peer, method string, payload json.RawMessage, ok bool, ts int64) []string
+	HandleRequest(peer string, t *Trustline, method string, payload json.RawMessage, ts int64) (bool, []string, error)
+	HandleResponse(peer string, t *Trustline, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 	NextTx(peer string) *link.QueuedMsg
 	LinkDeleted(peer string)
@@ -88,7 +88,7 @@ type Transport interface {
 type TrustlineReader interface {
 	HasPeer(peer string) bool
 	Peers() []string
-	GetPeer(peer string) *Peer
+	GetTrustline(peer string) *Trustline
 	Bandwidth(peer string) (in, out int64)
 }
 

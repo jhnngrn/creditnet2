@@ -99,7 +99,7 @@ func (h *Handler) LinkDeleted(peer string) {}
 // Module — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleRequest(peer string, p *creditnet.Peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) HandleRequest(peer string, p *creditnet.Trustline, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	case "commit":
 		return h.reqCommit(peer, p, payload)
@@ -111,7 +111,7 @@ func (h *Handler) HandleRequest(peer string, p *creditnet.Peer, method string, p
 	return false, nil, creditnet.ErrBadMethod
 }
 
-func (h *Handler) reqCommit(peer string, p *creditnet.Peer, raw json.RawMessage) (bool, []string, error) {
+func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMessage) (bool, []string, error) {
 	var m novCommitMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
@@ -155,7 +155,7 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Peer, raw json.RawMessage)
 			return false, nil, nil
 		}
 		// Check link to intermediary and outgoing debt to intermediary.
-		iPeer := h.reader.GetPeer(m.Intermediary)
+		iPeer := h.reader.GetTrustline(m.Intermediary)
 		if iPeer == nil {
 			return false, nil, nil
 		}
@@ -191,7 +191,7 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Peer, raw json.RawMessage)
 	return false, nil, nil
 }
 
-func (h *Handler) reqFinalize(peer string, p *creditnet.Peer, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) reqFinalize(peer string, p *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m novFinalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
@@ -242,7 +242,7 @@ func (h *Handler) reqRollback(peer string, raw json.RawMessage) (bool, []string,
 // Module — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleResponse(peer string, p *creditnet.Peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
+func (h *Handler) HandleResponse(peer string, p *creditnet.Trustline, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "commit":
 		return h.respCommit(payload, ok)
@@ -275,7 +275,7 @@ func (h *Handler) respCommit(raw json.RawMessage, ok bool) []string {
 	return nil
 }
 
-func (h *Handler) respFinalize(p *creditnet.Peer, raw json.RawMessage, ts int64) {
+func (h *Handler) respFinalize(p *creditnet.Trustline, raw json.RawMessage, ts int64) {
 	var m novFinalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return
@@ -398,7 +398,7 @@ func (h *Handler) tryNovate() []string {
 	var kicks []string
 	peers := h.reader.Peers()
 	for _, debtor := range peers {
-		dPeer := h.reader.GetPeer(debtor)
+		dPeer := h.reader.GetTrustline(debtor)
 		if dPeer == nil {
 			continue
 		}
@@ -412,7 +412,7 @@ func (h *Handler) tryNovate() []string {
 			if creditor == debtor {
 				continue
 			}
-			cPeer := h.reader.GetPeer(creditor)
+			cPeer := h.reader.GetTrustline(creditor)
 			if cPeer == nil {
 				continue
 			}
