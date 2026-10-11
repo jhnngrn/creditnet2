@@ -46,6 +46,16 @@ func (c *ConnectionState) Ref()   { c.Refs++ }
 // Unref decrements the reference count.
 func (c *ConnectionState) Unref() { if c.Refs > 0 { c.Refs-- } }
 
+// UnrefClose decrements refs and sets IntentClose when refs reach 0.
+func (c *ConnectionState) UnrefClose() {
+	if c.Refs > 0 {
+		c.Refs--
+	}
+	if c.Refs == 0 {
+		c.IntentClose = true
+	}
+}
+
 // LinkState is a ConnectionState (for the link itself) plus per-module connections.
 type LinkState struct {
 	ConnectionState

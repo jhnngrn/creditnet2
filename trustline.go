@@ -130,7 +130,7 @@ func (h *TrustlineHandler) refLink(peer string) {
 // unrefLink decrements the ref count on the link's ConnectionState.
 func (h *TrustlineHandler) unrefLink(peer string) {
 	if lk := h.node.links[peer]; lk != nil {
-		lk.State.Unref()
+		lk.State.UnrefClose()
 	}
 }
 
@@ -469,10 +469,6 @@ func (h *TrustlineHandler) removePeer(payload json.RawMessage) (json.RawMessage,
 		return Enc("ok"), nil
 	}
 	peer.State.IntentClose = true
-	// Also signal the link to close once all refs are gone.
-	if lk := h.node.links[peerID]; lk != nil {
-		lk.State.IntentClose = true
-	}
 	h.node.Kick(peerID)
 	return Enc("ok"), nil
 }
