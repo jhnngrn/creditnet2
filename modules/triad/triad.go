@@ -138,11 +138,11 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Creditor) >= MaxNovPerLink {
 			return false, nil, nil
 		}
-		h.Novations[m.NovationID] = &Novation{
+		h.addNovation(m.NovationID, &Novation{
 			Amount: m.Amount, Role: "debtor",
 			InPeer: peer, OutPeer: m.Creditor,
 			Queue: []string{"commit"},
-		}
+		})
 		return true, []string{m.Creditor}, nil
 
 	case m.Creditor:
@@ -170,11 +170,11 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Intermediary) >= MaxNovPerLink {
 			return false, nil, nil
 		}
-		h.Novations[m.NovationID] = &Novation{
+		h.addNovation(m.NovationID, &Novation{
 			Amount: m.Amount, Role: "creditor",
 			InPeer: peer, OutPeer: m.Intermediary,
 			Queue: []string{"commit"},
-		}
+		})
 		return true, []string{m.Intermediary}, nil
 
 	case m.Intermediary:
@@ -205,14 +205,15 @@ func (h *Handler) reqFinalize(peer string, p *creditnet.Trustline, raw json.RawM
 		return false, nil, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(int64(nov.Amount), ts)
+	h.unrefPeer(nov.InPeer)
 	nov.InPeer = ""
 	var kicks []string
 	if nov.OutPeer != "" {
 		link.Enqueue(&nov.Queue, "finalize")
 		kicks = []string{nov.OutPeer}
 	}
-	if nov.InPeer == "" && nov.OutPeer == "" {
-		delete(h.Novations, m.NovationID)
+	if nov.OutPeer == "" {
+		h.removeNovation(m.NovationID)
 	}
 	return true, kicks, nil
 }
@@ -232,7 +233,7 @@ func (h *Handler) reqRollback(peer string, raw json.RawMessage) (bool, []string,
 		return false, nil, fmt.Errorf("wrong peer")
 	}
 	if nov.Role == "intermediary" {
-		delete(h.Novations, m.NovationID)
+		h.removeNovation(m.NovationID)
 		return true, nil, nil
 	}
 	link.Enqueue(&nov.Queue, "rollback")
@@ -267,7 +268,7 @@ func (h *Handler) respCommit(raw json.RawMessage, ok bool) []string {
 	link.Dequeue(&nov.Queue)
 	if !ok {
 		if nov.Role == "intermediary" {
-			delete(h.Novations, m.NovationID)
+			h.removeNovation(m.NovationID)
 			return nil
 		}
 		link.Enqueue(&nov.Queue, "rollback")
@@ -287,9 +288,10 @@ func (h *Handler) respFinalize(p *creditnet.Trustline, raw json.RawMessage, ts i
 	}
 	link.Dequeue(&nov.Queue)
 	p.AddBalance(-int64(nov.Amount), ts)
+	h.unrefPeer(nov.OutPeer)
 	nov.OutPeer = ""
 	if nov.InPeer == "" {
-		delete(h.Novations, m.NovationID)
+		h.removeNovation(m.NovationID)
 	}
 }
 
@@ -300,7 +302,7 @@ func (h *Handler) respRollback(raw json.RawMessage) {
 	if json.Unmarshal(raw, &m) != nil {
 		return
 	}
-	delete(h.Novations, m.NovationID)
+	h.removeNovation(m.NovationID)
 }
 
 // ---------------------------------------------------------------------------
@@ -367,31 +369,9 @@ func (h *Handler) scheduleNovate() {
 }
 
 func (h *Handler) novateAndReschedule() []string {
-	h.cleanStale()
 	kicks := h.tryNovate()
 	h.scheduleNovate()
 	return kicks
-}
-
-// cleanStale removes novation references to peers that are no longer connected.
-func (h *Handler) cleanStale() bool {
-	changed := false
-	for id, nov := range h.Novations {
-		if nov.InPeer != "" && !h.isConnected(nov.InPeer) {
-			nov.InPeer = ""
-			changed = true
-		}
-		if nov.OutPeer != "" && !h.isConnected(nov.OutPeer) {
-			nov.OutPeer = ""
-			nov.Queue = nil
-			changed = true
-		}
-		if nov.InPeer == "" && nov.OutPeer == "" {
-			delete(h.Novations, id)
-			changed = true
-		}
-	}
-	return changed
 }
 
 // tryNovate scans for circular debt and initiates novations as intermediary.
@@ -431,13 +411,13 @@ func (h *Handler) tryNovate() []string {
 				continue
 			}
 			novID := randomNovationID()
-			h.Novations[novID] = &Novation{
+			h.addNovation(novID, &Novation{
 				Amount:  uint64(amount),
 				Role:    "intermediary",
 				InPeer:  creditor,
 				OutPeer: debtor,
 				Queue:   []string{"commit"},
-			}
+			})
 			kicks = append(kicks, debtor)
 			avlD -= amount
 			if avlD <= 0 {
@@ -454,7 +434,44 @@ func (h *Handler) tryNovate() []string {
 
 func (h *Handler) isConnected(peer string) bool {
 	t := h.trustlines[peer]
-	return t != nil && t.State.Status == link.Connected
+	return t != nil && t.State.Status == link.Connected && !t.State.IntentClose
+}
+
+// addNovation stores a novation and refs both peer trustlines.
+func (h *Handler) addNovation(id string, nov *Novation) {
+	h.Novations[id] = nov
+	if t := h.trustlines[nov.InPeer]; t != nil {
+		t.State.Ref()
+	}
+	if t := h.trustlines[nov.OutPeer]; t != nil {
+		t.State.Ref()
+	}
+}
+
+// removeNovation unrefs remaining peer trustlines and deletes the novation.
+func (h *Handler) removeNovation(id string) {
+	nov := h.Novations[id]
+	if nov == nil {
+		return
+	}
+	if nov.InPeer != "" {
+		if t := h.trustlines[nov.InPeer]; t != nil {
+			t.State.Unref()
+		}
+	}
+	if nov.OutPeer != "" {
+		if t := h.trustlines[nov.OutPeer]; t != nil {
+			t.State.Unref()
+		}
+	}
+	delete(h.Novations, id)
+}
+
+// unrefPeer unrefs a single peer trustline for a novation side being cleared.
+func (h *Handler) unrefPeer(peer string) {
+	if t := h.trustlines[peer]; t != nil {
+		t.State.Unref()
+	}
 }
 
 func (h *Handler) connectedPeers() []string {
