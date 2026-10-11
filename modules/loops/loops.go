@@ -333,7 +333,7 @@ func (h *Handler) reqSearch(peer string, raw json.RawMessage) (bool, []string, e
 	if m.Penalty*2000 < m.Amount*PenaltyRate {
 		return false, nil, nil
 	}
-	if h.linkSlots(peer) >= MaxPerLink {
+	if h.linkSlots(peer, false) >= MaxPerLink {
 		return false, nil, nil
 	}
 
@@ -351,7 +351,7 @@ func (h *Handler) reqSearch(peer string, raw json.RawMessage) (bool, []string, e
 		if peerID == peer || !h.isConnected(peerID) {
 			continue
 		}
-		if h.linkSlots(peerID) >= MaxPerLink {
+		if h.linkSlots(peerID, false) >= MaxPerLink {
 			continue
 		}
 		_, bwOut := h.bandwidth(peerID)
@@ -397,7 +397,7 @@ func (h *Handler) respSearch(raw json.RawMessage, ok bool) []string {
 		}
 		// Try forwarding to another peer.
 		for peerID := range h.trustlines {
-			if !h.isConnected(peerID) || h.linkSlots(peerID) >= MaxPerLink {
+			if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
 				continue
 			}
 			_, bwOut := h.bandwidth(peerID)
@@ -1189,7 +1189,7 @@ func (h *Handler) searchAndReschedule() []string {
 func (h *Handler) sendSearches() []string {
 	var debtors, creditors []string
 	for peerID := range h.trustlines {
-		if !h.isConnected(peerID) || h.linkSlots(peerID) >= MaxPerLink {
+		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
 			continue
 		}
 		_, bwOut := h.bandwidth(peerID)
@@ -1353,7 +1353,10 @@ func (h *Handler) removeClearing(id string) {
 	delete(h.Clearings, id)
 }
 
-func (h *Handler) linkSlots(peer string) int {
+// linkSlots counts operations on a link.
+// reserved=false: all paths + all clearings (admission).
+// reserved=true: committed paths + all clearings (bandwidth).
+func (h *Handler) linkSlots(peer string, reserved bool) int {
 	count := 0
 	for _, cl := range h.Clearings {
 		if cl.Side[sideIN].Peer == peer || cl.Side[sideOUT].Peer == peer {
@@ -1361,9 +1364,13 @@ func (h *Handler) linkSlots(peer string) int {
 		}
 	}
 	for _, p := range h.Paths {
-		if p.InPeer == peer || p.OutPeer == peer {
-			count++
+		if p.InPeer != peer && p.OutPeer != peer {
+			continue
 		}
+		if reserved && !p.Commit {
+			continue
+		}
+		count++
 	}
 	return count
 }
