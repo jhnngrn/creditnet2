@@ -56,6 +56,11 @@ func IdentityInDomain(identity, domain string) bool {
 // Interfaces
 // ---------------------------------------------------------------------------
 
+// ScheduleFunc schedules a callback to run after a delay.
+// The node runs the callback under its own lock, commits, and kicks
+// any peers returned by the callback.
+type ScheduleFunc func(delay time.Duration, fn func() []string)
+
 // Module processes sync methods and account API calls for a namespace.
 // HandleRequest returns (ok, kicks, err) where kicks is a list of peers
 // that need kicking on other links (cross-link kicks, e.g. novation routing).

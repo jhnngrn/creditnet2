@@ -158,6 +158,25 @@ func (n *Node) Commit() {
 
 func (n *Node) Kick(peer string) { go n.sendPending(peer) }
 
+// Schedule runs fn after delay under the node's lock.
+// fn returns a list of peers to kick. The node commits and kicks.
+func (n *Node) Schedule(delay time.Duration, fn func() []string) {
+	time.AfterFunc(delay, func() {
+		n.mu.Lock()
+		kicks := fn()
+		n.Commit()
+		n.mu.Unlock()
+		for _, k := range kicks {
+			n.Kick(k)
+		}
+	})
+}
+
+// ScheduleFunc returns a ScheduleFunc bound to this node.
+func (n *Node) ScheduleFunc() ScheduleFunc {
+	return n.Schedule
+}
+
 // setRetry sets a per-peer retry timer. Caller must hold Lock.
 func (n *Node) setRetry(peer string, counter uint64, refractory bool) {
 	if s := n.sends[peer]; s != nil && s.timer != nil {

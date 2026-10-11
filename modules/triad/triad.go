@@ -53,15 +53,17 @@ type novFinalizeMsg struct {
 // Handler implements creditnet.Module and creditnet.Reserver for novation.
 type Handler struct {
 	Novations map[string]*Novation `json:"novations,omitempty"`
-	node      *creditnet.Node
+	nodeID    string
+	schedule  creditnet.ScheduleFunc
 	reader    creditnet.TrustlineReader
 }
 
 // NewHandler matches the creditnet.ModuleFactory signature.
-func NewHandler(n *creditnet.Node, reader creditnet.TrustlineReader, state json.RawMessage) creditnet.Module {
+func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, reader creditnet.TrustlineReader, state json.RawMessage) creditnet.Module {
 	h := &Handler{
 		Novations: map[string]*Novation{},
-		node:      n,
+		nodeID:    nodeID,
+		schedule:  schedule,
 		reader:    reader,
 	}
 	if state != nil {
@@ -70,7 +72,7 @@ func NewHandler(n *creditnet.Node, reader creditnet.TrustlineReader, state json.
 	if h.Novations == nil {
 		h.Novations = map[string]*Novation{}
 	}
-	go h.novateLoop()
+	h.scheduleNovate()
 	return h
 }
 
@@ -118,7 +120,7 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Peer, raw json.RawMessage)
 		return false, nil, nil
 	}
 
-	switch h.node.ID() {
+	switch h.nodeID {
 	case m.Debtor:
 		// Commit from intermediary — I am debtor, forwarding to creditor.
 		if peer != m.Intermediary {
@@ -319,11 +321,11 @@ func (h *Handler) buildMsg(id string, nov *Novation) *link.QueuedMsg {
 		var d, i, c string
 		switch nov.Role {
 		case "intermediary":
-			d, i, c = nov.OutPeer, h.node.ID(), nov.InPeer
+			d, i, c = nov.OutPeer, h.nodeID, nov.InPeer
 		case "debtor":
-			d, i, c = h.node.ID(), nov.InPeer, nov.OutPeer
+			d, i, c = h.nodeID, nov.InPeer, nov.OutPeer
 		case "creditor":
-			d, i, c = nov.InPeer, nov.OutPeer, h.node.ID()
+			d, i, c = nov.InPeer, nov.OutPeer, h.nodeID
 		}
 		return &link.QueuedMsg{
 			Method:  "commit",
@@ -356,24 +358,18 @@ func (h *Handler) HandleAccount(method string, payload json.RawMessage) (json.Ra
 }
 
 // ---------------------------------------------------------------------------
-// Background novation loop
+// Background novation scheduling
 // ---------------------------------------------------------------------------
 
-func (h *Handler) novateLoop() {
-	ticker := time.NewTicker(NovateInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		h.node.Lock()
-		changed := h.cleanStale()
-		kicks := h.tryNovate()
-		if changed || len(kicks) > 0 {
-			h.node.Commit()
-		}
-		h.node.Unlock()
-		for _, k := range kicks {
-			h.node.Kick(k)
-		}
-	}
+func (h *Handler) scheduleNovate() {
+	h.schedule(NovateInterval, h.novateAndReschedule)
+}
+
+func (h *Handler) novateAndReschedule() []string {
+	h.cleanStale()
+	kicks := h.tryNovate()
+	h.scheduleNovate()
+	return kicks
 }
 
 // cleanStale removes novation references to peers that are no longer connected.
