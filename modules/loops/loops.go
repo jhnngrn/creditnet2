@@ -208,7 +208,7 @@ func (h *Handler) HandleRequest(peer string, t *creditnet.Trustline, method stri
 	case "prepare":
 		return h.reqPrepare(peer, payload)
 	case "expire":
-		return h.reqExpire(peer, payload)
+		return h.reqExpire(peer, payload, ts)
 	// Clearing phase
 	case "commit":
 		return h.reqCommit(peer, t, payload, ts)
@@ -568,7 +568,7 @@ func (h *Handler) respPrepare(raw json.RawMessage, ok bool) {
 // Path — cleanup
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqExpire(peer string, raw json.RawMessage) (bool, []string, error) {
+func (h *Handler) reqExpire(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -578,6 +578,9 @@ func (h *Handler) reqExpire(peer string, raw json.RawMessage) (bool, []string, e
 	p := h.Paths[m.ID]
 	if p == nil {
 		return true, nil, nil // already gone
+	}
+	if ts < p.Expiry {
+		return false, nil, nil
 	}
 	// Accept cleanup from either side.
 	if p.InPeer != peer && p.OutPeer != peer {
