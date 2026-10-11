@@ -44,28 +44,47 @@ const (
 // ---------------------------------------------------------------------------
 
 // Path tracks search state. Both sides are synced: cleanup is explicit.
+//
+// Peer[0] = dir-0 sender (debtor chain, toward initiator).
+// Peer[1] = dir-1 sender (creditor chain).
+// At initiator both start empty and are set when searches bounce back.
 type Path struct {
-	Amount  uint64 `json:"amount"`
-	Penalty uint64 `json:"penalty"`
-	Gas     uint64 `json:"gas"`
-	Depth   uint8  `json:"depth"`
-	Hops    uint8  `json:"hops"`
-	Commit  bool   `json:"commit,omitempty"`   // prepare accepted
-	InPeer  string `json:"in_peer,omitempty"`  // direction 0: who sent search to us
-	OutPeer string `json:"out_peer,omitempty"` // direction 1: who sent search to us
-	Seed    []byte `json:"seed,omitempty"`     // initiator only
-	Queue   []string `json:"queue,omitempty"`
-	Expiry int64 `json:"expiry"`
+	Amount  uint64    `json:"amount"`
+	Penalty uint64    `json:"penalty"`
+	Gas     uint64    `json:"gas"`
+	Depth   uint8     `json:"depth"`
+	Hops    uint8     `json:"hops"`
+	Commit  bool      `json:"commit,omitempty"`
+	Peer    [2]string `json:"peer"`
+	Seed    []byte    `json:"seed,omitempty"`
+	Queue   []string  `json:"queue,omitempty"`
+	Expiry  int64     `json:"expiry"`
 }
 
 func (p *Path) pendingPeer() string {
-	head := link.QueueHead(p.Queue)
-	switch head {
+	switch link.QueueHead(p.Queue) {
 	case "found", "prepare":
-		return p.InPeer // propagate backwards
-	default:
-		return p.OutPeer // search, cleanup forward
+		return p.Peer[0]
+	case "expire":
+		if p.Peer[1] != "" {
+			return p.Peer[1]
+		}
+		return p.Peer[0]
 	}
+	return ""
+}
+
+// SearchProbe is an outgoing search probe queued for a specific peer.
+// Probes implement flood search: one probe per target peer, each sent
+// independently through that peer's sync channel.
+type SearchProbe struct {
+	SearchID  string `json:"id"`
+	Direction uint8  `json:"dir"`
+	Amount    uint64 `json:"amount"`
+	Penalty   uint64 `json:"penalty"`
+	Gas       uint64 `json:"gas"`
+	Depth     uint8  `json:"depth"`
+	Hops      uint8  `json:"hops"`
 }
 
 // ---------------------------------------------------------------------------
@@ -100,8 +119,9 @@ const (
 // ---------------------------------------------------------------------------
 
 type Handler struct {
-	Paths     map[string]*Path     `json:"paths,omitempty"`
-	Clearings map[string]*Clearing `json:"clearings,omitempty"`
+	Paths     map[string]*Path          `json:"paths,omitempty"`
+	Clearings map[string]*Clearing      `json:"clearings,omitempty"`
+	Probes    map[string][]*SearchProbe `json:"probes,omitempty"` // peer → outgoing search probes
 
 	nodeID     string
 	schedule   creditnet.ScheduleFunc
@@ -113,6 +133,7 @@ func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[s
 	h := &Handler{
 		Paths:      map[string]*Path{},
 		Clearings:  map[string]*Clearing{},
+		Probes:     map[string][]*SearchProbe{},
 		nodeID:     nodeID,
 		schedule:   schedule,
 		trustlines: trustlines,
@@ -126,6 +147,9 @@ func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[s
 	}
 	if h.Clearings == nil {
 		h.Clearings = map[string]*Clearing{}
+	}
+	if h.Probes == nil {
+		h.Probes = map[string][]*SearchProbe{}
 	}
 	h.scheduleSearch()
 	// Re-schedule path expiry timers.
@@ -157,10 +181,10 @@ func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[s
 func (h *Handler) Reserved(peer string) (in, out int64) {
 	for _, p := range h.Paths {
 		if p.Commit {
-			if p.InPeer == peer {
+			if p.Peer[0] == peer {
 				in += int64(p.Amount)
 			}
-			if p.OutPeer == peer {
+			if p.Peer[1] == peer {
 				out += int64(p.Amount)
 			}
 		}
@@ -177,8 +201,9 @@ func (h *Handler) Reserved(peer string) (in, out int64) {
 }
 
 func (h *Handler) LinkDeleted(peer string) {
+	delete(h.Probes, peer)
 	for id, p := range h.Paths {
-		if p.InPeer == peer || p.OutPeer == peer {
+		if p.Peer[0] == peer || p.Peer[1] == peer {
 			delete(h.Paths, id)
 		}
 	}
@@ -231,7 +256,7 @@ func (h *Handler) HandleRequest(peer string, t *creditnet.Trustline, method stri
 func (h *Handler) HandleResponse(peer string, t *creditnet.Trustline, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "search":
-		return h.respSearch(t, payload, ok, ts)
+		return h.respSearch(peer, t, payload, ok, ts)
 	case "found":
 		h.respFound(payload, ok)
 	case "prepare":
@@ -257,7 +282,18 @@ func (h *Handler) HandleResponse(peer string, t *creditnet.Trustline, method str
 // ---------------------------------------------------------------------------
 
 func (h *Handler) NextTx(peer string) *link.QueuedMsg {
-	// Paths first — search is lightweight.
+	// Probes first — flood search outgoing.
+	if probes := h.Probes[peer]; len(probes) > 0 {
+		probe := probes[0]
+		return &link.QueuedMsg{
+			Method: "search",
+			Payload: creditnet.Enc(searchMsg{
+				ID: probe.SearchID, Amount: probe.Amount, Penalty: probe.Penalty,
+				Depth: probe.Depth, Gas: probe.Gas, Direction: probe.Direction, Hops: probe.Hops,
+			}),
+		}
+	}
+	// Then paths — found/prepare/expire.
 	for id, p := range h.Paths {
 		if len(p.Queue) > 0 && p.pendingPeer() == peer {
 			return h.buildPathMsg(id, p)
@@ -311,38 +347,33 @@ func (h *Handler) reqSearch(peer string, t *creditnet.Trustline, raw json.RawMes
 	if m.Direction > 1 {
 		return false, nil, nil
 	}
+	dir := m.Direction
 
 	p := h.Paths[m.ID]
 	if p != nil {
 		// Already have this path — check if loop closure.
-		dir := m.Direction
-		if dir == 0 && p.InPeer == "" && p.OutPeer != peer {
-			p.InPeer = peer
-			if m.Amount < p.Amount {
-				p.Amount = m.Amount
-			}
-			if p.OutPeer != "" {
-				// Both sides connected — found!
-				link.Enqueue(&p.Queue, "found")
-				return true, []string{p.OutPeer}, nil
-			}
-			return true, nil, nil
+		if p.Peer[dir] != "" {
+			return false, nil, nil // duplicate
 		}
-		if dir == 1 && p.OutPeer == "" && p.InPeer != peer {
-			p.OutPeer = peer
-			if m.Amount < p.Amount {
-				p.Amount = m.Amount
-			}
-			if p.InPeer != "" {
-				link.Enqueue(&p.Queue, "found")
-				return true, []string{p.InPeer}, nil
-			}
-			return true, nil, nil
+		if p.Peer[1-dir] == peer {
+			return false, nil, nil // same peer both dirs
 		}
-		return false, nil, nil // duplicate or conflict
+		p.Peer[dir] = peer
+		if m.Amount < p.Amount {
+			p.Amount = m.Amount
+		}
+		if m.Gas > 0 {
+			t.AddBalance(int64(m.Gas), ts) // accept gas at closure
+		}
+		if p.Peer[0] != "" && p.Peer[1] != "" {
+			// Both sides connected — found!
+			link.Enqueue(&p.Queue, "found")
+			return true, []string{p.Peer[0]}, nil
+		}
+		return true, nil, nil
 	}
 
-	// New path — accept and forward.
+	// New path — accept and flood forward.
 	if m.Gas == 0 {
 		return false, nil, nil
 	}
@@ -354,98 +385,91 @@ func (h *Handler) reqSearch(peer string, t *creditnet.Trustline, raw json.RawMes
 	}
 
 	p = &Path{Amount: m.Amount, Penalty: m.Penalty, Hops: m.Hops + 1, Depth: m.Depth, Gas: m.Gas - 1, Expiry: ts + int64(PathTTL.Seconds())}
-	if m.Direction == 0 {
-		p.InPeer = peer
-	} else {
-		p.OutPeer = peer
-	}
+	p.Peer[dir] = peer
 	h.Paths[m.ID] = p
 	t.AddBalance(int64(m.Gas), ts) // receive full gas from sender
 
-	// Forward to peers with debt in the right direction.
-	var kicks []string
+	kicks := h.floodForward(m.ID, p, dir, peer)
+	h.schedulePathExpiry(m.ID)
+	return true, kicks, nil
+}
+
+func (h *Handler) respSearch(peer string, t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) []string {
+	var m searchMsg
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	// Consume the probe.
+	probes := h.Probes[peer]
+	if len(probes) > 0 {
+		h.Probes[peer] = probes[1:]
+		if len(h.Probes[peer]) == 0 {
+			delete(h.Probes, peer)
+		}
+	}
+	if ok && t != nil {
+		t.AddBalance(-int64(m.Gas), ts) // sender pays gas
+	}
+	return nil
+}
+
+// floodForward creates probes for all eligible peers in the given direction,
+// dividing gas evenly among them (matching old creditnet's floodSearch).
+func (h *Handler) floodForward(searchID string, p *Path, dir uint8, exclude string) []string {
+	var eligible []string
 	for peerID := range h.trustlines {
-		if peerID == peer || !h.isConnected(peerID) {
+		if peerID == exclude || !h.isConnected(peerID) {
 			continue
 		}
 		if h.linkSlots(peerID, false) >= MaxPerLink {
 			continue
 		}
-		_, bwOut := h.bandwidth(peerID)
-		bwIn, _ := h.bandwidth(peerID)
-		if m.Direction == 0 && bwOut > 0 {
-			if p.OutPeer == "" {
-				p.OutPeer = peerID
-				link.Enqueue(&p.Queue, "search")
-				kicks = append(kicks, peerID)
-				break
-			}
-		}
-		if m.Direction == 1 && bwIn > 0 {
-			if p.InPeer == "" {
-				p.InPeer = peerID
-				link.Enqueue(&p.Queue, "search")
-				kicks = append(kicks, peerID)
-				break
-			}
-		}
-	}
-
-	h.schedulePathExpiry(m.ID)
-	return true, kicks, nil
-}
-
-func (h *Handler) respSearch(t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) []string {
-	var m searchMsg
-	if json.Unmarshal(raw, &m) != nil {
-		return nil
-	}
-	p := h.Paths[m.ID]
-	if p == nil {
-		return nil
-	}
-	link.Dequeue(&p.Queue)
-	if ok && t != nil {
-		t.AddBalance(-int64(m.Gas), ts) // sender pays full gas
-	}
-	if !ok {
-		// Search rejected — try next peer or give up.
-		if m.Direction == 0 {
-			p.OutPeer = ""
-		} else {
-			p.InPeer = ""
-		}
-		// Try forwarding to another peer.
-		for peerID := range h.trustlines {
-			if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
-				continue
-			}
+		if dir == 0 {
 			_, bwOut := h.bandwidth(peerID)
+			if bwOut > 0 {
+				eligible = append(eligible, peerID)
+			}
+		} else {
 			bwIn, _ := h.bandwidth(peerID)
-			if m.Direction == 0 && bwOut > 0 && p.OutPeer == "" && peerID != p.InPeer {
-				p.OutPeer = peerID
-				link.Enqueue(&p.Queue, "search")
-				return []string{peerID}
+			if bwIn > 0 {
+				eligible = append(eligible, peerID)
 			}
-			if m.Direction == 1 && bwIn > 0 && p.InPeer == "" && peerID != p.OutPeer {
-				p.InPeer = peerID
-				link.Enqueue(&p.Queue, "search")
-				return []string{peerID}
-			}
-		}
-		// No more peers to try.
-		if p.InPeer == "" && p.OutPeer == "" {
-			delete(h.Paths, m.ID)
 		}
 	}
-	return nil
+	if len(eligible) == 0 || p.Gas == 0 {
+		return nil
+	}
+	gas := p.Gas
+	share := gas / uint64(len(eligible))
+	if share < 1 {
+		share = 1
+	}
+	var kicks []string
+	for _, peerID := range eligible {
+		if gas < 1 {
+			break
+		}
+		g := share
+		if g > gas {
+			g = gas
+		}
+		h.addProbe(peerID, &SearchProbe{
+			SearchID:  searchID,
+			Direction: dir,
+			Amount:    p.Amount,
+			Penalty:   p.Penalty,
+			Gas:       g,
+			Depth:     p.Depth,
+			Hops:      p.Hops,
+		})
+		kicks = append(kicks, peerID)
+		gas -= g
+	}
+	return kicks
 }
 
-func (h *Handler) buildSearchPayload(id string, p *Path, dir uint8) json.RawMessage {
-	return creditnet.Enc(searchMsg{
-		ID: id, Amount: p.Amount, Penalty: p.Penalty,
-		Depth: p.Depth, Gas: p.Gas, Direction: dir, Hops: p.Hops,
-	})
+func (h *Handler) addProbe(peer string, probe *SearchProbe) {
+	h.Probes[peer] = append(h.Probes[peer], probe)
 }
 
 // ---------------------------------------------------------------------------
@@ -464,8 +488,8 @@ func (h *Handler) reqFound(peer string, raw json.RawMessage) (bool, []string, er
 	if p == nil {
 		return false, nil, nil
 	}
-	if p.OutPeer != peer {
-		return false, nil, nil
+	if p.Peer[0] == peer {
+		return false, nil, nil // reject from the direction we'd forward to
 	}
 	p.Hops = m.Hops + 1
 
@@ -473,10 +497,10 @@ func (h *Handler) reqFound(peer string, raw json.RawMessage) (bool, []string, er
 		// Initiator — start loop settlement.
 		return true, h.startLoop(m.ID), nil
 	}
-	// Intermediate — forward found to InPeer.
-	if p.InPeer != "" {
+	// Intermediate — forward found toward initiator (Peer[0]).
+	if p.Peer[0] != "" {
 		link.Enqueue(&p.Queue, "found")
-		return true, []string{p.InPeer}, nil
+		return true, []string{p.Peer[0]}, nil
 	}
 	return true, nil, nil
 }
@@ -511,8 +535,8 @@ func (h *Handler) reqPrepare(peer string, raw json.RawMessage) (bool, []string, 
 	if p == nil {
 		return false, nil, nil
 	}
-	if p.OutPeer != peer {
-		return false, nil, nil
+	if p.Peer[0] == peer {
+		return false, nil, nil // reject from direction we'd forward to
 	}
 
 	if p.Seed != nil {
@@ -523,20 +547,20 @@ func (h *Handler) reqPrepare(peer string, raw json.RawMessage) (bool, []string, 
 		step := Nchunks
 		preimage := chainHash(p.Seed, step-1)
 		cancelPre := chainHash(p.Seed, step-2)
-		h.startClearing(m.ID, m.Amount, p.InPeer, preimage, cancelPre, p.Seed, step)
+		h.startClearing(m.ID, m.Amount, p.Peer[0], preimage, cancelPre, p.Seed, step)
 		delete(h.Paths, m.ID)
-		return true, []string{p.InPeer}, nil
+		return true, []string{p.Peer[0]}, nil
 	}
 
-	// Intermediate — check bandwidth and forward.
+	// Intermediate — check bandwidth and forward toward initiator (Peer[0]).
 	bwIn, _ := h.bandwidth(peer)
 	if bwIn < int64(m.Amount) {
 		return false, nil, nil
 	}
-	if p.InPeer == "" {
+	if p.Peer[0] == "" {
 		return false, nil, nil
 	}
-	_, bwOut := h.bandwidth(p.InPeer)
+	_, bwOut := h.bandwidth(p.Peer[0])
 	if bwOut < int64(m.Amount) {
 		m.Amount = uint64(bwOut)
 	}
@@ -549,7 +573,7 @@ func (h *Handler) reqPrepare(peer string, raw json.RawMessage) (bool, []string, 
 	p.Commit = true
 	p.Amount = m.Amount
 	link.Enqueue(&p.Queue, "prepare")
-	return true, []string{p.InPeer}, nil
+	return true, []string{p.Peer[0]}, nil
 }
 
 func (h *Handler) respPrepare(raw json.RawMessage, ok bool) {
@@ -590,25 +614,25 @@ func (h *Handler) reqExpire(peer string, raw json.RawMessage, ts int64) (bool, [
 		return false, nil, nil
 	}
 	// Accept cleanup from either side.
-	if p.InPeer != peer && p.OutPeer != peer {
+	if p.Peer[0] != peer && p.Peer[1] != peer {
 		return false, nil, nil
 	}
 	// Forward cleanup to the other side.
 	var kicks []string
-	if p.InPeer == peer {
-		p.InPeer = ""
-		if p.OutPeer != "" {
+	if p.Peer[0] == peer {
+		p.Peer[0] = ""
+		if p.Peer[1] != "" {
 			link.Enqueue(&p.Queue, "expire")
-			kicks = []string{p.OutPeer}
+			kicks = []string{p.Peer[1]}
 		}
 	} else {
-		p.OutPeer = ""
-		if p.InPeer != "" {
+		p.Peer[1] = ""
+		if p.Peer[0] != "" {
 			link.Enqueue(&p.Queue, "expire")
-			kicks = []string{p.InPeer}
+			kicks = []string{p.Peer[0]}
 		}
 	}
-	if p.InPeer == "" && p.OutPeer == "" {
+	if p.Peer[0] == "" && p.Peer[1] == "" {
 		delete(h.Paths, m.ID)
 	}
 	return true, kicks, nil
@@ -639,17 +663,16 @@ func (h *Handler) expirePath(id string) []string {
 	if p == nil {
 		return nil
 	}
-	// Send cleanup to both sides.
+	// Send cleanup — Peer[1] first if set, else Peer[0].
 	var kicks []string
-	if p.OutPeer != "" {
+	if p.Peer[1] != "" {
 		link.Enqueue(&p.Queue, "expire")
-		kicks = append(kicks, p.OutPeer)
-	}
-	if p.InPeer != "" && p.OutPeer == "" {
+		kicks = append(kicks, p.Peer[1])
+	} else if p.Peer[0] != "" {
 		link.Enqueue(&p.Queue, "expire")
-		kicks = append(kicks, p.InPeer)
+		kicks = append(kicks, p.Peer[0])
 	}
-	if p.InPeer == "" && p.OutPeer == "" {
+	if p.Peer[0] == "" && p.Peer[1] == "" {
 		delete(h.Paths, id)
 	}
 	return kicks
@@ -667,18 +690,6 @@ func (h *Handler) schedulePathExpiry(id string) {
 
 func (h *Handler) buildPathMsg(id string, p *Path) *link.QueuedMsg {
 	switch link.QueueHead(p.Queue) {
-	case "search":
-		// Determine direction from which side we're sending to.
-		var dir uint8
-		if p.pendingPeer() == p.OutPeer {
-			dir = 0 // searching debtors
-		} else {
-			dir = 1 // searching creditors
-		}
-		return &link.QueuedMsg{
-			Method:  "search",
-			Payload: h.buildSearchPayload(id, p, dir),
-		}
 	case "found":
 		return &link.QueuedMsg{
 			Method:  "found",
@@ -760,7 +771,7 @@ func (h *Handler) reqCommit(peer string, t *creditnet.Trustline, raw json.RawMes
 		return false, nil, nil
 	}
 	hops := p.Hops
-	outPeer := p.InPeer // path IN = clearing OUT (towards initiator)
+	outPeer := p.Peer[0] // toward initiator
 	delete(h.Paths, m.ID)
 
 	inPen := m.Penalty * uint64(hops+1)
@@ -1273,34 +1284,81 @@ func (h *Handler) sendSearches() []string {
 	}
 
 	pen := amount * PenaltyRate / 1000
+	gas := gasForDepth(0)
 	p := &Path{
 		Seed: seed, Amount: amount, Penalty: pen,
-		Gas: gasForDepth(0), Depth: 1, Expiry: time.Now().Add(PathTTL).Unix(),
+		Gas: gas, Depth: 1, Expiry: time.Now().Add(PathTTL).Unix(),
 	}
+	// Peer[0] and Peer[1] start EMPTY at initiator — set when searches bounce back.
 	h.Paths[searchID] = p
 	h.schedulePathExpiry(searchID)
 
-	// Send search to first debtor (direction 0) and first creditor (direction 1).
+	// Flood to ALL debtors (dir 0) and ALL creditors (dir 1).
 	var kicks []string
-	if len(debtors) > 0 {
-		p.OutPeer = debtors[0]
-		link.Enqueue(&p.Queue, "search")
-		kicks = append(kicks, debtors[0])
+
+	// Dir 0 — debtors.
+	gasDir0 := gas / 2
+	if gasDir0 < 1 {
+		gasDir0 = 1
 	}
-	if len(creditors) > 0 {
-		p.InPeer = creditors[0]
-		link.Enqueue(&p.Queue, "search")
-		kicks = append(kicks, creditors[0])
+	share := gasDir0 / uint64(len(debtors))
+	if share < 1 {
+		share = 1
 	}
+	remaining := gasDir0
+	for _, peerID := range debtors {
+		if remaining < 1 {
+			break
+		}
+		g := share
+		if g > remaining {
+			g = remaining
+		}
+		h.addProbe(peerID, &SearchProbe{
+			SearchID: searchID, Direction: 0,
+			Amount: amount, Penalty: pen,
+			Gas: g, Depth: 1, Hops: 0,
+		})
+		kicks = append(kicks, peerID)
+		remaining -= g
+	}
+
+	// Dir 1 — creditors.
+	gasDir1 := gas - gasDir0
+	if gasDir1 < 1 {
+		gasDir1 = 1
+	}
+	share = gasDir1 / uint64(len(creditors))
+	if share < 1 {
+		share = 1
+	}
+	remaining = gasDir1
+	for _, peerID := range creditors {
+		if remaining < 1 {
+			break
+		}
+		g := share
+		if g > remaining {
+			g = remaining
+		}
+		h.addProbe(peerID, &SearchProbe{
+			SearchID: searchID, Direction: 1,
+			Amount: amount, Penalty: pen,
+			Gas: g, Depth: 1, Hops: 0,
+		})
+		kicks = append(kicks, peerID)
+		remaining -= g
+	}
+
 	return kicks
 }
 
 func (h *Handler) startLoop(searchID string) []string {
 	p := h.Paths[searchID]
-	if p == nil || p.InPeer == "" {
+	if p == nil || p.Peer[0] == "" {
 		return nil
 	}
-	_, avl := h.bandwidth(p.InPeer)
+	_, avl := h.bandwidth(p.Peer[0])
 	if avl <= 0 {
 		h.expirePath(searchID)
 		return nil
@@ -1318,7 +1376,7 @@ func (h *Handler) startLoop(searchID string) []string {
 	}
 	p.Amount = amount
 	link.Enqueue(&p.Queue, "prepare")
-	return []string{p.InPeer}
+	return []string{p.Peer[0]}
 }
 
 // ---------------------------------------------------------------------------
@@ -1419,7 +1477,7 @@ func (h *Handler) linkSlots(peer string, reserved bool) int {
 		}
 	}
 	for _, p := range h.Paths {
-		if p.InPeer != peer && p.OutPeer != peer {
+		if p.Peer[0] != peer && p.Peer[1] != peer {
 			continue
 		}
 		if reserved && !p.Commit {
