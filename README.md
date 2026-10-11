@@ -42,7 +42,6 @@ types.go               identities, Module/Transport interfaces, errors, helpers
 node.go                Node: sync engine, handler dispatch, persistence
 link_handler.go        link lifecycle (connect/close/module negotiation)
 trustline.go           TrustlineHandler: credit limits, balances, payments
-triad.go               TriadHandler: three-party novation for circular debt
 demurrage.go           demurrage computation (decay over time)
 server.go              Server, Config, module factory registration, P2P
 account.go             namespace-routed account API dispatch
@@ -51,13 +50,18 @@ users.go               auth, sessions, admin, argon2 password hashing
 store.go               persistence (file-based)
 run.go                 Boot/RunAndWait helpers
 
+modules/
+  triad/               three-party novation for circular debt elimination
+
 cmd/
   base/                server with built-in trustline module
+  triad/               server with trustline + triad modules
 ```
 
 Modules register under a namespace and receive sync dispatch. The trustline
-module is built in. External modules (like triad) register via
-`Server.Register(name, ModuleFactory)` before Init.
+module is built in. External modules register via
+`Server.Register(name, ModuleFactory)` before Init. Different binaries
+under `cmd/` combine different sets of modules.
 
 ## Link layer
 
@@ -131,43 +135,43 @@ Three-state `InviteMode` controls how a node handles incoming connections from u
 
 The trustline handler registers as a module under the `"trustline"` namespace. It manages per-peer credit data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
 
-### Peer lifecycle
+### Trustline lifecycle
 
-Peers use the same `ConnectionState` pattern as links and modules — `Status` only changes via sync, local decisions set intent bools.
+Trustlines use the same `ConnectionState` pattern as links and modules — `Status` only changes via sync, local decisions set intent bools.
 
 ```
   add_peer                        incoming link.connect
   (creates link +                 (from peer)
-   local Peer with                      |
+   local Trustline with                 |
    IntentConnect)                       v
        |                          link incoming
-       v                          (no peer yet)
+       v                          (no trustline yet)
   link waiting                         |
-  peer IntentConnect              accept_peer
+  trustline IntentConnect         accept_peer
        |                          (AcceptLink + module
-       |                           + Peer IntentConnect)
+       |                           + Trustline IntentConnect)
   link.connect completes               |
   + module negotiation            link connects
   + trustline.connect sent        + module negotiation
        |                          + trustline.connect
        v                            mutual detection
-  peer connected                       |
+  trustline connected                  |
   bilaterally                          v
-       |                          peer connected
+       |                          trustline connected
   remove_peer
-  (peer IntentClose)
+  (trustline IntentClose)
        |
   trustline.close sent
-  peer State cleared
+  trustline State cleared
   (both sides)
        |
   remove_peer again
-  (deletes peer data)
+  (deletes trustline data)
 ```
 
-The initiator creates the `Peer` locally in `add_peer` with `IntentConnect`. After link and module connect, `trustline.connect` is sent. The receiver creates the `Peer` when `trustline.connect` arrives — if the receiver has already called `accept_peer` (which pre-sets `IntentConnect`), mutual detection connects both sides immediately. Otherwise the peer is `incoming`, awaiting `accept_peer`.
+The initiator creates the `Trustline` locally in `add_peer` with `IntentConnect`. After link and module connect, `trustline.connect` is sent. The receiver creates the `Trustline` when `trustline.connect` arrives — if the receiver has already called `accept_peer` (which pre-sets `IntentConnect`), mutual detection connects both sides immediately. Otherwise the trustline is `incoming`, awaiting `accept_peer`.
 
-Disconnection uses `trustline.close` — `remove_peer` sets `IntentClose` on the peer. The trustline close handshake runs first (peer `IntentClose && Refs == 0`). When the trustline closes, it calls `UnrefClose` on the link, which decrements refs and sets `IntentClose` on the link when refs reach 0. The link close handshake then runs automatically. A second `remove_peer` deletes local peer data.
+Disconnection uses `trustline.close` — `remove_peer` sets `IntentClose` on the trustline. The trustline close handshake runs first (trustline `IntentClose && Refs == 0`). When the trustline closes, it calls `UnrefClose` on the link, which decrements refs and sets `IntentClose` on the link when refs reach 0. The link close handshake then runs automatically. A second `remove_peer` deletes local trustline data.
 
 ### Sync protocol
 
