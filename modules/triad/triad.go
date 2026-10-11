@@ -476,8 +476,8 @@ func (h *Handler) unrefPeer(peer string) {
 
 func (h *Handler) connectedPeers() []string {
 	out := make([]string, 0, len(h.trustlines))
-	for id, t := range h.trustlines {
-		if t.State.Status == link.Connected {
+	for id := range h.trustlines {
+		if h.isConnected(id) {
 			out = append(out, id)
 		}
 	}
