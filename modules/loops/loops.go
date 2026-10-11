@@ -241,7 +241,7 @@ func (h *Handler) HandleResponse(peer string, t *creditnet.Trustline, method str
 	case "commit":
 		return h.respCommit(payload, ok, ts)
 	case "finalize":
-		h.respFinalize(t, payload, ok, ts)
+		return h.respFinalize(t, payload, ok, ts)
 	case "cancel":
 		h.respCancel(t, payload, ok, ts)
 	case "rollback":
@@ -855,34 +855,19 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 	t.AddBalance(int64(cl.Amount+penConsumed), ts)
 	outPeer := cl.Side[sideOUT].Peer
 
-	// Continuation: create next chunk.
-	if !m.Final && outPeer != "" {
+	// Continuation: set sideIN half of next chunk.
+	if !m.Final {
 		nextID := hex.EncodeToString(pre)
-		if h.Clearings[nextID] == nil {
-			nextCl := &Clearing{
+		nextCl := h.Clearings[nextID]
+		if nextCl == nil {
+			nextCl = &Clearing{
 				Amount: cl.Amount, PenaltyRate: cl.PenaltyRate,
-				Side: [2]ClearingSide{
-					{Peer: peer, Time: ts, Penalty: cl.Side[sideIN].Penalty},
-					{Peer: outPeer, Penalty: cl.Side[sideOUT].Penalty},
-				},
-			}
-			h.refPeer(peer)
-			h.refPeer(outPeer)
-			if cl.Seed != nil {
-				nextStep := cl.Step - 1
-				nextCl.Seed = cl.Seed
-				nextCl.Step = nextStep
-				if nextStep >= 1 {
-					nextCl.Preimage = chainHash(cl.Seed, nextStep-1)
-				}
-				if nextStep >= 2 {
-					nextCl.CancelPre = chainHash(cl.Seed, nextStep-2)
-				}
-				_, avl := h.bandwidth(outPeer)
-				nextCl.Final = nextStep <= 2 || avl < int64(nextCl.Amount)
-				link.Enqueue(&nextCl.Side[sideOUT].Queue, "finalize")
 			}
 			h.Clearings[nextID] = nextCl
+		}
+		if nextCl.Side[sideIN].Peer == "" {
+			nextCl.Side[sideIN] = ClearingSide{Peer: peer, Time: ts, Penalty: cl.Side[sideIN].Penalty}
+			h.refPeer(peer)
 			h.scheduleCleanup(nextID, sideIN)
 		}
 	}
@@ -903,36 +888,71 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 	return true, kicks, nil
 }
 
-func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) {
+func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) []string {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
 	if json.Unmarshal(raw, &m) != nil {
-		return
+		return nil
 	}
 	cl := h.Clearings[m.ID]
 	if cl == nil {
-		return
+		return nil
 	}
 	outPeer := cl.Side[sideOUT].Peer
 	link.Dequeue(&cl.Side[sideOUT].Queue)
 	if ok {
 		penConsumed := penaltyTick(cl.Amount, cl.Side[sideOUT].Penalty, cl.Side[sideOUT].Time, ts)
 		t.AddBalance(-int64(cl.Amount+penConsumed), ts)
+
+		// Continuation: set sideOUT half of next chunk.
+		var kicks []string
+		if cl.Preimage != nil && !cl.Final {
+			nextID := hex.EncodeToString(cl.Preimage)
+			nextCl := h.Clearings[nextID]
+			if nextCl == nil {
+				nextCl = &Clearing{
+					Amount: cl.Amount, PenaltyRate: cl.PenaltyRate,
+				}
+				h.Clearings[nextID] = nextCl
+			}
+			if nextCl.Side[sideOUT].Peer == "" {
+				nextCl.Side[sideOUT] = ClearingSide{Peer: outPeer, Penalty: cl.Side[sideOUT].Penalty}
+				h.refPeer(outPeer)
+			}
+			// Initiator: set up hash chain and drive next chunk.
+			if cl.Seed != nil {
+				nextStep := cl.Step - 1
+				nextCl.Seed = cl.Seed
+				nextCl.Step = nextStep
+				if nextStep >= 1 {
+					nextCl.Preimage = chainHash(cl.Seed, nextStep-1)
+				}
+				if nextStep >= 2 {
+					nextCl.CancelPre = chainHash(cl.Seed, nextStep-2)
+				}
+				_, avl := h.bandwidth(outPeer)
+				nextCl.Final = nextStep <= 2 || avl < int64(nextCl.Amount)
+				link.Enqueue(&nextCl.Side[sideOUT].Queue, "finalize")
+				kicks = []string{outPeer}
+			}
+		}
+
 		h.unrefPeer(outPeer)
 		cl.Side[sideOUT] = ClearingSide{}
 		if cl.Side[sideIN].Peer == "" {
 			h.removeClearing(m.ID)
 		}
-	} else {
-		h.unrefPeer(outPeer)
-		cl.Side[sideOUT] = ClearingSide{}
-		if cl.Side[sideIN].Peer != "" {
-			link.Enqueue(&cl.Side[sideIN].Queue, "rollback")
-		} else {
-			h.removeClearing(m.ID)
-		}
+		return kicks
 	}
+	h.unrefPeer(outPeer)
+	cl.Side[sideOUT] = ClearingSide{}
+	if cl.Side[sideIN].Peer != "" {
+		link.Enqueue(&cl.Side[sideIN].Queue, "rollback")
+	} else {
+		h.removeClearing(m.ID)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
