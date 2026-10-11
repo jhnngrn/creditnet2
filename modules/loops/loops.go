@@ -194,8 +194,8 @@ func (h *Handler) HandleRequest(peer string, t *creditnet.Trustline, method stri
 		return h.reqFound(peer, payload)
 	case "prepare":
 		return h.reqPrepare(peer, payload)
-	case "path_cleanup":
-		return h.reqPathCleanup(peer, payload)
+	case "expire":
+		return h.reqExpire(peer, payload)
 	// Clearing phase
 	case "commit":
 		return h.reqCommit(peer, t, payload, ts)
@@ -223,8 +223,8 @@ func (h *Handler) HandleResponse(peer string, t *creditnet.Trustline, method str
 		h.respFound(payload, ok)
 	case "prepare":
 		h.respPrepare(payload, ok)
-	case "path_cleanup":
-		h.respPathCleanup(payload)
+	case "expire":
+		h.respExpire(payload)
 	case "commit":
 		return h.respCommit(payload, ok, ts)
 	case "finalize":
@@ -547,7 +547,7 @@ func (h *Handler) respPrepare(raw json.RawMessage, ok bool) {
 	if !ok {
 		p.Commit = false
 		// Could try with less amount, but for now just give up.
-		h.cleanupPath(m.ID)
+		h.expirePath(m.ID)
 	}
 }
 
@@ -555,7 +555,7 @@ func (h *Handler) respPrepare(raw json.RawMessage, ok bool) {
 // Path — cleanup
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqPathCleanup(peer string, raw json.RawMessage) (bool, []string, error) {
+func (h *Handler) reqExpire(peer string, raw json.RawMessage) (bool, []string, error) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -575,13 +575,13 @@ func (h *Handler) reqPathCleanup(peer string, raw json.RawMessage) (bool, []stri
 	if p.InPeer == peer {
 		p.InPeer = ""
 		if p.OutPeer != "" {
-			link.Enqueue(&p.Queue, "path_cleanup")
+			link.Enqueue(&p.Queue, "expire")
 			kicks = []string{p.OutPeer}
 		}
 	} else {
 		p.OutPeer = ""
 		if p.InPeer != "" {
-			link.Enqueue(&p.Queue, "path_cleanup")
+			link.Enqueue(&p.Queue, "expire")
 			kicks = []string{p.InPeer}
 		}
 	}
@@ -591,7 +591,7 @@ func (h *Handler) reqPathCleanup(peer string, raw json.RawMessage) (bool, []stri
 	return true, kicks, nil
 }
 
-func (h *Handler) respPathCleanup(raw json.RawMessage) {
+func (h *Handler) respExpire(raw json.RawMessage) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -611,7 +611,7 @@ func (h *Handler) respPathCleanup(raw json.RawMessage) {
 	}
 }
 
-func (h *Handler) cleanupPath(id string) []string {
+func (h *Handler) expirePath(id string) []string {
 	p := h.Paths[id]
 	if p == nil {
 		return nil
@@ -619,11 +619,11 @@ func (h *Handler) cleanupPath(id string) []string {
 	// Send cleanup to both sides.
 	var kicks []string
 	if p.OutPeer != "" {
-		link.Enqueue(&p.Queue, "path_cleanup")
+		link.Enqueue(&p.Queue, "expire")
 		kicks = append(kicks, p.OutPeer)
 	}
 	if p.InPeer != "" && p.OutPeer == "" {
-		link.Enqueue(&p.Queue, "path_cleanup")
+		link.Enqueue(&p.Queue, "expire")
 		kicks = append(kicks, p.InPeer)
 	}
 	if p.InPeer == "" && p.OutPeer == "" {
@@ -634,7 +634,7 @@ func (h *Handler) cleanupPath(id string) []string {
 
 func (h *Handler) schedulePathExpiry(id string) {
 	h.schedule(PathTTL, func() []string {
-		return h.cleanupPath(id)
+		return h.expirePath(id)
 	})
 }
 
@@ -666,9 +666,9 @@ func (h *Handler) buildPathMsg(id string, p *Path) *link.QueuedMsg {
 			Method:  "prepare",
 			Payload: creditnet.Enc(map[string]any{"clearing_id": id, "amount": p.Amount}),
 		}
-	case "path_cleanup":
+	case "expire":
 		return &link.QueuedMsg{
-			Method:  "path_cleanup",
+			Method:  "expire",
 			Payload: creditnet.Enc(map[string]string{"clearing_id": id}),
 		}
 	}
@@ -1247,7 +1247,7 @@ func (h *Handler) startLoop(searchID string) []string {
 	}
 	_, avl := h.bandwidth(p.InPeer)
 	if avl <= 0 {
-		h.cleanupPath(searchID)
+		h.expirePath(searchID)
 		return nil
 	}
 	amount := uint64(avl)
@@ -1258,7 +1258,7 @@ func (h *Handler) startLoop(searchID string) []string {
 		amount = ChunkSize
 	}
 	if amount == 0 {
-		h.cleanupPath(searchID)
+		h.expirePath(searchID)
 		return nil
 	}
 	p.Amount = amount
