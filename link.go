@@ -99,6 +99,8 @@ func (n *Node) handleLinkAccount(method string, payload json.RawMessage) (json.R
 		}
 		n.SetInviteMode(p.Mode)
 		return Enc("ok"), nil
+	case "set_modules":
+		return n.setModules(payload)
 	case "accept_module":
 		return n.acceptModule(payload)
 	case "reject_module":
@@ -168,6 +170,49 @@ func (n *Node) respModule(lk *link.Link, payload json.RawMessage, ok bool) {
 		mod.Status = link.Waiting
 	}
 	mod.IntentConnect = false
+}
+
+func (n *Node) setModules(payload json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Peer    string   `json:"peer"`
+		Modules []string `json:"modules"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("bad request")
+	}
+	lk := n.links[p.Peer]
+	if lk == nil {
+		return nil, fmt.Errorf("no link to %s", p.Peer)
+	}
+	if lk.State.Modules == nil {
+		lk.State.Modules = map[string]*link.ConnectionState{}
+	}
+	desired := map[string]bool{}
+	for _, name := range p.Modules {
+		if n.ModuleSupported(name) {
+			desired[name] = true
+		}
+	}
+	// Propose desired modules not already connected or pending.
+	for name := range desired {
+		mod := lk.State.Modules[name]
+		if mod == nil {
+			lk.State.Modules[name] = &link.ConnectionState{IntentConnect: true}
+		} else if mod.Status != link.Connected {
+			mod.IntentConnect = true
+		}
+	}
+	// Remove non-desired modules that aren't connected yet.
+	for name, mod := range lk.State.Modules {
+		if name == "trustline" {
+			continue
+		}
+		if !desired[name] && mod.Status != link.Connected {
+			delete(lk.State.Modules, name)
+		}
+	}
+	n.Kick(p.Peer)
+	return Enc("ok"), nil
 }
 
 func (n *Node) acceptModule(payload json.RawMessage) (json.RawMessage, error) {
