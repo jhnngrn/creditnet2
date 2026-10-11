@@ -8,19 +8,11 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// linkHandler — handles link.connect, link.close, link.module
+// Link handling — connect, close, module negotiation (built into Node)
 // ---------------------------------------------------------------------------
 
-type linkHandler struct {
-	node *Node
-}
-
-func newLinkHandler(n *Node) *linkHandler {
-	return &linkHandler{node: n}
-}
-
-func (h *linkHandler) HandleRequest(peer string, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
-	lk := h.node.links[peer]
+func (n *Node) handleLinkRequest(peer string, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+	lk := n.links[peer]
 	switch method {
 	case "connect":
 		if lk.State.IntentConnect || lk.State.Status == link.Waiting {
@@ -28,24 +20,24 @@ func (h *linkHandler) HandleRequest(peer string, method string, payload json.Raw
 			lk.State.IntentConnect = false
 			return true, nil, nil
 		}
-		if h.node.inviteMode == InviteModeOpen {
+		if n.inviteMode == InviteModeOpen {
 			lk.State.Status = link.Connected
 			return true, nil, nil
 		}
 		return false, nil, nil // Incoming → NACK (invite flow)
 
 	case "close":
-		h.node.DeleteLink(peer)
+		n.DeleteLink(peer)
 		return true, nil, nil
 
 	case "module":
-		return h.reqModule(peer, lk, payload)
+		return n.reqModule(peer, lk, payload)
 	}
 	return false, nil, ErrBadMethod
 }
 
-func (h *linkHandler) HandleResponse(peer string, method string, payload json.RawMessage, ok bool, ts int64) []string {
-	lk := h.node.links[peer]
+func (n *Node) handleLinkResponse(peer string, method string, payload json.RawMessage, ok bool, ts int64) []string {
+	lk := n.links[peer]
 	switch method {
 	case "connect":
 		if ok {
@@ -57,19 +49,19 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 
 	case "close":
 		if ok {
-			h.node.DeleteLink(peer)
+			n.DeleteLink(peer)
 			return nil
 		}
 		lk.State.IntentClose = false
 
 	case "module":
-		h.respModule(lk, payload, ok)
+		n.respModule(lk, payload, ok)
 	}
 	return nil
 }
 
-func (h *linkHandler) NextTx(peer string) *link.QueuedMsg {
-	lk := h.node.links[peer]
+func (n *Node) linkNextTx(peer string) *link.QueuedMsg {
+	lk := n.links[peer]
 	// Link lifecycle.
 	if lk.State.IntentClose && lk.State.Refs == 0 {
 		return &link.QueuedMsg{Method: "close"}
@@ -91,7 +83,7 @@ func (h *linkHandler) NextTx(peer string) *link.QueuedMsg {
 	return nil
 }
 
-func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+func (n *Node) handleLinkAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {
 	case "set_invite_mode":
 		var p struct {
@@ -105,14 +97,14 @@ func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (jso
 		default:
 			return nil, fmt.Errorf("invalid mode %q", p.Mode)
 		}
-		h.node.SetInviteMode(p.Mode)
+		n.SetInviteMode(p.Mode)
 		return Enc("ok"), nil
 	case "accept_module":
-		return h.acceptModule(payload)
+		return n.acceptModule(payload)
 	case "reject_module":
-		return h.rejectModule(payload)
+		return n.rejectModule(payload)
 	case "status":
-		return h.node.Status(), nil
+		return n.Status(), nil
 	}
 	return nil, ErrBadMethod
 }
@@ -121,14 +113,14 @@ func (h *linkHandler) HandleAccount(method string, payload json.RawMessage) (jso
 // Module negotiation
 // ---------------------------------------------------------------------------
 
-func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMessage) (bool, []string, error) {
+func (n *Node) reqModule(peer string, lk *link.Link, payload json.RawMessage) (bool, []string, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
 		return false, nil, fmt.Errorf("bad payload")
 	}
-	if !h.node.ModuleSupported(p.Name) {
+	if !n.ModuleSupported(p.Name) {
 		return false, nil, nil // we don't speak this module
 	}
 	if lk.State.Modules == nil {
@@ -142,7 +134,7 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 		return true, nil, nil
 	}
 	// Open mode — auto-accept supported modules.
-	if h.node.inviteMode == InviteModeOpen {
+	if n.inviteMode == InviteModeOpen {
 		if mod == nil {
 			mod = &link.ConnectionState{}
 			lk.State.Modules[p.Name] = mod
@@ -159,7 +151,7 @@ func (h *linkHandler) reqModule(peer string, lk *link.Link, payload json.RawMess
 	return false, nil, nil // NACK — not accepted yet
 }
 
-func (h *linkHandler) respModule(lk *link.Link, payload json.RawMessage, ok bool) {
+func (n *Node) respModule(lk *link.Link, payload json.RawMessage, ok bool) {
 	var p struct {
 		Name string `json:"name"`
 	}
@@ -178,7 +170,7 @@ func (h *linkHandler) respModule(lk *link.Link, payload json.RawMessage, ok bool
 	mod.IntentConnect = false
 }
 
-func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, error) {
+func (n *Node) acceptModule(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer   string `json:"peer"`
 		Module string `json:"module"`
@@ -186,7 +178,7 @@ func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, er
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("bad request")
 	}
-	lk := h.node.links[p.Peer]
+	lk := n.links[p.Peer]
 	if lk == nil {
 		return nil, fmt.Errorf("no link to %s", p.Peer)
 	}
@@ -195,11 +187,11 @@ func (h *linkHandler) acceptModule(payload json.RawMessage) (json.RawMessage, er
 		return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 	}
 	mod.IntentConnect = true
-	h.node.Kick(p.Peer)
+	n.Kick(p.Peer)
 	return Enc("ok"), nil
 }
 
-func (h *linkHandler) rejectModule(payload json.RawMessage) (json.RawMessage, error) {
+func (n *Node) rejectModule(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer   string `json:"peer"`
 		Module string `json:"module"`
@@ -207,7 +199,7 @@ func (h *linkHandler) rejectModule(payload json.RawMessage) (json.RawMessage, er
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("bad request")
 	}
-	lk := h.node.links[p.Peer]
+	lk := n.links[p.Peer]
 	if lk == nil {
 		return nil, fmt.Errorf("no link to %s", p.Peer)
 	}

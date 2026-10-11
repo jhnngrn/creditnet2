@@ -27,8 +27,6 @@ type Node struct {
 	trustlines map[string]*Trustline
 	reservers  []Reserver
 
-	lh *linkHandler
-
 	modules   []moduleEntry
 	moduleMap map[string]Module
 
@@ -83,9 +81,6 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 		transport:  transport,
 		store:      store,
 	}
-
-	// Built-in handlers.
-	n.lh = newLinkHandler(n)
 
 	return n
 }
@@ -142,7 +137,7 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 	ns, method := SplitMethod(fullMethod)
 	switch ns {
 	case "link":
-		return n.lh.HandleAccount(method, payload)
+		return n.handleLinkAccount(method, payload)
 	case "trustline":
 		return n.handleTrustlineAccount(method, payload)
 	}
@@ -281,7 +276,7 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	var reqErr error
 	switch ns {
 	case "link":
-		ok, kicks, reqErr = n.lh.HandleRequest(env.From, method, env.Payload, ts)
+		ok, kicks, reqErr = n.handleLinkRequest(env.From, method, env.Payload, ts)
 	case "trustline":
 		if !lk.ModuleEnabled(ns) {
 			n.mu.Unlock()
@@ -317,7 +312,7 @@ func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.Syn
 	ns, method := SplitMethod(msg.Method)
 	switch ns {
 	case "link":
-		return n.lh.HandleResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
+		return n.handleLinkResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
 	case "trustline":
 		return n.handleTrustlineResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
 	}
@@ -420,7 +415,7 @@ func (n *Node) nextTx(peer string) *link.QueuedMsg {
 		return nil
 	}
 	// Link handler runs regardless of status.
-	if msg := n.lh.NextTx(peer); msg != nil {
+	if msg := n.linkNextTx(peer); msg != nil {
 		msg.Method = "link." + msg.Method
 		return msg
 	}
