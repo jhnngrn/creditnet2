@@ -40,7 +40,7 @@ link/
 
 types.go               identities, Module/Transport interfaces, errors, helpers
 node.go                Node: sync engine, handler dispatch, persistence
-link_handler.go        link lifecycle (connect/close/module negotiation), built into Node
+link.go                link lifecycle (connect/close/module negotiation), built into Node
 trustline.go           trustline data and sync: credit limits, balances, payments
 demurrage.go           demurrage computation (decay over time)
 server.go              Server, Config, module factory registration, P2P
