@@ -55,6 +55,7 @@ type Path struct {
 	OutPeer string `json:"out_peer,omitempty"` // direction 1: who sent search to us
 	Seed    []byte `json:"seed,omitempty"`     // initiator only
 	Queue   []string `json:"queue,omitempty"`
+	Expiry int64 `json:"expiry"`
 }
 
 func (p *Path) pendingPeer() string {
@@ -127,6 +128,18 @@ func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[s
 		h.Clearings = map[string]*Clearing{}
 	}
 	h.scheduleSearch()
+	// Re-schedule path expiry timers.
+	now := time.Now().Unix()
+	for id, p := range h.Paths {
+		remaining := time.Duration(p.Expiry-now) * time.Second
+		if remaining <= 0 {
+			remaining = 0
+		}
+		pid := id
+		h.schedule(remaining, func() []string {
+			return h.expirePath(pid)
+		})
+	}
 	// Re-schedule cancel timers for persisted clearings.
 	for id, cl := range h.Clearings {
 		if cl.Seed != nil && cl.CancelPre != nil &&
@@ -189,7 +202,7 @@ func (h *Handler) HandleRequest(peer string, t *creditnet.Trustline, method stri
 	switch method {
 	// Path phase
 	case "search":
-		return h.reqSearch(peer, payload)
+		return h.reqSearch(peer, payload, ts)
 	case "found":
 		return h.reqFound(peer, payload)
 	case "prepare":
@@ -290,7 +303,7 @@ type searchMsg struct {
 	Hops      uint8  `json:"hops"`
 }
 
-func (h *Handler) reqSearch(peer string, raw json.RawMessage) (bool, []string, error) {
+func (h *Handler) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m searchMsg
 	if json.Unmarshal(raw, &m) != nil || m.Amount == 0 {
 		return false, nil, fmt.Errorf("bad payload")
@@ -337,7 +350,7 @@ func (h *Handler) reqSearch(peer string, raw json.RawMessage) (bool, []string, e
 		return false, nil, nil
 	}
 
-	p = &Path{Amount: m.Amount, Penalty: m.Penalty, Hops: m.Hops + 1, Depth: m.Depth, Gas: m.Gas}
+	p = &Path{Amount: m.Amount, Penalty: m.Penalty, Hops: m.Hops + 1, Depth: m.Depth, Gas: m.Gas, Expiry: ts + int64(PathTTL.Seconds())}
 	if m.Direction == 0 {
 		p.InPeer = peer
 	} else {
@@ -1229,7 +1242,7 @@ func (h *Handler) sendSearches() []string {
 	pen := amount * PenaltyRate / 1000
 	p := &Path{
 		Seed: seed, Amount: amount, Penalty: pen,
-		Gas: gasForDepth(0), Depth: 1,
+		Gas: gasForDepth(0), Depth: 1, Expiry: time.Now().Add(PathTTL).Unix(),
 	}
 	h.Paths[searchID] = p
 	h.schedulePathExpiry(searchID)
