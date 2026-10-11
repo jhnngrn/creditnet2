@@ -120,6 +120,20 @@ func (h *TrustlineHandler) LinkDeleted(peer string) {
 	}
 }
 
+// refLink increments the ref count on the link's ConnectionState.
+func (h *TrustlineHandler) refLink(peer string) {
+	if lk := h.node.links[peer]; lk != nil {
+		lk.State.Ref()
+	}
+}
+
+// unrefLink decrements the ref count on the link's ConnectionState.
+func (h *TrustlineHandler) unrefLink(peer string) {
+	if lk := h.node.links[peer]; lk != nil {
+		lk.State.Unref()
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Sync — HandleRequest
 // ---------------------------------------------------------------------------
@@ -135,10 +149,12 @@ func (h *TrustlineHandler) HandleRequest(peerID string, p *Peer, method string, 
 		if peer.State.IntentConnect || peer.State.Status == link.Waiting {
 			peer.State.Status = link.Connected
 			peer.State.IntentConnect = false
+			h.refLink(peerID)
 			return true, nil, nil
 		}
 		if h.node.InviteMode() == InviteModeOpen {
 			peer.State.Status = link.Connected
+			h.refLink(peerID)
 			return true, nil, nil
 		}
 		peer.State.Status = link.Incoming
@@ -148,6 +164,7 @@ func (h *TrustlineHandler) HandleRequest(peerID string, p *Peer, method string, 
 		if peer == nil {
 			return true, nil, nil // already gone
 		}
+		h.unrefLink(peerID)
 		peer.State = link.ConnectionState{}
 		return true, nil, nil
 	case "set_credit_limit":
@@ -236,6 +253,7 @@ func (h *TrustlineHandler) HandleResponse(peerID string, p *Peer, method string,
 	case "connect":
 		if ok {
 			peer.State.Status = link.Connected
+			h.refLink(peerID)
 		} else {
 			peer.State.Status = link.Waiting
 		}
@@ -243,6 +261,7 @@ func (h *TrustlineHandler) HandleResponse(peerID string, p *Peer, method string,
 		return nil
 	case "close":
 		if ok {
+			h.unrefLink(peerID)
 			peer.State = link.ConnectionState{}
 		} else {
 			peer.State.IntentClose = false
@@ -281,7 +300,7 @@ func (h *TrustlineHandler) NextTx(peerID string) *link.QueuedMsg {
 		return nil
 	}
 	// Peer lifecycle.
-	if peer.State.IntentClose {
+	if peer.State.IntentClose && peer.State.Refs == 0 {
 		return &link.QueuedMsg{Method: "close"}
 	}
 	if peer.State.IntentConnect {
@@ -361,8 +380,10 @@ func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, er
 	if peer := h.peers[peerID]; peer != nil && peer.State.Status == link.Connected {
 		return nil, fmt.Errorf("peer %s already exists", peerID)
 	}
-	if err := h.node.AddLink(peerID); err != nil {
-		return nil, err
+	if h.node.links[peerID] == nil {
+		if err := h.node.AddLink(peerID); err != nil {
+			return nil, err
+		}
 	}
 	// Request trustline module on this link.
 	lk := h.node.links[peerID]
@@ -444,6 +465,10 @@ func (h *TrustlineHandler) removePeer(payload json.RawMessage) (json.RawMessage,
 		return Enc("ok"), nil
 	}
 	peer.State.IntentClose = true
+	// Also signal the link to close once all refs are gone.
+	if lk := h.node.links[peerID]; lk != nil {
+		lk.State.IntentClose = true
+	}
 	h.node.Kick(peerID)
 	return Enc("ok"), nil
 }

@@ -30,13 +30,21 @@ const (
 	Connected ConnectionStatus = "connected" // bilaterally established
 )
 
-// ConnectionState is the bilateral connection state: what IS (Status)
-// and what to DO next (IntentConnect/IntentClose).
+// ConnectionState is the bilateral connection state: what IS (Status),
+// what to DO next (IntentConnect/IntentClose), and who holds it open (Refs).
+// Close is deferred while Refs > 0.
 type ConnectionState struct {
 	Status        ConnectionStatus `json:"status,omitempty"`
 	IntentConnect bool             `json:"intent_connect,omitempty"`
 	IntentClose   bool             `json:"intent_close,omitempty"`
+	Refs          uint             `json:"refs,omitempty"`
 }
+
+// Ref increments the reference count.
+func (c *ConnectionState) Ref()   { c.Refs++ }
+
+// Unref decrements the reference count.
+func (c *ConnectionState) Unref() { if c.Refs > 0 { c.Refs-- } }
 
 // LinkState is a ConnectionState (for the link itself) plus per-module connections.
 type LinkState struct {

@@ -71,7 +71,7 @@ func (h *linkHandler) HandleResponse(peer string, method string, payload json.Ra
 func (h *linkHandler) NextTx(peer string) *link.QueuedMsg {
 	lk := h.node.links[peer]
 	// Link lifecycle.
-	if lk.State.IntentClose {
+	if lk.State.IntentClose && lk.State.Refs == 0 {
 		return &link.QueuedMsg{Method: "close"}
 	}
 	if lk.State.IntentConnect {
