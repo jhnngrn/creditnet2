@@ -41,7 +41,7 @@ link/
 types.go               identities, Module/Transport interfaces, errors, helpers
 node.go                Node: sync engine, handler dispatch, persistence
 link_handler.go        link lifecycle (connect/close/module negotiation)
-trustline.go           TrustlineHandler: credit limits, balances, payments
+trustline.go           trustline data and sync: credit limits, balances, payments
 demurrage.go           demurrage computation (decay over time)
 server.go              Server, Config, module factory registration, P2P
 account.go             namespace-routed account API dispatch
@@ -58,10 +58,10 @@ cmd/
   triad/               server with trustline + triad modules
 ```
 
-Modules register under a namespace and receive sync dispatch. The trustline
-module is built in. External modules register via
-`Server.Register(name, ModuleFactory)` before Init. Different binaries
-under `cmd/` combine different sets of modules.
+Modules register under a namespace and receive sync dispatch. Trustline
+handling is built into Node (like the link handler). External modules
+register via `Server.Register(name, ModuleFactory)` before Init. Different
+binaries under `cmd/` combine different sets of modules.
 
 ## Link layer
 
@@ -133,7 +133,7 @@ Three-state `InviteMode` controls how a node handles incoming connections from u
 
 ## Trustline layer
 
-The trustline handler registers as a module under the `"trustline"` namespace. It manages per-peer credit data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
+Trustline handling is built into Node under the `"trustline"` namespace. It manages per-peer credit data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
 
 ### Trustline lifecycle
 
