@@ -40,7 +40,7 @@ link/
 
 types.go               identities, Module/Transport interfaces, errors, helpers
 node.go                Node: sync engine, handler dispatch, persistence
-link_handler.go        link lifecycle (connect/close/module negotiation)
+link_handler.go        link lifecycle (connect/close/module negotiation), built into Node
 trustline.go           trustline data and sync: credit limits, balances, payments
 demurrage.go           demurrage computation (decay over time)
 server.go              Server, Config, module factory registration, P2P
@@ -59,7 +59,7 @@ cmd/
 ```
 
 Modules register under a namespace and receive sync dispatch. Trustline
-handling is built into Node (like the link handler). External modules
+handling is built into Node (like link lifecycle handling). External modules
 register via `Server.Register(name, ModuleFactory)` before Init. Different
 binaries under `cmd/` combine different sets of modules.
 
@@ -69,13 +69,13 @@ The link layer provides bilateral connections between nodes. Handlers register u
 
 ### Module negotiation
 
-Links start as bare connections. Modules are proposed explicitly — when application code sets `IntentConnect` on a module's `ConnectionState`, the link handler sends a `link.module` message to the peer. The peer ACKs if it supports the module. Both sides track each module as a `ConnectionState` (same type as the link itself: `ConnectionStatus` + `IntentConnect`/`IntentClose`). Once a module is bilaterally `connected`, the node dispatches sync messages for that module on the link.
+Links start as bare connections. Modules are proposed explicitly — when application code sets `IntentConnect` on a module's `ConnectionState`, the node sends a `link.module` message to the peer. The peer ACKs if it supports the module. Both sides track each module as a `ConnectionState` (same type as the link itself: `ConnectionStatus` + `IntentConnect`/`IntentClose`). Once a module is bilaterally `connected`, the node dispatches sync messages for that module on the link.
 
 This means application-level traffic (trustline operations, triad novations) only flows after both sides have agreed on the module. Adding a new module to the network is backward-compatible — nodes that don't know it simply NACK the proposal.
 
 ### Connected gate
 
-The node's `nextTx` always asks the link handler for pending messages (connect/close/module work regardless of connection state). For modules, `nextTx` requires `link.State.Status == Connected` and the module bilaterally active before asking. This means application-level sync methods (credit limits, payments, etc.) are only sent on connected links with the module enabled, without each module needing to check connection state itself.
+The node's `nextTx` always checks for pending link-lifecycle messages first (connect/close/module work regardless of connection state). For modules, `nextTx` requires `link.State.Status == Connected` and the module bilaterally active before asking. This means application-level sync methods (credit limits, payments, etc.) are only sent on connected links with the module enabled, without each module needing to check connection state itself.
 
 ### Link state machine
 
