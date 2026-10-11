@@ -854,6 +854,7 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 	penConsumed := penaltyTick(cl.Amount, cl.Side[sideIN].Penalty, cl.Side[sideIN].Time, ts)
 	t.AddBalance(int64(cl.Amount+penConsumed), ts)
 	outPeer := cl.Side[sideOUT].Peer
+	var kicks []string
 
 	// Continuation: set sideIN half of next chunk.
 	if !m.Final {
@@ -870,12 +871,16 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 			h.refPeer(peer)
 			h.scheduleCleanup(nextID, sideIN)
 		}
+		// Initiator: both halves ready, drive next chunk.
+		if nextCl.Seed != nil && nextCl.Side[sideOUT].Peer != "" && len(nextCl.Side[sideOUT].Queue) == 0 {
+			link.Enqueue(&nextCl.Side[sideOUT].Queue, "finalize")
+			kicks = append(kicks, nextCl.Side[sideOUT].Peer)
+		}
 	}
 
 	// Forward finalize to OUT.
 	h.unrefPeer(peer)
 	cl.Side[sideIN] = ClearingSide{}
-	var kicks []string
 	if outPeer != "" && len(cl.Side[sideOUT].Queue) == 0 {
 		link.Enqueue(&cl.Side[sideOUT].Queue, "finalize")
 		cl.Preimage = pre
@@ -905,8 +910,9 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 		penConsumed := penaltyTick(cl.Amount, cl.Side[sideOUT].Penalty, cl.Side[sideOUT].Time, ts)
 		t.AddBalance(-int64(cl.Amount+penConsumed), ts)
 
-		// Continuation: set sideOUT half of next chunk.
-		var kicks []string
+		// Continuation: prepare sideOUT half of next chunk.
+		// Don't queue finalize yet — initiator waits for reqFinalize
+		// (payment received) before driving next round.
 		if cl.Preimage != nil && !cl.Final {
 			nextID := hex.EncodeToString(cl.Preimage)
 			nextCl := h.Clearings[nextID]
@@ -920,7 +926,6 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 				nextCl.Side[sideOUT] = ClearingSide{Peer: outPeer, Penalty: cl.Side[sideOUT].Penalty}
 				h.refPeer(outPeer)
 			}
-			// Initiator: set up hash chain and drive next chunk.
 			if cl.Seed != nil {
 				nextStep := cl.Step - 1
 				nextCl.Seed = cl.Seed
@@ -933,8 +938,6 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 				}
 				_, avl := h.bandwidth(outPeer)
 				nextCl.Final = nextStep <= 2 || avl < int64(nextCl.Amount)
-				link.Enqueue(&nextCl.Side[sideOUT].Queue, "finalize")
-				kicks = []string{outPeer}
 			}
 		}
 
@@ -943,7 +946,7 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 		if cl.Side[sideIN].Peer == "" {
 			h.removeClearing(m.ID)
 		}
-		return kicks
+		return nil
 	}
 	h.unrefPeer(outPeer)
 	cl.Side[sideOUT] = ClearingSide{}
