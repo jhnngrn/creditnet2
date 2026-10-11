@@ -355,13 +355,15 @@ func (n *Node) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 			return nil, err
 		}
 	}
-	// Request trustline module on this link.
+	// Request all modules on this link.
 	lk := n.links[peerID]
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]*link.ConnectionState{}
 	}
-	mod := &link.ConnectionState{IntentConnect: true}
-	lk.State.Modules["trustline"] = mod
+	lk.State.Modules["trustline"] = &link.ConnectionState{IntentConnect: true}
+	for name := range n.moduleMap {
+		lk.State.Modules[name] = &link.ConnectionState{IntentConnect: true}
+	}
 	peer := n.trustlines[peerID]
 	if peer == nil {
 		peer = &Trustline{}
@@ -382,17 +384,21 @@ func (n *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if err := n.AcceptLink(peerID); err != nil {
 		return nil, err
 	}
-	// Request trustline module on this link.
+	// Request all modules on this link.
 	lk := n.links[peerID]
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]*link.ConnectionState{}
 	}
-	mod := lk.State.Modules["trustline"]
-	if mod == nil {
-		mod = &link.ConnectionState{}
-		lk.State.Modules["trustline"] = mod
+	if lk.State.Modules["trustline"] == nil {
+		lk.State.Modules["trustline"] = &link.ConnectionState{}
 	}
-	mod.IntentConnect = true
+	lk.State.Modules["trustline"].IntentConnect = true
+	for name := range n.moduleMap {
+		if lk.State.Modules[name] == nil {
+			lk.State.Modules[name] = &link.ConnectionState{}
+		}
+		lk.State.Modules[name].IntentConnect = true
+	}
 	// Accept peer too — pre-set for mutual detection when trustline.connect arrives.
 	peer := n.trustlines[peerID]
 	if peer == nil {
