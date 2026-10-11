@@ -52,10 +52,12 @@ run.go                 Boot/RunAndWait helpers
 
 modules/
   triad/               three-party novation for circular debt elimination
+  loops/               multi-hop loop clearing with hash-chain 2PC settlement
 
 cmd/
   base/                server with built-in trustline module
   triad/               server with trustline + triad modules
+  loops/               server with trustline + loops modules
 ```
 
 Modules register under a namespace and receive sync dispatch. Trustline
@@ -224,9 +226,10 @@ All endpoints accept JSON `{method, payload}`.
 - `trustline.payment` (`{peer, amount}`) — send payment to peer
 - `trustline.status` — peers with credit data, link state, incoming invites
 - `triad.status` — active novation count
+- `loops.status` — active path and clearing count
 - `link.set_invite_mode` (`{mode}`) — set invite mode: `"closed"`, `"invite"` (default), or `"open"`
 - `link.status` — raw link state and invite mode
 
-**POST /p2p/tx** — bilateral sync (`link.*`, `trustline.*`)
+**POST /p2p/tx** — bilateral sync (`link.*`, `trustline.*`, `triad.*`, `loops.*`)
 
 **GET /p2p/key** — public key for signature verification
