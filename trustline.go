@@ -380,7 +380,11 @@ func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, er
 	if peer := h.peers[peerID]; peer != nil && peer.State.Status == link.Connected {
 		return nil, fmt.Errorf("peer %s already exists", peerID)
 	}
-	if h.node.links[peerID] == nil {
+	if lk := h.node.links[peerID]; lk != nil {
+		if lk.State.IntentClose {
+			return nil, fmt.Errorf("link to %s is closing", peerID)
+		}
+	} else {
 		if err := h.node.AddLink(peerID); err != nil {
 			return nil, err
 		}
