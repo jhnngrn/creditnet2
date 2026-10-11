@@ -202,7 +202,7 @@ func (h *Handler) HandleRequest(peer string, t *creditnet.Trustline, method stri
 	switch method {
 	// Path phase
 	case "search":
-		return h.reqSearch(peer, payload, ts)
+		return h.reqSearch(peer, t, payload, ts)
 	case "found":
 		return h.reqFound(peer, payload)
 	case "prepare":
@@ -231,7 +231,7 @@ func (h *Handler) HandleRequest(peer string, t *creditnet.Trustline, method stri
 func (h *Handler) HandleResponse(peer string, t *creditnet.Trustline, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "search":
-		return h.respSearch(payload, ok)
+		return h.respSearch(t, payload, ok, ts)
 	case "found":
 		h.respFound(payload, ok)
 	case "prepare":
@@ -303,7 +303,7 @@ type searchMsg struct {
 	Hops      uint8  `json:"hops"`
 }
 
-func (h *Handler) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) reqSearch(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m searchMsg
 	if json.Unmarshal(raw, &m) != nil || m.Amount == 0 {
 		return false, nil, fmt.Errorf("bad payload")
@@ -360,6 +360,7 @@ func (h *Handler) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, [
 		p.OutPeer = peer
 	}
 	h.Paths[m.ID] = p
+	t.AddBalance(int64(m.Gas), ts) // receive full gas from sender
 
 	// Forward to peers with debt in the right direction.
 	var kicks []string
@@ -394,7 +395,7 @@ func (h *Handler) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, [
 	return true, kicks, nil
 }
 
-func (h *Handler) respSearch(raw json.RawMessage, ok bool) []string {
+func (h *Handler) respSearch(t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) []string {
 	var m searchMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return nil
@@ -404,6 +405,9 @@ func (h *Handler) respSearch(raw json.RawMessage, ok bool) []string {
 		return nil
 	}
 	link.Dequeue(&p.Queue)
+	if ok && t != nil {
+		t.AddBalance(-int64(m.Gas), ts) // sender pays full gas
+	}
 	if !ok {
 		// Search rejected — try next peer or give up.
 		if m.Direction == 0 {
