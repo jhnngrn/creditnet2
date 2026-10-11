@@ -52,19 +52,21 @@ type novFinalizeMsg struct {
 
 // Handler implements creditnet.Module and creditnet.Reserver for novation.
 type Handler struct {
-	Novations map[string]*Novation `json:"novations,omitempty"`
-	nodeID    string
-	schedule  creditnet.ScheduleFunc
-	reader    creditnet.TrustlineReader
+	Novations  map[string]*Novation `json:"novations,omitempty"`
+	nodeID     string
+	schedule   creditnet.ScheduleFunc
+	trustlines map[string]*creditnet.Trustline
+	bandwidth  creditnet.BandwidthFunc
 }
 
 // NewHandler matches the creditnet.ModuleFactory signature.
-func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, reader creditnet.TrustlineReader, state json.RawMessage) creditnet.Module {
+func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) creditnet.Module {
 	h := &Handler{
-		Novations: map[string]*Novation{},
-		nodeID:    nodeID,
-		schedule:  schedule,
-		reader:    reader,
+		Novations:  map[string]*Novation{},
+		nodeID:     nodeID,
+		schedule:   schedule,
+		trustlines: trustlines,
+		bandwidth:  bandwidth,
 	}
 	if state != nil {
 		json.Unmarshal(state, h)
@@ -127,11 +129,11 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 			return false, nil, nil
 		}
 		// Check I owe intermediary enough: -eff - inReservations >= amount.
-		bwIn, _ := h.reader.Bandwidth(peer)
+		bwIn, _ := h.bandwidth(peer)
 		if bwIn-p.CreditLimit < int64(m.Amount) {
 			return false, nil, nil
 		}
-		if h.Novations[m.NovationID] != nil || !h.reader.HasPeer(m.Creditor) {
+		if h.Novations[m.NovationID] != nil || !h.isConnected(m.Creditor) {
 			return false, nil, nil
 		}
 		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Creditor) >= MaxNovPerLink {
@@ -150,16 +152,16 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 			return false, nil, nil
 		}
 		// Check incoming bandwidth from debtor (room for finalize balance increase).
-		bwIn, _ := h.reader.Bandwidth(peer)
+		bwIn, _ := h.bandwidth(peer)
 		if bwIn < int64(m.Amount) {
 			return false, nil, nil
 		}
 		// Check link to intermediary and outgoing debt to intermediary.
-		iPeer := h.reader.GetTrustline(m.Intermediary)
+		iPeer := h.trustlines[m.Intermediary]
 		if iPeer == nil {
 			return false, nil, nil
 		}
-		_, bwOut := h.reader.Bandwidth(m.Intermediary)
+		_, bwOut := h.bandwidth(m.Intermediary)
 		if bwOut-iPeer.CreditLimitIn < int64(m.Amount) {
 			return false, nil, nil
 		}
@@ -376,11 +378,11 @@ func (h *Handler) novateAndReschedule() []string {
 func (h *Handler) cleanStale() bool {
 	changed := false
 	for id, nov := range h.Novations {
-		if nov.InPeer != "" && !h.reader.HasPeer(nov.InPeer) {
+		if nov.InPeer != "" && !h.isConnected(nov.InPeer) {
 			nov.InPeer = ""
 			changed = true
 		}
-		if nov.OutPeer != "" && !h.reader.HasPeer(nov.OutPeer) {
+		if nov.OutPeer != "" && !h.isConnected(nov.OutPeer) {
 			nov.OutPeer = ""
 			nov.Queue = nil
 			changed = true
@@ -396,14 +398,14 @@ func (h *Handler) cleanStale() bool {
 // tryNovate scans for circular debt and initiates novations as intermediary.
 func (h *Handler) tryNovate() []string {
 	var kicks []string
-	peers := h.reader.Peers()
+	peers := h.connectedPeers()
 	for _, debtor := range peers {
-		dPeer := h.reader.GetTrustline(debtor)
+		dPeer := h.trustlines[debtor]
 		if dPeer == nil {
 			continue
 		}
 		// avlD = eff(debtor) - outReservations: how much debtor owes us, unreserved.
-		_, dOut := h.reader.Bandwidth(debtor)
+		_, dOut := h.bandwidth(debtor)
 		avlD := dOut - dPeer.CreditLimitIn
 		if avlD <= 0 || h.novLinkCount(debtor) >= MaxNovPerLink {
 			continue
@@ -412,12 +414,12 @@ func (h *Handler) tryNovate() []string {
 			if creditor == debtor {
 				continue
 			}
-			cPeer := h.reader.GetTrustline(creditor)
+			cPeer := h.trustlines[creditor]
 			if cPeer == nil {
 				continue
 			}
 			// avlC = -eff(creditor) - inReservations: how much we owe creditor, unreserved.
-			cIn, _ := h.reader.Bandwidth(creditor)
+			cIn, _ := h.bandwidth(creditor)
 			avlC := cIn - cPeer.CreditLimit
 			if avlC <= 0 || h.novLinkCount(creditor) >= MaxNovPerLink {
 				continue
@@ -450,6 +452,21 @@ func (h *Handler) tryNovate() []string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+func (h *Handler) isConnected(peer string) bool {
+	t := h.trustlines[peer]
+	return t != nil && t.State.Status == link.Connected
+}
+
+func (h *Handler) connectedPeers() []string {
+	out := make([]string, 0, len(h.trustlines))
+	for id, t := range h.trustlines {
+		if t.State.Status == link.Connected {
+			out = append(out, id)
+		}
+	}
+	return out
+}
 
 func (h *Handler) novLinkCount(peer string) int {
 	c := 0

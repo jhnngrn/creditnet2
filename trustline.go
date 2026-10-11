@@ -41,23 +41,6 @@ type trustlineState struct {
 	Trustlines map[string]*Trustline `json:"trustlines"`
 }
 
-// HasPeer returns true if peer is a connected trustline peer.
-func (h *TrustlineHandler) HasPeer(peer string) bool {
-	p := h.trustlines[peer]
-	return p != nil && p.State.Status == link.Connected
-}
-
-// Peers returns the list of connected trustline peer IDs.
-func (h *TrustlineHandler) Peers() []string {
-	out := make([]string, 0, len(h.trustlines))
-	for id, p := range h.trustlines {
-		if p.State.Status == link.Connected {
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
 // GetTrustline returns the trustline data for a connected peer, or nil.
 func (h *TrustlineHandler) GetTrustline(peer string) *Trustline {
 	p := h.trustlines[peer]

@@ -61,6 +61,10 @@ func IdentityInDomain(identity, domain string) bool {
 // any peers returned by the callback.
 type ScheduleFunc func(delay time.Duration, fn func() []string)
 
+// BandwidthFunc returns available (in, out) capacity for a peer,
+// accounting for effective balance, credit limits, and all reservations.
+type BandwidthFunc func(peer string) (in, out int64)
+
 // Module processes sync methods and account API calls for a namespace.
 // HandleRequest returns (ok, kicks, err) where kicks is a list of peers
 // that need kicking on other links (cross-link kicks, e.g. novation routing).
@@ -77,19 +81,6 @@ type Module interface {
 // Transport sends sync messages to peers.
 type Transport interface {
 	Send(peerDomain string, msg link.SyncRequest) ([]byte, error)
-}
-
-// ---------------------------------------------------------------------------
-// Module isolation interfaces
-// ---------------------------------------------------------------------------
-
-// TrustlineReader provides read-only access to trustline state.
-// Modules receive this instead of the full TrustlineHandler.
-type TrustlineReader interface {
-	HasPeer(peer string) bool
-	Peers() []string
-	GetTrustline(peer string) *Trustline
-	Bandwidth(peer string) (in, out int64)
 }
 
 // Reserver reports capacity reserved by a module on a given peer.

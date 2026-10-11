@@ -68,9 +68,9 @@ func (c *Config) fill() error {
 // ---------------------------------------------------------------------------
 
 // ModuleFactory creates a module for a newly loaded or created node.
-// Modules receive the node ID, a scheduler for periodic work, a
-// TrustlineReader for querying trustline state, and persisted state (nil if new).
-type ModuleFactory func(nodeID string, schedule ScheduleFunc, peers TrustlineReader, state json.RawMessage) Module
+// Modules receive the node ID, a scheduler for periodic work, the
+// trustlines map for direct access, a bandwidth function, and persisted state (nil if new).
+type ModuleFactory func(nodeID string, schedule ScheduleFunc, trustlines map[string]*Trustline, bandwidth BandwidthFunc, state json.RawMessage) Module
 
 type moduleReg struct {
 	name    string
@@ -121,7 +121,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	// Register external modules from factories.
 	if len(s.factories) > 0 {
 		for _, f := range s.factories {
-			m := f.factory(n.id, n.ScheduleFunc(), n.trustline, handlerState(raw, f.name))
+			m := f.factory(n.id, n.ScheduleFunc(), n.trustline.trustlines, n.trustline.Bandwidth, handlerState(raw, f.name))
 			n.RegisterModule(f.name, m)
 			if r, ok := m.(Reserver); ok {
 				n.trustline.RegisterReserver(r)
