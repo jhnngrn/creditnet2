@@ -418,7 +418,7 @@ func (n *Node) nextTx(peer string) *link.QueuedMsg {
 		return nil
 	}
 	// Link handler runs regardless of status.
-	if msg := lk.LinkNextTx(); msg != nil {
+	if msg := lk.NextTx(); msg != nil {
 		msg.Method = "link." + msg.Method
 		return msg
 	}

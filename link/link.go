@@ -245,8 +245,8 @@ func (l *Link) HandleResponse(method string, payload json.RawMessage, ok bool) b
 	return false
 }
 
-// LinkNextTx returns the next link-level message to send, or nil.
-func (l *Link) LinkNextTx() *QueuedMsg {
+// NextTx returns the next link-level message to send, or nil.
+func (l *Link) NextTx() *QueuedMsg {
 	if l.State.IntentClose && l.State.Refs == 0 {
 		return &QueuedMsg{Method: "close"}
 	}
