@@ -119,16 +119,20 @@ func NewLink(self, peer string) *Link {
 
 // Links manages the set of bilateral links for a node.
 type Links struct {
-	m    map[string]*Link
-	self string
+	m          map[string]*Link
+	self       string
+	InviteMode InviteMode
 }
 
 // NewLinks creates a Links collection for the given node identity.
-func NewLinks(self string, m map[string]*Link) *Links {
+func NewLinks(self string, m map[string]*Link, mode InviteMode) *Links {
 	if m == nil {
 		m = map[string]*Link{}
 	}
-	return &Links{m: m, self: self}
+	if mode == "" {
+		mode = InviteModeInvite
+	}
+	return &Links{m: m, self: self, InviteMode: mode}
 }
 
 func (ls *Links) Get(peer string) *Link { return ls.m[peer] }

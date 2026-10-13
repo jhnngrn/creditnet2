@@ -118,7 +118,7 @@ func (n *Node) handleTrustlineRequest(peerID string, method string, payload json
 			n.refTrustlineLink(peerID)
 			return true, nil, nil
 		}
-		if n.inviteMode == link.InviteModeOpen {
+		if n.links.InviteMode == link.InviteModeOpen {
 			peer.State.Status = link.Connected
 			n.refTrustlineLink(peerID)
 			return true, nil, nil
@@ -579,6 +579,6 @@ func (n *Node) trustlineStatus() (json.RawMessage, error) {
 
 	return Enc(map[string]any{
 		"peers":       peers,
-		"invite_mode": n.inviteMode,
+		"invite_mode": n.links.InviteMode,
 	}), nil
 }

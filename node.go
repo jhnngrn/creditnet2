@@ -21,7 +21,6 @@ type Node struct {
 	mu           sync.Mutex
 	id         string
 	links      *link.Links
-	inviteMode link.InviteMode
 
 	trustlines map[string]*Trustline
 	reservers  []Reserver
@@ -51,14 +50,9 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 	if raw != nil {
 		json.Unmarshal(raw, &st)
 	}
-	mode := st.InviteMode
-	if mode == "" {
-		mode = link.InviteModeInvite
-	}
 	n := &Node{
 		id:         id,
-		links:      link.NewLinks(id, st.Links),
-		inviteMode: mode,
+		links:      link.NewLinks(id, st.Links, st.InviteMode),
 		trustlines: loadTrustlines(st.Handlers["trustline"]),
 		moduleMap:  map[string]Module{},
 		supported:  map[string]struct{}{"trustline": {}},
@@ -128,7 +122,7 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 
 // Commit persists the node state. Caller must hold Lock.
 func (n *Node) Commit() {
-	st := nodeState{ID: n.id, Links: n.links.Map(), InviteMode: n.inviteMode}
+	st := nodeState{ID: n.id, Links: n.links.Map(), InviteMode: n.links.InviteMode}
 	st.Handlers = make(map[string]json.RawMessage)
 	// Trustline state.
 	if data, err := json.Marshal(trustlineState{Trustlines: n.trustlines}); err == nil {
@@ -216,7 +210,7 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrNoLink
 		}
-		if n.inviteMode == link.InviteModeClosed {
+		if n.links.InviteMode == link.InviteModeClosed {
 			n.mu.Unlock()
 			return nil, ErrInvitesDisabled
 		}
@@ -260,7 +254,7 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	switch ns {
 	case "link":
 		var del bool
-		ok, del, reqErr = lk.HandleRequest(method, env.Payload, n.supported, n.inviteMode)
+		ok, del, reqErr = lk.HandleRequest(method, env.Payload, n.supported, n.links.InviteMode)
 		if del {
 			n.DeleteLink(env.From)
 		}
@@ -514,7 +508,7 @@ func (n *Node) RejectLink(peer string) error {
 }
 
 func (n *Node) SetInviteMode(mode link.InviteMode) {
-	n.inviteMode = mode
+	n.links.InviteMode = mode
 }
 
 func (n *Node) Status() json.RawMessage {
@@ -526,6 +520,6 @@ func (n *Node) Status() json.RawMessage {
 	}
 	return Enc(map[string]any{
 		"links":       links,
-		"invite_mode": n.inviteMode,
+		"invite_mode": n.links.InviteMode,
 	})
 }
