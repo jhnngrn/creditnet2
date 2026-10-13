@@ -47,7 +47,7 @@ func (n *Node) setModules(payload json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("bad request")
 	}
-	lk := n.links[p.Peer]
+	lk := n.links.Get(p.Peer)
 	if lk == nil {
 		return nil, fmt.Errorf("no link to %s", p.Peer)
 	}
@@ -64,7 +64,7 @@ func (n *Node) acceptModule(payload json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("bad request")
 	}
-	lk := n.links[p.Peer]
+	lk := n.links.Get(p.Peer)
 	if lk == nil {
 		return nil, fmt.Errorf("no link to %s", p.Peer)
 	}
@@ -83,7 +83,7 @@ func (n *Node) rejectModule(payload json.RawMessage) (json.RawMessage, error) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("bad request")
 	}
-	lk := n.links[p.Peer]
+	lk := n.links.Get(p.Peer)
 	if lk == nil {
 		return nil, fmt.Errorf("no link to %s", p.Peer)
 	}

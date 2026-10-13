@@ -88,14 +88,14 @@ func (n *Node) trustlineLinkDeleted(peer string) {
 
 // refTrustlineLink increments the ref count on the link's ConnectionState.
 func (n *Node) refTrustlineLink(peer string) {
-	if lk := n.links[peer]; lk != nil {
+	if lk := n.links.Get(peer); lk != nil {
 		lk.State.Ref()
 	}
 }
 
 // unrefTrustlineLink decrements the ref count on the link's ConnectionState.
 func (n *Node) unrefTrustlineLink(peer string) {
-	if lk := n.links[peer]; lk != nil {
+	if lk := n.links.Get(peer); lk != nil {
 		lk.State.UnrefClose()
 	}
 }
@@ -347,7 +347,7 @@ func (n *Node) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if peer := n.trustlines[peerID]; peer != nil && peer.State.Status == link.Connected {
 		return nil, fmt.Errorf("peer %s already exists", peerID)
 	}
-	if lk := n.links[peerID]; lk != nil {
+	if lk := n.links.Get(peerID); lk != nil {
 		if lk.State.IntentClose {
 			return nil, fmt.Errorf("link to %s is closing", peerID)
 		}
@@ -357,7 +357,7 @@ func (n *Node) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 		}
 	}
 	// Request trustline + chosen modules on this link.
-	lk := n.links[peerID]
+	lk := n.links.Get(peerID)
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]*link.ConnectionState{}
 	}
@@ -389,7 +389,7 @@ func (n *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 	// Request trustline + chosen modules on this link.
-	lk := n.links[peerID]
+	lk := n.links.Get(peerID)
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]*link.ConnectionState{}
 	}
@@ -561,14 +561,14 @@ func (n *Node) trustlineStatus() (json.RawMessage, error) {
 		if p.PendingDemurrage != nil {
 			info["pending_demurrage"] = *p.PendingDemurrage
 		}
-		if l := n.links[id]; l != nil {
+		if l := n.links.Get(id); l != nil {
 			info["link_state"] = l.State
 		}
 		peers[id] = info
 	}
 
 	// Show links without a peer yet (waiting or incoming).
-	for id, l := range n.links {
+	for id, l := range n.links.Map() {
 		if n.trustlines[id] == nil {
 			peers[id] = map[string]any{
 				"status":     string(l.State.Status),

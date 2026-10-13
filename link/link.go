@@ -99,6 +99,37 @@ func NewLink(self, peer string) *Link {
 }
 
 // ---------------------------------------------------------------------------
+// Links — collection of links for a node
+// ---------------------------------------------------------------------------
+
+// Links manages the set of bilateral links for a node.
+type Links struct {
+	m    map[string]*Link
+	self string
+}
+
+// NewLinks creates a Links collection for the given node identity.
+func NewLinks(self string, m map[string]*Link) *Links {
+	if m == nil {
+		m = map[string]*Link{}
+	}
+	return &Links{m: m, self: self}
+}
+
+func (ls *Links) Get(peer string) *Link { return ls.m[peer] }
+func (ls *Links) Len() int              { return len(ls.m) }
+func (ls *Links) Full() bool            { return len(ls.m) >= MaxLinks }
+func (ls *Links) Delete(peer string)    { delete(ls.m, peer) }
+func (ls *Links) Map() map[string]*Link { return ls.m }
+
+// Create adds a new link to peer and returns it.
+func (ls *Links) Create(peer string) *Link {
+	lk := NewLink(ls.self, peer)
+	ls.m[peer] = lk
+	return lk
+}
+
+// ---------------------------------------------------------------------------
 // Sync lifecycle
 // ---------------------------------------------------------------------------
 

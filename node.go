@@ -20,7 +20,7 @@ const retryDelay = 60 * time.Second
 type Node struct {
 	mu           sync.Mutex
 	id         string
-	links      map[string]*link.Link
+	links      *link.Links
 	sends      map[string]*peerSend
 	inviteMode link.InviteMode
 
@@ -65,16 +65,13 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 	if raw != nil {
 		json.Unmarshal(raw, &st)
 	}
-	if st.Links == nil {
-		st.Links = map[string]*link.Link{}
-	}
 	mode := st.InviteMode
 	if mode == "" {
 		mode = link.InviteModeInvite
 	}
 	n := &Node{
 		id:         id,
-		links:      st.Links,
+		links:      link.NewLinks(id, st.Links),
 		sends:      map[string]*peerSend{},
 		inviteMode: mode,
 		trustlines: loadTrustlines(st.Handlers["trustline"]),
@@ -98,8 +95,8 @@ func (n *Node) RegisterModule(m Module) {
 	n.supported[name] = struct{}{}
 }
 
-// Links returns the node's links map. Caller must hold Lock.
-func (n *Node) Links() map[string]*link.Link {
+// Links returns the node's links. Caller must hold Lock.
+func (n *Node) Links() *link.Links {
 	return n.links
 }
 
@@ -115,7 +112,7 @@ func (n *Node) DeleteLink(peer string) {
 		}
 		delete(n.sends, peer)
 	}
-	delete(n.links, peer)
+	n.links.Delete(peer)
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +142,7 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 
 // Commit persists the node state. Caller must hold Lock.
 func (n *Node) Commit() {
-	st := nodeState{ID: n.id, Links: n.links, InviteMode: n.inviteMode}
+	st := nodeState{ID: n.id, Links: n.links.Map(), InviteMode: n.inviteMode}
 	st.Handlers = make(map[string]json.RawMessage)
 	// Trustline state.
 	if data, err := json.Marshal(trustlineState{Trustlines: n.trustlines}); err == nil {
@@ -209,7 +206,7 @@ func (n *Node) setRetry(peer string, counter uint64, refractory bool) {
 func (n *Node) QuickReject(from, method string) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.links[from] == nil && method != "link.connect" && method != "link.close"
+	return n.links.Get(from) == nil && method != "link.connect" && method != "link.close"
 }
 
 // HandleSync processes an incoming sync request. The caller is responsible
@@ -217,7 +214,7 @@ func (n *Node) QuickReject(from, method string) bool {
 func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	n.mu.Lock()
 
-	lk := n.links[env.From]
+	lk := n.links.Get(env.From)
 	if lk == nil {
 		if env.Method == "link.close" {
 			n.mu.Unlock()
@@ -231,13 +228,12 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrInvitesDisabled
 		}
-		if len(n.links) >= link.MaxLinks {
+		if n.links.Full() {
 			n.mu.Unlock()
 			return nil, ErrMaxLinks
 		}
-		lk = link.NewLink(n.id, env.From)
+		lk = n.links.Create(env.From)
 		lk.State.Status = link.Incoming
-		n.links[env.From] = lk
 	}
 
 	// Piggybacked response.
@@ -311,7 +307,7 @@ func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.Syn
 	ns, method := SplitMethod(msg.Method)
 	switch ns {
 	case "link":
-		lk := n.links[peer]
+		lk := n.links.Get(peer)
 		if lk != nil && lk.HandleResponse(method, msg.Payload, resp.OK) {
 			n.DeleteLink(peer)
 		}
@@ -331,7 +327,7 @@ func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.Syn
 
 func (n *Node) sendPending(peer string) {
 	n.mu.Lock()
-	lk := n.links[peer]
+	lk := n.links.Get(peer)
 	if lk == nil {
 		n.mu.Unlock()
 		return
@@ -384,7 +380,7 @@ func (n *Node) sendPending(peer string) {
 		n.mu.Unlock()
 		return
 	}
-	lk = n.links[peer]
+	lk = n.links.Get(peer)
 	if lk == nil || lk.Pending != msg || lk.Counter != counter || resp.Counter != counter {
 		delete(n.sends, peer)
 		n.mu.Unlock()
@@ -395,7 +391,7 @@ func (n *Node) sendPending(peer string) {
 	lk.AcceptResponse(resp.Timestamp)
 
 	var kickPeer bool
-	if n.links[peer] != nil {
+	if n.links.Get(peer) != nil {
 		lk.Pending = n.nextTx(peer)
 		kickPeer = lk.Pending != nil
 	}
@@ -413,7 +409,7 @@ func (n *Node) sendPending(peer string) {
 // nextTx returns the next message to send for a peer, asking each
 // handler in registration order. The namespace prefix is added.
 func (n *Node) nextTx(peer string) *link.QueuedMsg {
-	lk := n.links[peer]
+	lk := n.links.Get(peer)
 	if lk == nil {
 		return nil
 	}
@@ -448,8 +444,8 @@ func (n *Node) nextTx(peer string) *link.QueuedMsg {
 // KickAll kicks all peers. Used at boot to resume pending work.
 func (n *Node) KickAll() {
 	n.mu.Lock()
-	peers := make([]string, 0, len(n.links))
-	for peer := range n.links {
+	peers := make([]string, 0, n.links.Len())
+	for peer := range n.links.Map() {
 		peers = append(peers, peer)
 	}
 	n.mu.Unlock()
@@ -470,22 +466,21 @@ func (n *Node) AddLink(peer string) error {
 	if peer == n.id {
 		return fmt.Errorf("cannot link to self")
 	}
-	if n.links[peer] != nil {
+	if n.links.Get(peer) != nil {
 		return fmt.Errorf("link to %s already exists", peer)
 	}
-	if len(n.links) >= link.MaxLinks {
+	if n.links.Full() {
 		return fmt.Errorf("max links reached")
 	}
-	lk := link.NewLink(n.id, peer)
+	lk := n.links.Create(peer)
 	lk.State.IntentConnect = true
-	n.links[peer] = lk
 	n.Kick(peer)
 	return nil
 }
 
 func (n *Node) RemoveLink(peer string) error {
 	peer = strings.ToLower(peer)
-	lk := n.links[peer]
+	lk := n.links.Get(peer)
 	if lk == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
@@ -496,7 +491,7 @@ func (n *Node) RemoveLink(peer string) error {
 
 func (n *Node) AcceptLink(peer string) error {
 	peer = strings.ToLower(peer)
-	lk := n.links[peer]
+	lk := n.links.Get(peer)
 	if lk == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
@@ -510,7 +505,7 @@ func (n *Node) AcceptLink(peer string) error {
 
 func (n *Node) RejectLink(peer string) error {
 	peer = strings.ToLower(peer)
-	lk := n.links[peer]
+	lk := n.links.Get(peer)
 	if lk == nil {
 		return fmt.Errorf("no link to %s", peer)
 	}
@@ -528,7 +523,7 @@ func (n *Node) SetInviteMode(mode link.InviteMode) {
 
 func (n *Node) Status() json.RawMessage {
 	links := make(map[string]any)
-	for peer, l := range n.links {
+	for peer, l := range n.links.Map() {
 		links[peer] = map[string]any{
 			"state": l.State,
 		}
