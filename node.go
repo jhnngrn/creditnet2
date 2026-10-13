@@ -21,7 +21,6 @@ type Node struct {
 	mu           sync.Mutex
 	id         string
 	links      *link.Links
-	sends      map[string]*peerSend
 	inviteMode link.InviteMode
 
 	trustlines map[string]*Trustline
@@ -33,19 +32,6 @@ type Node struct {
 
 	transport Transport
 	store     Store
-}
-
-// peerSend tracks the outgoing send lifecycle for a peer at a given counter.
-// inFlight means a goroutine is blocked on Transport.Send.
-// After the send completes, a retry timer is set: refractory after error
-// (blocks kicks), non-refractory after success (fallback, kicks bypass).
-// Both are scoped to counter — if counter advances via HandleSync,
-// the entry is stale and ignored.
-type peerSend struct {
-	counter    uint64
-	inFlight   bool
-	timer      *time.Timer
-	refractory bool
 }
 
 type moduleEntry struct {
@@ -72,7 +58,6 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 	n := &Node{
 		id:         id,
 		links:      link.NewLinks(id, st.Links),
-		sends:      map[string]*peerSend{},
 		inviteMode: mode,
 		trustlines: loadTrustlines(st.Handlers["trustline"]),
 		moduleMap:  map[string]Module{},
@@ -106,11 +91,12 @@ func (n *Node) DeleteLink(peer string) {
 	for _, entry := range n.modules {
 		entry.module.LinkDeleted(peer)
 	}
-	if s := n.sends[peer]; s != nil {
-		if s.timer != nil {
-			s.timer.Stop()
+	lk := n.links.Get(peer)
+	if lk != nil && lk.Send != nil {
+		if lk.Send.Timer != nil {
+			lk.Send.Timer.Stop()
 		}
-		delete(n.sends, peer)
+		lk.Send = nil
 	}
 	n.links.Delete(peer)
 }
@@ -182,15 +168,21 @@ func (n *Node) ScheduleFunc() ScheduleFunc {
 
 // setRetry sets a per-peer retry timer. Caller must hold Lock.
 func (n *Node) setRetry(peer string, counter uint64, refractory bool) {
-	if s := n.sends[peer]; s != nil && s.timer != nil {
-		s.timer.Stop()
+	lk := n.links.Get(peer)
+	if lk == nil {
+		return
 	}
-	n.sends[peer] = &peerSend{
-		counter:    counter,
-		refractory: refractory,
-		timer: time.AfterFunc(retryDelay, func() {
+	if lk.Send != nil && lk.Send.Timer != nil {
+		lk.Send.Timer.Stop()
+	}
+	lk.Send = &link.PeerSend{
+		Counter:    counter,
+		Refractory: refractory,
+		Timer: time.AfterFunc(retryDelay, func() {
 			n.mu.Lock()
-			delete(n.sends, peer)
+			if lk := n.links.Get(peer); lk != nil {
+				lk.Send = nil
+			}
 			n.mu.Unlock()
 			n.sendPending(peer)
 		}),
@@ -332,13 +324,15 @@ func (n *Node) sendPending(peer string) {
 		n.mu.Unlock()
 		return
 	}
-	if s := n.sends[peer]; s != nil && s.counter == lk.Counter {
-		if s.inFlight || s.refractory {
+	if s := lk.Send; s != nil && s.Counter == lk.Counter {
+		if s.InFlight || s.Refractory {
 			n.mu.Unlock()
 			return
 		}
-		s.timer.Stop()
-		delete(n.sends, peer)
+		if s.Timer != nil {
+			s.Timer.Stop()
+		}
+		lk.Send = nil
 	}
 	promoted := false
 	if lk.Pending == nil {
@@ -350,7 +344,7 @@ func (n *Node) sendPending(peer string) {
 		promoted = true
 	}
 	counter := lk.Counter
-	n.sends[peer] = &peerSend{counter: counter, inFlight: true}
+	lk.Send = &link.PeerSend{Counter: counter, InFlight: true}
 	msg := lk.Pending
 	env := link.SyncRequest{
 		From: n.id, To: peer, Counter: counter,
@@ -382,7 +376,9 @@ func (n *Node) sendPending(peer string) {
 	}
 	lk = n.links.Get(peer)
 	if lk == nil || lk.Pending != msg || lk.Counter != counter || resp.Counter != counter {
-		delete(n.sends, peer)
+		if lk != nil {
+			lk.Send = nil
+		}
 		n.mu.Unlock()
 		return
 	}

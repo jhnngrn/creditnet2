@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,19 @@ type QueuedMsg struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// PeerSend tracks the outgoing send lifecycle for a link at a given counter.
+// InFlight means a goroutine is blocked on Transport.Send.
+// After the send completes, a retry timer is set: Refractory after error
+// (blocks kicks), non-refractory after success (fallback, kicks bypass).
+// Both are scoped to Counter — if counter advances via HandleSync,
+// the entry is stale and ignored.
+type PeerSend struct {
+	Counter    uint64
+	InFlight   bool
+	Timer      *time.Timer
+	Refractory bool
+}
+
 // Link holds the sync state for a bilateral connection.
 type Link struct {
 	State          LinkState     `json:"state"`
@@ -78,6 +92,7 @@ type Link struct {
 	CachedResponse *SyncResponse `json:"cached_response,omitempty"`
 	ReqTimestamp   int64         `json:"req_ts"`
 	RespTimestamp  int64         `json:"resp_ts"`
+	Send           *PeerSend     `json:"-"`
 }
 
 // ModuleEnabled returns true if the named module is bilaterally active on this link.
