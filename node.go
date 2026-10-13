@@ -109,7 +109,11 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 	ns, method := SplitMethod(fullMethod)
 	switch ns {
 	case "link":
-		return n.handleLinkAccount(method, payload)
+		result, kicks, err := n.links.HandleAccount(method, payload, n.supported)
+		for _, k := range kicks {
+			n.Kick(k)
+		}
+		return result, err
 	case "trustline":
 		return n.handleTrustlineAccount(method, payload)
 	}
@@ -507,19 +511,3 @@ func (n *Node) RejectLink(peer string) error {
 	return nil
 }
 
-func (n *Node) SetInviteMode(mode link.InviteMode) {
-	n.links.InviteMode = mode
-}
-
-func (n *Node) Status() json.RawMessage {
-	links := make(map[string]any)
-	for peer, l := range n.links.Map() {
-		links[peer] = map[string]any{
-			"state": l.State,
-		}
-	}
-	return Enc(map[string]any{
-		"links":       links,
-		"invite_mode": n.links.InviteMode,
-	})
-}
