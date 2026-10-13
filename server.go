@@ -122,7 +122,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	if len(s.factories) > 0 {
 		for _, f := range s.factories {
 			m := f.factory(n.id, n.ScheduleFunc(), n.trustlines, n.Bandwidth, handlerState(raw, f.name))
-			n.RegisterModule(f.name, m)
+			n.RegisterModule(m)
 			if r, ok := m.(Reserver); ok {
 				n.RegisterReserver(r)
 			}

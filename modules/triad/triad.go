@@ -77,6 +77,8 @@ func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[s
 	return h
 }
 
+func (h *Handler) Name() string { return "triad" }
+
 // ---------------------------------------------------------------------------
 // Reserver — reports capacity reserved by in-flight novations
 // ---------------------------------------------------------------------------

@@ -22,13 +22,14 @@ type Node struct {
 	id         string
 	links      map[string]*link.Link
 	sends      map[string]*peerSend
-	inviteMode InviteMode
+	inviteMode link.InviteMode
 
 	trustlines map[string]*Trustline
 	reservers  []Reserver
 
 	modules   []moduleEntry
 	moduleMap map[string]Module
+	supported map[string]struct{}
 
 	transport Transport
 	store     Store
@@ -55,7 +56,7 @@ type moduleEntry struct {
 type nodeState struct {
 	ID         string                     `json:"id"`
 	Links      map[string]*link.Link      `json:"links"`
-	InviteMode InviteMode                 `json:"invite_mode,omitempty"`
+	InviteMode link.InviteMode             `json:"invite_mode,omitempty"`
 	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
 }
 
@@ -69,7 +70,7 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 	}
 	mode := st.InviteMode
 	if mode == "" {
-		mode = InviteModeInvite
+		mode = link.InviteModeInvite
 	}
 	n := &Node{
 		id:         id,
@@ -78,6 +79,7 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 		inviteMode: mode,
 		trustlines: loadTrustlines(st.Handlers["trustline"]),
 		moduleMap:  map[string]Module{},
+		supported:  map[string]struct{}{"trustline": {}},
 		transport:  transport,
 		store:      store,
 	}
@@ -89,18 +91,11 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 // Module registration
 // ---------------------------------------------------------------------------
 
-func (n *Node) RegisterModule(name string, m Module) {
+func (n *Node) RegisterModule(m Module) {
+	name := m.Name()
 	n.modules = append(n.modules, moduleEntry{name: name, module: m})
 	n.moduleMap[name] = m
-}
-
-// ModuleSupported returns true if the node handles this module namespace.
-func (n *Node) ModuleSupported(name string) bool {
-	if name == "trustline" {
-		return true
-	}
-	_, ok := n.moduleMap[name]
-	return ok
+	n.supported[name] = struct{}{}
 }
 
 // Links returns the node's links map. Caller must hold Lock.
@@ -232,11 +227,11 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrNoLink
 		}
-		if n.inviteMode == InviteModeClosed {
+		if n.inviteMode == link.InviteModeClosed {
 			n.mu.Unlock()
 			return nil, ErrInvitesDisabled
 		}
-		if len(n.links) >= MaxLinks {
+		if len(n.links) >= link.MaxLinks {
 			n.mu.Unlock()
 			return nil, ErrMaxLinks
 		}
@@ -276,7 +271,11 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	var reqErr error
 	switch ns {
 	case "link":
-		ok, kicks, reqErr = n.handleLinkRequest(env.From, method, env.Payload, ts)
+		var del bool
+		ok, del, reqErr = lk.HandleRequest(method, env.Payload, n.supported, n.inviteMode)
+		if del {
+			n.DeleteLink(env.From)
+		}
 	case "trustline":
 		if !lk.ModuleEnabled(ns) {
 			n.mu.Unlock()
@@ -312,7 +311,11 @@ func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.Syn
 	ns, method := SplitMethod(msg.Method)
 	switch ns {
 	case "link":
-		return n.handleLinkResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
+		lk := n.links[peer]
+		if lk != nil && lk.HandleResponse(method, msg.Payload, resp.OK) {
+			n.DeleteLink(peer)
+		}
+		return nil
 	case "trustline":
 		return n.handleTrustlineResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
 	}
@@ -415,7 +418,7 @@ func (n *Node) nextTx(peer string) *link.QueuedMsg {
 		return nil
 	}
 	// Link handler runs regardless of status.
-	if msg := n.linkNextTx(peer); msg != nil {
+	if msg := lk.LinkNextTx(); msg != nil {
 		msg.Method = "link." + msg.Method
 		return msg
 	}
@@ -470,7 +473,7 @@ func (n *Node) AddLink(peer string) error {
 	if n.links[peer] != nil {
 		return fmt.Errorf("link to %s already exists", peer)
 	}
-	if len(n.links) >= MaxLinks {
+	if len(n.links) >= link.MaxLinks {
 		return fmt.Errorf("max links reached")
 	}
 	lk := link.NewLink(n.id, peer)
@@ -519,7 +522,7 @@ func (n *Node) RejectLink(peer string) error {
 	return nil
 }
 
-func (n *Node) SetInviteMode(mode InviteMode) {
+func (n *Node) SetInviteMode(mode link.InviteMode) {
 	n.inviteMode = mode
 }
 

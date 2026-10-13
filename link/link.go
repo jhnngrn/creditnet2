@@ -5,6 +5,7 @@ package link
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 // ---------------------------------------------------------------------------
@@ -172,3 +173,210 @@ type SyncResponse struct {
 func Enqueue(q *[]string, method string) { *q = append(*q, method) }
 func Dequeue(q *[]string)                { if len(*q) > 0 { *q = (*q)[1:] } }
 func QueueHead(q []string) string        { if len(q) > 0 { return q[0] }; return "" }
+
+// ---------------------------------------------------------------------------
+// InviteMode — node-level policy for incoming connections/modules
+// ---------------------------------------------------------------------------
+
+type InviteMode string
+
+const (
+	InviteModeClosed InviteMode = "closed" // reject all incoming
+	InviteModeInvite InviteMode = "invite" // incoming, manual accept
+	InviteModeOpen   InviteMode = "open"   // auto-accept all
+)
+
+const MaxLinks = 64
+
+func enc(v any) json.RawMessage { d, _ := json.Marshal(v); return d }
+
+// ---------------------------------------------------------------------------
+// Link-level request/response handling
+// ---------------------------------------------------------------------------
+
+// HandleRequest processes an incoming link-namespace request.
+// Returns (ok, deleteLink, error). When deleteLink is true the caller
+// must remove the link and notify modules.
+func (l *Link) HandleRequest(method string, payload json.RawMessage, supported map[string]struct{}, inviteMode InviteMode) (bool, bool, error) {
+	switch method {
+	case "connect":
+		if l.State.IntentConnect || l.State.Status == Waiting {
+			l.State.Status = Connected
+			l.State.IntentConnect = false
+			return true, false, nil
+		}
+		if inviteMode == InviteModeOpen {
+			l.State.Status = Connected
+			return true, false, nil
+		}
+		return false, false, nil
+
+	case "close":
+		return true, true, nil
+
+	case "module":
+		ok, err := l.reqModule(payload, supported, inviteMode)
+		return ok, false, err
+	}
+	return false, false, fmt.Errorf("unknown link method %q", method)
+}
+
+// HandleResponse processes a link-namespace response.
+// Returns true when the link should be deleted by the caller.
+func (l *Link) HandleResponse(method string, payload json.RawMessage, ok bool) bool {
+	switch method {
+	case "connect":
+		if ok {
+			l.State.Status = Connected
+		} else {
+			l.State.Status = Waiting
+		}
+		l.State.IntentConnect = false
+
+	case "close":
+		if ok {
+			return true // caller deletes link
+		}
+		l.State.IntentClose = false
+
+	case "module":
+		l.respModule(payload, ok)
+	}
+	return false
+}
+
+// LinkNextTx returns the next link-level message to send, or nil.
+func (l *Link) LinkNextTx() *QueuedMsg {
+	if l.State.IntentClose && l.State.Refs == 0 {
+		return &QueuedMsg{Method: "close"}
+	}
+	if l.State.IntentConnect {
+		return &QueuedMsg{Method: "connect"}
+	}
+	if l.State.Status == Connected {
+		for name, mod := range l.State.Modules {
+			if mod.IntentConnect {
+				return &QueuedMsg{
+					Method:  "module",
+					Payload: enc(map[string]string{"name": name}),
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Module negotiation (internal)
+// ---------------------------------------------------------------------------
+
+func (l *Link) reqModule(payload json.RawMessage, supported map[string]struct{}, inviteMode InviteMode) (bool, error) {
+	var p struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
+		return false, fmt.Errorf("bad payload")
+	}
+	if _, ok := supported[p.Name]; !ok {
+		return false, nil // we don't speak this module
+	}
+	if l.State.Modules == nil {
+		l.State.Modules = map[string]*ConnectionState{}
+	}
+	mod := l.State.Modules[p.Name]
+	// Mutual — we also want this module.
+	if mod != nil && (mod.IntentConnect || mod.Status == Waiting) {
+		mod.Status = Connected
+		mod.IntentConnect = false
+		return true, nil
+	}
+	// Open mode — auto-accept supported modules.
+	if inviteMode == InviteModeOpen {
+		if mod == nil {
+			mod = &ConnectionState{}
+			l.State.Modules[p.Name] = mod
+		}
+		mod.Status = Connected
+		return true, nil
+	}
+	// Mark as incoming — awaiting local accept/reject.
+	if mod == nil {
+		mod = &ConnectionState{}
+		l.State.Modules[p.Name] = mod
+	}
+	mod.Status = Incoming
+	return false, nil // NACK — not accepted yet
+}
+
+func (l *Link) respModule(payload json.RawMessage, ok bool) {
+	var p struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(payload, &p) != nil {
+		return
+	}
+	mod := l.State.Modules[p.Name]
+	if mod == nil {
+		return
+	}
+	if ok {
+		mod.Status = Connected
+	} else {
+		mod.Status = Waiting
+	}
+	mod.IntentConnect = false
+}
+
+// ---------------------------------------------------------------------------
+// Module account operations
+// ---------------------------------------------------------------------------
+
+// SetModules proposes the given modules on this link, filtering by supported.
+// Modules not in the desired set and not yet connected are removed.
+func (l *Link) SetModules(modules []string, supported map[string]struct{}) {
+	if l.State.Modules == nil {
+		l.State.Modules = map[string]*ConnectionState{}
+	}
+	desired := map[string]bool{}
+	for _, name := range modules {
+		if _, ok := supported[name]; ok {
+			desired[name] = true
+		}
+	}
+	for name := range desired {
+		mod := l.State.Modules[name]
+		if mod == nil {
+			l.State.Modules[name] = &ConnectionState{IntentConnect: true}
+		} else if mod.Status != Connected {
+			mod.IntentConnect = true
+		}
+	}
+	for name, mod := range l.State.Modules {
+		if name == "trustline" {
+			continue
+		}
+		if !desired[name] && mod.Status != Connected {
+			delete(l.State.Modules, name)
+		}
+	}
+}
+
+// AcceptModule accepts an incoming module proposal.
+func (l *Link) AcceptModule(name string) error {
+	mod := l.State.Modules[name]
+	if mod == nil || mod.Status != Incoming {
+		return fmt.Errorf("no incoming module %s", name)
+	}
+	mod.IntentConnect = true
+	return nil
+}
+
+// RejectModule rejects an incoming module proposal.
+func (l *Link) RejectModule(name string) error {
+	mod := l.State.Modules[name]
+	if mod == nil || mod.Status != Incoming {
+		return fmt.Errorf("no incoming module %s", name)
+	}
+	delete(l.State.Modules, name)
+	return nil
+}

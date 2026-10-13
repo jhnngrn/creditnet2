@@ -71,6 +71,7 @@ type BandwidthFunc func(peer string) (in, out int64)
 // HandleResponse returns kicks for the same purpose.
 // HandleAccount handles user-facing API calls (via /api/account).
 type Module interface {
+	Name() string
 	HandleRequest(peer string, t *Trustline, method string, payload json.RawMessage, ts int64) (bool, []string, error)
 	HandleResponse(peer string, t *Trustline, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
@@ -117,16 +118,3 @@ func SplitMethod(method string) (ns, name string) {
 	return method[:i], method[i+1:]
 }
 
-const MaxLinks = 64
-
-// ---------------------------------------------------------------------------
-// InviteMode
-// ---------------------------------------------------------------------------
-
-type InviteMode string
-
-const (
-	InviteModeClosed InviteMode = "closed" // reject all incoming
-	InviteModeInvite InviteMode = "invite" // incoming, manual accept
-	InviteModeOpen   InviteMode = "open"   // auto-accept all
-)

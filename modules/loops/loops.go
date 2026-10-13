@@ -174,6 +174,8 @@ func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[s
 	return h
 }
 
+func (h *Handler) Name() string { return "loops" }
+
 // ---------------------------------------------------------------------------
 // Reserver
 // ---------------------------------------------------------------------------
@@ -948,7 +950,7 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 					nextCl.CancelPre = chainHash(cl.Seed, nextStep-2)
 				}
 				_, avl := h.bandwidth(outPeer)
-				nextCl.Final = nextStep <= 2 || avl < int64(nextCl.Amount)
+				nextCl.Final = nextStep <= 2 || avl < 2*int64(nextCl.Amount)
 			}
 		}
 
