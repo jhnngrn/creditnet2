@@ -37,6 +37,7 @@ const (
 	Nchunks         = 1024
 	MaxAmount       = uint64(1<<63 - 1)
 	GasBase         = 16
+	RefractoryDelay = 1 * time.Second
 )
 
 // ---------------------------------------------------------------------------
@@ -1161,6 +1162,47 @@ func (h *Handler) searchAndReschedule() []string {
 }
 
 func (h *Handler) sendSearches() []string {
+	// Quick check: need at least one debtor and one creditor.
+	var hasDebtor, hasCreditor bool
+	var amount uint64
+	for peerID := range h.trustlines {
+		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
+			continue
+		}
+		bwIn, bwOut := h.bandwidth(peerID)
+		if bwOut > 0 {
+			hasDebtor = true
+			if amount == 0 || bwOut < int64(amount) {
+				amount = uint64(bwOut)
+			}
+		}
+		if bwIn > 0 {
+			hasCreditor = true
+		}
+	}
+	if !hasDebtor || !hasCreditor {
+		return nil
+	}
+
+	seed := make([]byte, 32)
+	rand.Read(seed)
+	searchID := hex.EncodeToString(chainHash(seed, Nchunks))
+
+	pen := amount * PenaltyRate / 1000
+	gas := gasForDepth(0)
+	p := &Path{
+		Seed: seed, Amount: amount, Penalty: pen,
+		Gas: gas, Depth: 1, Expiry: time.Now().Add(PathTTL).Unix(),
+	}
+	// Peer[0] and Peer[1] start EMPTY at initiator — set when searches bounce back.
+	h.Paths[searchID] = p
+	h.schedulePathExpiry(searchID)
+	kicks := h.floodSearchInitiator(searchID, p)
+	h.scheduleDepthIncrease(searchID)
+	return kicks
+}
+
+func (h *Handler) floodSearchInitiator(searchID string, p *Path) []string {
 	var debtors, creditors []string
 	for peerID := range h.trustlines {
 		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
@@ -1179,33 +1221,10 @@ func (h *Handler) sendSearches() []string {
 		return nil
 	}
 
-	seed := make([]byte, 32)
-	rand.Read(seed)
-	searchID := hex.EncodeToString(chainHash(seed, Nchunks))
-
-	var amount uint64
-	for _, peer := range debtors {
-		_, bwOut := h.bandwidth(peer)
-		if amount == 0 || bwOut < int64(amount) {
-			amount = uint64(bwOut)
-		}
-	}
-
-	pen := amount * PenaltyRate / 1000
-	gas := gasForDepth(0)
-	p := &Path{
-		Seed: seed, Amount: amount, Penalty: pen,
-		Gas: gas, Depth: 1, Expiry: time.Now().Add(PathTTL).Unix(),
-	}
-	// Peer[0] and Peer[1] start EMPTY at initiator — set when searches bounce back.
-	h.Paths[searchID] = p
-	h.schedulePathExpiry(searchID)
-
-	// Flood to ALL debtors (dir 0) and ALL creditors (dir 1).
 	var kicks []string
 
 	// Dir 0 — debtors.
-	gasDir0 := gas / 2
+	gasDir0 := p.Gas / 2
 	if gasDir0 < 1 {
 		gasDir0 = 1
 	}
@@ -1224,15 +1243,15 @@ func (h *Handler) sendSearches() []string {
 		}
 		h.addProbe(peerID, &SearchProbe{
 			SearchID: searchID, Direction: 0,
-			Amount: amount, Penalty: pen,
-			Gas: g, Depth: 1, Hops: 0,
+			Amount: p.Amount, Penalty: p.Penalty,
+			Gas: g, Depth: p.Depth, Hops: 0,
 		})
 		kicks = append(kicks, peerID)
 		remaining -= g
 	}
 
 	// Dir 1 — creditors.
-	gasDir1 := gas - gasDir0
+	gasDir1 := p.Gas - gasDir0
 	if gasDir1 < 1 {
 		gasDir1 = 1
 	}
@@ -1251,14 +1270,31 @@ func (h *Handler) sendSearches() []string {
 		}
 		h.addProbe(peerID, &SearchProbe{
 			SearchID: searchID, Direction: 1,
-			Amount: amount, Penalty: pen,
-			Gas: g, Depth: 1, Hops: 0,
+			Amount: p.Amount, Penalty: p.Penalty,
+			Gas: g, Depth: p.Depth, Hops: 0,
 		})
 		kicks = append(kicks, peerID)
 		remaining -= g
 	}
 
 	return kicks
+}
+
+func (h *Handler) scheduleDepthIncrease(id string) {
+	h.schedule(RefractoryDelay, func() []string {
+		p := h.Paths[id]
+		if p == nil || (p.Peer[0] != "" && p.Peer[1] != "") {
+			return nil
+		}
+		if p.Depth >= MaxDepth {
+			return nil
+		}
+		p.Gas += gasForDepth(p.Depth)
+		p.Depth++
+		kicks := h.floodSearchInitiator(id, p)
+		h.scheduleDepthIncrease(id)
+		return kicks
+	})
 }
 
 func (h *Handler) startLoop(searchID string) []string {
