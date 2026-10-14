@@ -29,13 +29,14 @@ Flags:
 
 ## Architecture
 
-Two packages: `creditnet` (module root) and `creditnet/link` (bilateral
-sync primitive). The link package has zero dependencies back to creditnet
-and can be imported standalone.
+The bilateral sync primitive lives in its own repository
+([github.com/jhnngrn/link](https://github.com/jhnngrn/link)) and is
+imported as an external package. It has zero dependencies back to
+creditnet and can be used standalone in any p2p application.
 
 ```
-link/
-  link.go              standalone bilateral sync primitive: Link, Links collection,
+github.com/jhnngrn/link   (external)
+  link.go              bilateral sync primitive: Link, Links collection,
                        ConnectionState, sync lifecycle, wire types, protocol handling
                        (HandleRequest, HandleResponse, NextTx, HandleAccount),
                        module negotiation, InviteMode, Supported, PeerSend
@@ -61,10 +62,11 @@ cmd/
   loops/               server with trustline + loops modules
 ```
 
-The link package is a self-contained bilateral sync primitive with no
-dependencies back to creditnet. It owns all bilateral state, protocol logic,
-module negotiation, collection management and policy (InviteMode, Supported,
-MaxLinks). Node is pure orchestration: locking, transport, commit and dispatch.
+The link package ([github.com/jhnngrn/link](https://github.com/jhnngrn/link))
+is a self-contained bilateral sync primitive with no dependencies back to
+creditnet. It owns all bilateral state, protocol logic, module negotiation,
+collection management and policy (InviteMode, Supported, MaxLinks). Node is
+pure orchestration: locking, transport, commit and dispatch.
 Modules register under a namespace via `Server.Register(name, ModuleFactory)`
 and receive sync dispatch. Trustline handling is built into Node. Different
 binaries under `cmd/` combine different sets of modules.
