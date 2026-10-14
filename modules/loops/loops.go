@@ -33,9 +33,8 @@ const (
 	CleanupRetry    = 5 * time.Minute
 	TickRate        = 1000
 	PenaltyRate     = 10 // promille
-	ChunkSize       = uint64(1000000)
+	ChunkSize       = int64(1000000)
 	Nchunks         = 1024
-	MaxAmount       = uint64(1<<63 - 1)
 	GasBase         = 16
 	RefractoryDelay = 1 * time.Second
 )
@@ -50,8 +49,8 @@ const (
 // Peer[1] = dir-1 sender (creditor chain).
 // At initiator both start empty and are set when searches bounce back.
 type Path struct {
-	Amount  uint64    `json:"amount"`
-	Penalty uint64    `json:"penalty"`
+	Amount  int64     `json:"amount"`
+	Penalty int64     `json:"penalty"`
 	Gas     uint64    `json:"gas"`
 	Depth   uint8     `json:"depth"`
 	Hops    uint8     `json:"hops"`
@@ -80,8 +79,8 @@ func (p *Path) pendingPeer() string {
 type SearchProbe struct {
 	SearchID  string `json:"id"`
 	Direction uint8  `json:"dir"`
-	Amount    uint64 `json:"amount"`
-	Penalty   uint64 `json:"penalty"`
+	Amount    int64  `json:"amount"`
+	Penalty   int64  `json:"penalty"`
 	Gas       uint64 `json:"gas"`
 	Depth     uint8  `json:"depth"`
 	Hops      uint8  `json:"hops"`
@@ -92,8 +91,8 @@ type SearchProbe struct {
 // ---------------------------------------------------------------------------
 
 type Clearing struct {
-	Amount      uint64         `json:"amount"`
-	PenaltyRate uint64         `json:"penalty_rate"`
+	Amount      int64          `json:"amount"`
+	PenaltyRate int64          `json:"penalty_rate"`
 	Side        [2]ClearingSide `json:"side"`
 	Preimage    []byte         `json:"preimage,omitempty"`
 	CancelPre   []byte         `json:"cancel_pre,omitempty"`
@@ -105,7 +104,7 @@ type Clearing struct {
 type ClearingSide struct {
 	Peer    string   `json:"peer,omitempty"`
 	Time    int64    `json:"time,omitempty"`
-	Penalty uint64   `json:"penalty,omitempty"`
+	Penalty int64    `json:"penalty,omitempty"`
 	Queue   []string `json:"queue,omitempty"`
 }
 
@@ -183,10 +182,10 @@ func (h *Handler) Name() string { return "loops" }
 func (h *Handler) Reserved(peer string) (in, out int64) {
 	for _, cl := range h.Clearings {
 		if cl.Side[sideIN].Peer == peer {
-			in += int64(cl.Amount + cl.Side[sideIN].Penalty)
+			in += cl.Amount + cl.Side[sideIN].Penalty
 		}
 		if cl.Side[sideOUT].Peer == peer {
-			out += int64(cl.Amount + cl.Side[sideOUT].Penalty)
+			out += cl.Amount + cl.Side[sideOUT].Penalty
 		}
 	}
 	return
@@ -319,8 +318,8 @@ func (h *Handler) HandleAccount(method string, payload json.RawMessage) (json.Ra
 
 type searchMsg struct {
 	ID        string `json:"clearing_id"`
-	Amount    uint64 `json:"amount"`
-	Penalty   uint64 `json:"penalty"`
+	Amount    int64  `json:"amount"`
+	Penalty   int64  `json:"penalty"`
 	Depth     uint8  `json:"depth"`
 	Gas       uint64 `json:"gas"`
 	Direction uint8  `json:"direction"` // 0=debtors, 1=creditors
@@ -329,7 +328,7 @@ type searchMsg struct {
 
 func (h *Handler) reqSearch(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m searchMsg
-	if json.Unmarshal(raw, &m) != nil || m.Amount == 0 {
+	if json.Unmarshal(raw, &m) != nil || m.Amount <= 0 {
 		return false, nil, fmt.Errorf("bad payload")
 	}
 	if m.Direction > 1 {
@@ -622,7 +621,7 @@ func (h *Handler) buildPathMsg(id string, p *Path) *link.QueuedMsg {
 // Clearing — commit
 // ---------------------------------------------------------------------------
 
-func (h *Handler) startClearing(id string, amount uint64, outPeer string, preimage, cancelPre, seed []byte, step int) {
+func (h *Handler) startClearing(id string, amount int64, outPeer string, preimage, cancelPre, seed []byte, step int) {
 	pen := amount * PenaltyRate / 1000
 	h.Clearings[id] = &Clearing{
 		Amount: amount, PenaltyRate: pen,
@@ -640,13 +639,13 @@ func (h *Handler) startClearing(id string, amount uint64, outPeer string, preima
 func (h *Handler) reqCommit(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m struct {
 		ID      string `json:"clearing_id"`
-		Amount  uint64 `json:"amount"`
-		Penalty uint64 `json:"penalty"`
+		Amount  int64  `json:"amount"`
+		Penalty int64  `json:"penalty"`
 	}
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
 	}
-	if m.Amount == 0 || m.Amount > MaxAmount {
+	if m.Amount <= 0 {
 		return false, nil, nil
 	}
 
@@ -661,10 +660,9 @@ func (h *Handler) reqCommit(peer string, t *creditnet.Trustline, raw json.RawMes
 			hops = p.Hops
 			delete(h.Paths, m.ID)
 		}
-		inPen := m.Penalty * uint64(hops+1)
-		total := int64(m.Amount + inPen)
+		inPen := m.Penalty * int64(hops+1)
 		bwIn, _ := h.bandwidth(peer)
-		if bwIn < total {
+		if bwIn < m.Amount+inPen {
 			return false, nil, nil
 		}
 		cl.Side[sideIN] = ClearingSide{Peer: peer, Time: ts, Penalty: inPen}
@@ -683,14 +681,13 @@ func (h *Handler) reqCommit(peer string, t *creditnet.Trustline, raw json.RawMes
 	outPeer := p.Peer[0] // toward initiator
 	delete(h.Paths, m.ID)
 
-	inPen := m.Penalty * uint64(hops+1)
-	total := int64(m.Amount + inPen)
+	inPen := m.Penalty * int64(hops+1)
 	bwIn, _ := h.bandwidth(peer)
-	if bwIn < total {
+	if bwIn < m.Amount+inPen {
 		return false, nil, nil
 	}
 
-	outPen := m.Penalty * uint64(hops)
+	outPen := m.Penalty * int64(hops)
 	cl := &Clearing{
 		Amount: m.Amount, PenaltyRate: m.Penalty,
 		Side: [2]ClearingSide{
@@ -772,7 +769,7 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 
 	// Settle IN side.
 	penConsumed := penaltyTick(cl.Amount, cl.Side[sideIN].Penalty, cl.Side[sideIN].Time, ts)
-	t.AddBalance(int64(cl.Amount+penConsumed), ts)
+	t.AddBalance(cl.Amount+penConsumed, ts)
 	outPeer := cl.Side[sideOUT].Peer
 	var kicks []string
 
@@ -786,7 +783,7 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 			nextStep := cl.Step - 1
 			avlIn, _ := h.bandwidth(peer)
 			_, avlOut := h.bandwidth(outPeer)
-			isFinal := nextStep <= 2 || avlIn < 2*int64(cl.Amount) || avlOut < 2*int64(cl.Amount)
+			isFinal := nextStep <= 2 || avlIn < 2*cl.Amount || avlOut < 2*cl.Amount
 			nextCl := &Clearing{
 				Amount:      cl.Amount,
 				PenaltyRate: cl.PenaltyRate,
@@ -862,7 +859,7 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 	link.Dequeue(&cl.Side[sideOUT].Queue)
 	if ok {
 		penConsumed := penaltyTick(cl.Amount, cl.Side[sideOUT].Penalty, cl.Side[sideOUT].Time, ts)
-		t.AddBalance(-int64(cl.Amount+penConsumed), ts)
+		t.AddBalance(-(cl.Amount+penConsumed), ts)
 
 		// Intermediary continuation: set up sideOUT half of next chunk.
 		// Initiator continuation is handled entirely in reqFinalize
@@ -1048,11 +1045,11 @@ func (h *Handler) reqCleanup(peer string, t *creditnet.Trustline, raw json.RawMe
 		if elapsed < 0 {
 			continue
 		}
-		consumed := uint64(elapsed) * TickRate
+		consumed := elapsed * int64(TickRate)
 		if consumed < cl.Amount {
 			continue
 		}
-		total := int64(cl.Amount + cl.Side[s].Penalty)
+		total := cl.Amount + cl.Side[s].Penalty
 		if s == sideIN {
 			t.AddBalance(total, ts)
 		} else {
@@ -1098,7 +1095,7 @@ func (h *Handler) respCleanup(peer string, t *creditnet.Trustline, raw json.RawM
 	if ok {
 		for s := 0; s < 2; s++ {
 			if cl.Side[s].Peer == peer {
-				total := int64(cl.Amount + cl.Side[s].Penalty)
+				total := cl.Amount + cl.Side[s].Penalty
 				if s == sideIN {
 					t.AddBalance(total, ts)
 				} else {
@@ -1186,7 +1183,7 @@ func (h *Handler) searchAndReschedule() []string {
 func (h *Handler) sendSearches() []string {
 	// Quick check: need at least one debtor and one creditor.
 	var hasDebtor, hasCreditor bool
-	var amount uint64
+	var amount int64
 	for peerID := range h.trustlines {
 		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
 			continue
@@ -1194,8 +1191,8 @@ func (h *Handler) sendSearches() []string {
 		bwIn, bwOut := h.bandwidth(peerID)
 		if bwOut > 0 {
 			hasDebtor = true
-			if amount == 0 || bwOut < int64(amount) {
-				amount = uint64(bwOut)
+			if amount == 0 || bwOut < amount {
+				amount = bwOut
 			}
 		}
 		if bwIn > 0 {
@@ -1329,7 +1326,7 @@ func (h *Handler) startLoop(searchID string) []string {
 		h.expirePath(searchID)
 		return nil
 	}
-	amount := uint64(avl)
+	amount := avl
 	if p.Amount < amount {
 		amount = p.Amount
 	}
@@ -1383,7 +1380,7 @@ func (h *Handler) scheduleCleanup(id string, side int) {
 		return
 	}
 	elapsed := time.Now().Unix() - t
-	remaining := int64(cl.Amount/TickRate) - elapsed
+	remaining := cl.Amount/int64(TickRate) - elapsed
 	if remaining < 0 {
 		remaining = 0
 	}
@@ -1490,7 +1487,7 @@ func doubleHashEq(pre []byte, id string) bool {
 	return hex.EncodeToString(h2[:]) == id
 }
 
-func penaltyTick(amount, penalty uint64, commitTime, now int64) uint64 {
+func penaltyTick(amount, penalty, commitTime, now int64) int64 {
 	if penalty == 0 || commitTime == 0 {
 		return 0
 	}
@@ -1498,7 +1495,7 @@ func penaltyTick(amount, penalty uint64, commitTime, now int64) uint64 {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	tick := uint64(elapsed+1) * TickRate
+	tick := (elapsed + 1) * int64(TickRate)
 	if tick > amount {
 		tick = amount
 	}
