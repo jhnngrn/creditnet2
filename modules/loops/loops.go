@@ -776,25 +776,59 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 	outPeer := cl.Side[sideOUT].Peer
 	var kicks []string
 
-	// Continuation: set sideIN half of next chunk.
+	// Continuation: create next chunk clearing.
 	if !m.Final {
 		nextID := hex.EncodeToString(pre)
-		nextCl := h.Clearings[nextID]
-		if nextCl == nil {
-			nextCl = &Clearing{
-				Amount: cl.Amount, PenaltyRate: cl.PenaltyRate,
+		if cl.Seed != nil && outPeer != "" {
+			// Initiator: create complete clearing and drive next chunk.
+			// In sync transport reqFinalize always arrives before respFinalize,
+			// so the initiator handles all continuation here.
+			nextStep := cl.Step - 1
+			avlIn, _ := h.bandwidth(peer)
+			_, avlOut := h.bandwidth(outPeer)
+			isFinal := nextStep <= 2 || avlIn < 2*int64(cl.Amount) || avlOut < 2*int64(cl.Amount)
+			nextCl := &Clearing{
+				Amount:      cl.Amount,
+				PenaltyRate: cl.PenaltyRate,
+				Seed:        cl.Seed,
+				Step:        nextStep,
+				Final:       isFinal,
+				Side: [2]ClearingSide{
+					{Peer: peer, Time: ts, Penalty: cl.Side[sideIN].Penalty},
+					{Peer: outPeer, Penalty: cl.Side[sideOUT].Penalty},
+				},
+			}
+			if nextStep >= 1 {
+				nextCl.Preimage = chainHash(cl.Seed, nextStep-1)
+			}
+			if nextStep >= 2 {
+				nextCl.CancelPre = chainHash(cl.Seed, nextStep-2)
 			}
 			h.Clearings[nextID] = nextCl
-		}
-		if nextCl.Side[sideIN].Peer == "" {
-			nextCl.Side[sideIN] = ClearingSide{Peer: peer, Time: ts, Penalty: cl.Side[sideIN].Penalty}
 			h.refPeer(peer)
+			h.refPeer(outPeer)
 			h.scheduleCleanup(nextID, sideIN)
-		}
-		// Initiator: both halves ready, drive next chunk.
-		if nextCl.Seed != nil && nextCl.Side[sideOUT].Peer != "" && len(nextCl.Side[sideOUT].Queue) == 0 {
+			h.scheduleCleanup(nextID, sideOUT)
+			if nextCl.CancelPre != nil {
+				h.scheduleCancel(nextID)
+			}
 			link.Enqueue(&nextCl.Side[sideOUT].Queue, "finalize")
-			kicks = append(kicks, nextCl.Side[sideOUT].Peer)
+			kicks = append(kicks, outPeer)
+		} else if cl.Seed == nil {
+			// Intermediary: create with IN side only.
+			// OUT side set by respFinalize when OUT peer accepts.
+			nextCl := h.Clearings[nextID]
+			if nextCl == nil {
+				nextCl = &Clearing{
+					Amount: cl.Amount, PenaltyRate: cl.PenaltyRate,
+				}
+				h.Clearings[nextID] = nextCl
+			}
+			if nextCl.Side[sideIN].Peer == "" {
+				nextCl.Side[sideIN] = ClearingSide{Peer: peer, Time: ts, Penalty: cl.Side[sideIN].Penalty}
+				h.refPeer(peer)
+				h.scheduleCleanup(nextID, sideIN)
+			}
 		}
 	}
 
@@ -830,10 +864,10 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 		penConsumed := penaltyTick(cl.Amount, cl.Side[sideOUT].Penalty, cl.Side[sideOUT].Time, ts)
 		t.AddBalance(-int64(cl.Amount+penConsumed), ts)
 
-		// Continuation: set up sideOUT half of next chunk.
-		// Don't queue finalize yet — initiator waits for reqFinalize
-		// (payment received) before driving next round.
-		if cl.Preimage != nil && !cl.Final {
+		// Intermediary continuation: set up sideOUT half of next chunk.
+		// Initiator continuation is handled entirely in reqFinalize
+		// (which always arrives first in sync transport).
+		if cl.Seed == nil && cl.Preimage != nil && !cl.Final {
 			nextID := hex.EncodeToString(cl.Preimage)
 			nextCl := h.Clearings[nextID]
 			if nextCl == nil {
@@ -846,24 +880,6 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 				nextCl.Side[sideOUT] = ClearingSide{Peer: outPeer, Penalty: cl.Side[sideOUT].Penalty}
 				h.refPeer(outPeer)
 				h.scheduleCleanup(nextID, sideOUT)
-			}
-			if cl.Seed != nil {
-				nextStep := cl.Step - 1
-				nextCl.Seed = cl.Seed
-				nextCl.Step = nextStep
-				if nextStep >= 1 {
-					nextCl.Preimage = chainHash(cl.Seed, nextStep-1)
-				}
-				if nextStep >= 2 {
-					nextCl.CancelPre = chainHash(cl.Seed, nextStep-2)
-				}
-				_, avl := h.bandwidth(outPeer)
-				nextCl.Final = nextStep <= 2 || avl < 2*int64(nextCl.Amount)
-				// Race: reqFinalize already set IN side — queue finalize now.
-				if nextCl.Side[sideIN].Peer != "" && len(nextCl.Side[sideOUT].Queue) == 0 {
-					link.Enqueue(&nextCl.Side[sideOUT].Queue, "finalize")
-				}
-				h.scheduleCancel(nextID)
 			}
 		}
 
