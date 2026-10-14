@@ -35,12 +35,13 @@ and can be imported standalone.
 
 ```
 link/
-  link.go              Link, ConnectionState, sync lifecycle (ValidateRequest,
-                       AcceptRequest, AcceptResponse), wire types, queue helpers
+  link.go              standalone bilateral sync primitive: Link, Links collection,
+                       ConnectionState, sync lifecycle, wire types, protocol handling
+                       (HandleRequest, HandleResponse, NextTx, HandleAccount),
+                       module negotiation, InviteMode, Supported, PeerSend
 
 types.go               identities, Module/Transport interfaces, errors, helpers
-node.go                Node: sync engine, handler dispatch, persistence
-link.go                link lifecycle (connect/close/module negotiation), built into Node
+node.go                Node: locking, transport, commit, dispatch, kick
 trustline.go           trustline data and sync: credit limits, balances, payments
 demurrage.go           demurrage computation (decay over time)
 server.go              Server, Config, module factory registration, P2P
@@ -60,9 +61,12 @@ cmd/
   loops/               server with trustline + loops modules
 ```
 
-Modules register under a namespace and receive sync dispatch. Trustline
-handling is built into Node (like link lifecycle handling). External modules
-register via `Server.Register(name, ModuleFactory)` before Init. Different
+The link package is a self-contained bilateral sync primitive with no
+dependencies back to creditnet. It owns all bilateral state, protocol logic,
+module negotiation, collection management and policy (InviteMode, Supported,
+MaxLinks). Node is pure orchestration: locking, transport, commit and dispatch.
+Modules register under a namespace via `Server.Register(name, ModuleFactory)`
+and receive sync dispatch. Trustline handling is built into Node. Different
 binaries under `cmd/` combine different sets of modules.
 
 ## Link layer
