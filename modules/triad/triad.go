@@ -48,7 +48,7 @@ type novFinalizeMsg struct {
 	NovationID string `json:"novation_id"`
 }
 
-// Handler implements creditnet.Module and creditnet.Reserver for novation.
+// Handler implements link.Module and creditnet.Reserver for novation.
 type Handler struct {
 	Novations  map[string]*Novation `json:"novations,omitempty"`
 	nodeID     string
@@ -57,8 +57,8 @@ type Handler struct {
 	bandwidth  creditnet.BandwidthFunc
 }
 
-// NewHandler matches the creditnet.ModuleFactory signature.
-func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) creditnet.Module {
+// NewHandler matches the ModuleFactory signature.
+func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) link.Module {
 	h := &Handler{
 		Novations:  map[string]*Novation{},
 		nodeID:     nodeID,
@@ -99,19 +99,20 @@ func (h *Handler) Reserved(peer string) (in, out int64) {
 // Module — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleRequest(peer string, p *creditnet.Trustline, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	case "commit":
-		return h.reqCommit(peer, p, payload)
+		return h.reqCommit(peer, payload)
 	case "finalize":
-		return h.reqFinalize(peer, p, payload, ts)
+		return h.reqFinalize(peer, payload, ts)
 	case "rollback":
 		return h.reqRollback(peer, payload)
 	}
 	return false, nil, creditnet.ErrBadMethod
 }
 
-func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMessage) (bool, []string, error) {
+func (h *Handler) reqCommit(peer string, raw json.RawMessage) (bool, []string, error) {
+	p := h.trustlines[peer]
 	if p == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
@@ -194,7 +195,8 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 	return false, nil, nil
 }
 
-func (h *Handler) reqFinalize(peer string, p *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+	p := h.trustlines[peer]
 	if p == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
@@ -249,12 +251,12 @@ func (h *Handler) reqRollback(peer string, raw json.RawMessage) (bool, []string,
 // Module — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleResponse(peer string, p *creditnet.Trustline, method string, payload json.RawMessage, ok bool, ts int64) []string {
+func (h *Handler) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "commit":
 		return h.respCommit(payload, ok)
 	case "finalize":
-		h.respFinalize(p, payload, ts)
+		h.respFinalize(peer, payload, ts)
 	case "rollback":
 		h.respRollback(payload)
 	}
@@ -282,7 +284,7 @@ func (h *Handler) respCommit(raw json.RawMessage, ok bool) []string {
 	return nil
 }
 
-func (h *Handler) respFinalize(p *creditnet.Trustline, raw json.RawMessage, ts int64) {
+func (h *Handler) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	var m novFinalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return
@@ -292,7 +294,9 @@ func (h *Handler) respFinalize(p *creditnet.Trustline, raw json.RawMessage, ts i
 		return
 	}
 	creditnet.Dequeue(&nov.Queue)
-	p.AddBalance(-nov.Amount, ts)
+	if p := h.trustlines[peer]; p != nil {
+		p.AddBalance(-nov.Amount, ts)
+	}
 	h.unrefPeer(nov.OutPeer)
 	nov.OutPeer = ""
 	if nov.InPeer == "" {

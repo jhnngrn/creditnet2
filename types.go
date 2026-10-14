@@ -65,19 +65,6 @@ type ScheduleFunc func(delay time.Duration, fn func() []string)
 // accounting for effective balance, credit limits, and all reservations.
 type BandwidthFunc func(peer string) (in, out int64)
 
-// Module processes sync methods and account API calls for a namespace.
-// HandleRequest returns (ok, kicks, err) where kicks is a list of peers
-// that need kicking on other links (cross-link kicks, e.g. novation routing).
-// HandleResponse returns kicks for the same purpose.
-// HandleAccount handles user-facing API calls (via /api/account).
-type Module interface {
-	Name() string
-	HandleRequest(peer string, t *Trustline, method string, payload json.RawMessage, ts int64) (bool, []string, error)
-	HandleResponse(peer string, t *Trustline, method string, payload json.RawMessage, ok bool, ts int64) []string
-	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
-	NextTx(peer string) *link.QueuedMsg
-}
-
 // Transport sends sync messages to peers.
 type Transport interface {
 	Send(peerDomain string, msg link.SyncRequest) ([]byte, error)

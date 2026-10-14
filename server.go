@@ -70,7 +70,7 @@ func (c *Config) fill() error {
 // ModuleFactory creates a module for a newly loaded or created node.
 // Modules receive the node ID, a scheduler for periodic work, the
 // trustlines map for direct access, a bandwidth function, and persisted state (nil if new).
-type ModuleFactory func(nodeID string, schedule ScheduleFunc, trustlines map[string]*Trustline, bandwidth BandwidthFunc, state json.RawMessage) Module
+type ModuleFactory func(nodeID string, schedule ScheduleFunc, trustlines map[string]*Trustline, bandwidth BandwidthFunc, state json.RawMessage) link.Module
 
 type moduleReg struct {
 	name    string

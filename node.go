@@ -26,7 +26,7 @@ type Node struct {
 	reservers  []Reserver
 
 	modules   []moduleEntry
-	moduleMap map[string]Module
+	moduleMap map[string]link.Module
 
 	transport Transport
 	store     Store
@@ -34,7 +34,7 @@ type Node struct {
 
 type moduleEntry struct {
 	name   string
-	module Module
+	module link.Module
 }
 
 type nodeState struct {
@@ -53,7 +53,7 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 		id:         id,
 		links:      link.NewLinks(id, st.Links, st.InviteMode, map[string]struct{}{"trustline": {}}),
 		trustlines: loadTrustlines(st.Handlers["trustline"]),
-		moduleMap:  map[string]Module{},
+		moduleMap:  map[string]link.Module{},
 		transport:  transport,
 		store:      store,
 	}
@@ -65,7 +65,7 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 // Module registration
 // ---------------------------------------------------------------------------
 
-func (n *Node) RegisterModule(m Module) {
+func (n *Node) RegisterModule(m link.Module) {
 	name := m.Name()
 	n.modules = append(n.modules, moduleEntry{name: name, module: m})
 	n.moduleMap[name] = m
@@ -253,7 +253,7 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 			n.mu.Unlock()
 			return nil, ErrBadMethod
 		}
-		ok, kicks, reqErr = mod.HandleRequest(env.From, n.GetTrustline(env.From), method, env.Payload, ts)
+		ok, kicks, reqErr = mod.HandleRequest(env.From, method, env.Payload, ts)
 	}
 	if reqErr != nil {
 		n.mu.Unlock()
@@ -282,7 +282,7 @@ func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.Syn
 		return n.handleTrustlineResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
 	}
 	if rh := n.moduleMap[ns]; rh != nil {
-		return rh.HandleResponse(peer, n.GetTrustline(peer), method, msg.Payload, resp.OK, resp.Timestamp)
+		return rh.HandleResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
 	}
 	return nil
 }

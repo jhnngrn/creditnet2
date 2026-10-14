@@ -128,7 +128,7 @@ type Handler struct {
 	bandwidth  creditnet.BandwidthFunc
 }
 
-func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) creditnet.Module {
+func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) link.Module {
 	h := &Handler{
 		Paths:      map[string]*Path{},
 		Clearings:  map[string]*Clearing{},
@@ -196,26 +196,26 @@ func (h *Handler) Reserved(peer string) (in, out int64) {
 // Module — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleRequest(peer string, t *creditnet.Trustline, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	// Path phase
 	case "search":
-		return h.reqSearch(peer, t, payload, ts)
+		return h.reqSearch(peer, payload, ts)
 	case "found":
 		return h.reqFound(peer, payload)
 	case "expire":
 		return h.reqExpire(peer, payload, ts)
 	// Clearing phase
 	case "commit":
-		return h.reqCommit(peer, t, payload, ts)
+		return h.reqCommit(peer, payload, ts)
 	case "finalize":
-		return h.reqFinalize(peer, t, payload, ts)
+		return h.reqFinalize(peer, payload, ts)
 	case "cancel":
-		return h.reqCancel(peer, t, payload, ts)
+		return h.reqCancel(peer, payload, ts)
 	case "rollback":
 		return h.reqRollback(peer, payload)
 	case "cleanup":
-		return h.reqCleanup(peer, t, payload, ts)
+		return h.reqCleanup(peer, payload, ts)
 	}
 	return false, nil, creditnet.ErrBadMethod
 }
@@ -224,10 +224,10 @@ func (h *Handler) HandleRequest(peer string, t *creditnet.Trustline, method stri
 // Module — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleResponse(peer string, t *creditnet.Trustline, method string, payload json.RawMessage, ok bool, ts int64) []string {
+func (h *Handler) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "search":
-		return h.respSearch(peer, t, payload, ok, ts)
+		return h.respSearch(peer, payload, ok, ts)
 	case "found":
 		h.respFound(payload, ok)
 	case "expire":
@@ -235,13 +235,13 @@ func (h *Handler) HandleResponse(peer string, t *creditnet.Trustline, method str
 	case "commit":
 		return h.respCommit(payload, ok, ts)
 	case "finalize":
-		return h.respFinalize(t, payload, ok, ts)
+		return h.respFinalize(peer, payload, ok, ts)
 	case "cancel":
-		h.respCancel(t, payload, ok, ts)
+		h.respCancel(peer, payload, ok, ts)
 	case "rollback":
 		h.respRollback(payload)
 	case "cleanup":
-		h.respCleanup(peer, t, payload, ok, ts)
+		h.respCleanup(peer, payload, ok, ts)
 	}
 	return nil
 }
@@ -308,7 +308,7 @@ type searchMsg struct {
 	Hops      uint8  `json:"hops"`
 }
 
-func (h *Handler) reqSearch(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m searchMsg
 	if json.Unmarshal(raw, &m) != nil || m.Amount <= 0 {
 		return false, nil, fmt.Errorf("bad payload")
@@ -317,6 +317,7 @@ func (h *Handler) reqSearch(peer string, t *creditnet.Trustline, raw json.RawMes
 		return false, nil, nil
 	}
 	dir := m.Direction
+	t := h.trustlines[peer]
 
 	p := h.Paths[m.ID]
 	if p != nil {
@@ -331,7 +332,7 @@ func (h *Handler) reqSearch(peer string, t *creditnet.Trustline, raw json.RawMes
 		if m.Amount < p.Amount {
 			p.Amount = m.Amount
 		}
-		if m.Gas > 0 {
+		if m.Gas > 0 && t != nil {
 			t.AddBalance(int64(m.Gas), ts) // accept gas at closure
 		}
 		if p.Peer[0] != "" && p.Peer[1] != "" {
@@ -356,14 +357,16 @@ func (h *Handler) reqSearch(peer string, t *creditnet.Trustline, raw json.RawMes
 	p = &Path{Amount: m.Amount, Penalty: m.Penalty, Hops: m.Hops + 1, Depth: m.Depth, Gas: m.Gas - 1, Expiry: ts + int64(PathTTL.Seconds())}
 	p.Peer[dir] = peer
 	h.Paths[m.ID] = p
-	t.AddBalance(int64(m.Gas), ts) // receive full gas from sender
+	if t != nil {
+		t.AddBalance(int64(m.Gas), ts) // receive full gas from sender
+	}
 
 	kicks := h.floodForward(m.ID, p, dir, peer)
 	h.schedulePathExpiry(m.ID)
 	return true, kicks, nil
 }
 
-func (h *Handler) respSearch(peer string, t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) []string {
+func (h *Handler) respSearch(peer string, raw json.RawMessage, ok bool, ts int64) []string {
 	var m searchMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return nil
@@ -376,8 +379,10 @@ func (h *Handler) respSearch(peer string, t *creditnet.Trustline, raw json.RawMe
 			delete(h.Probes, peer)
 		}
 	}
-	if ok && t != nil {
-		t.AddBalance(-int64(m.Gas), ts) // sender pays gas
+	if ok {
+		if t := h.trustlines[peer]; t != nil {
+			t.AddBalance(-int64(m.Gas), ts) // sender pays gas
+		}
 	}
 	return nil
 }
@@ -618,7 +623,7 @@ func (h *Handler) startClearing(id string, amount int64, outPeer string, preimag
 	h.refPeer(outPeer)
 }
 
-func (h *Handler) reqCommit(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m struct {
 		ID      string `json:"clearing_id"`
 		Amount  int64  `json:"amount"`
@@ -724,7 +729,8 @@ func (h *Handler) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 // Clearing — finalize
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+	t := h.trustlines[peer]
 	if t == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
@@ -838,7 +844,7 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 	return !forwardFinal || m.Final, kicks, nil
 }
 
-func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) []string {
+func (h *Handler) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64) []string {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -853,7 +859,9 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 	creditnet.Dequeue(&cl.Side[sideOUT].Queue)
 	if ok {
 		penConsumed := penaltyTick(cl.Amount, cl.Side[sideOUT].Penalty, cl.Side[sideOUT].Time, ts)
-		t.AddBalance(-(cl.Amount+penConsumed), ts)
+		if t := h.trustlines[peer]; t != nil {
+			t.AddBalance(-(cl.Amount + penConsumed), ts)
+		}
 
 		// Intermediary continuation: set up sideOUT half of next chunk.
 		// Initiator continuation is handled entirely in reqFinalize
@@ -895,7 +903,8 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 // Clearing — cancel
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqCancel(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+	t := h.trustlines[peer]
 	if t == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
@@ -936,7 +945,7 @@ func (h *Handler) reqCancel(peer string, t *creditnet.Trustline, raw json.RawMes
 	return true, kicks, nil
 }
 
-func (h *Handler) respCancel(t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) {
+func (h *Handler) respCancel(peer string, raw json.RawMessage, ok bool, ts int64) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -953,7 +962,9 @@ func (h *Handler) respCancel(t *creditnet.Trustline, raw json.RawMessage, ok boo
 	}
 	penConsumed := penaltyTick(cl.Amount, cl.Side[sideOUT].Penalty, cl.Side[sideOUT].Time, ts)
 	if penConsumed > 0 {
-		t.AddBalance(-int64(penConsumed), ts)
+		if t := h.trustlines[peer]; t != nil {
+			t.AddBalance(-int64(penConsumed), ts)
+		}
 	}
 	h.unrefPeer(cl.Side[sideOUT].Peer)
 	cl.Side[sideOUT] = ClearingSide{}
@@ -1014,7 +1025,8 @@ func (h *Handler) respRollback(raw json.RawMessage) {
 // Clearing — cleanup (timeout settlement)
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqCleanup(peer string, t *creditnet.Trustline, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Handler) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+	t := h.trustlines[peer]
 	if t == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
@@ -1070,7 +1082,7 @@ func (h *Handler) reqCleanup(peer string, t *creditnet.Trustline, raw json.RawMe
 	return true, kicks, nil
 }
 
-func (h *Handler) respCleanup(peer string, t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) {
+func (h *Handler) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -1087,13 +1099,16 @@ func (h *Handler) respCleanup(peer string, t *creditnet.Trustline, raw json.RawM
 		}
 	}
 	if ok {
+		t := h.trustlines[peer]
 		for s := 0; s < 2; s++ {
 			if cl.Side[s].Peer == peer {
 				total := cl.Amount + cl.Side[s].Penalty
-				if s == sideIN {
-					t.AddBalance(total, ts)
-				} else {
-					t.AddBalance(-total, ts)
+				if t != nil {
+					if s == sideIN {
+						t.AddBalance(total, ts)
+					} else {
+						t.AddBalance(-total, ts)
+					}
 				}
 				h.unrefPeer(peer)
 				cl.Side[s] = ClearingSide{}
