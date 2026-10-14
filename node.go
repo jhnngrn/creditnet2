@@ -77,14 +77,6 @@ func (n *Node) Links() *link.Links {
 	return n.links
 }
 
-// onLinkDeleted cleans up trustline and module state after link has
-// removed the peer from its collection. Caller must hold Lock.
-func (n *Node) onLinkDeleted(peer string) {
-	n.trustlineLinkDeleted(peer)
-	for _, entry := range n.modules {
-		entry.module.LinkDeleted(peer)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Locking & persistence
@@ -249,9 +241,6 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	switch ns {
 	case "link":
 		ok, reqErr = n.links.HandleRequest(env.From, method, env.Payload)
-		if n.links.Get(env.From) == nil {
-			n.onLinkDeleted(env.From)
-		}
 	case "trustline":
 		if !lk.ModuleEnabled(ns) {
 			n.mu.Unlock()
@@ -288,9 +277,6 @@ func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.Syn
 	switch ns {
 	case "link":
 		n.links.HandleResponse(peer, method, msg.Payload, resp.OK)
-		if n.links.Get(peer) == nil {
-			n.onLinkDeleted(peer)
-		}
 		return nil
 	case "trustline":
 		return n.handleTrustlineResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)

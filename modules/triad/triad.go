@@ -94,8 +94,6 @@ func (h *Handler) Reserved(peer string) (in, out int64) {
 	return
 }
 
-// LinkDeleted is called when a link to peer is removed.
-func (h *Handler) LinkDeleted(peer string) {}
 
 // ---------------------------------------------------------------------------
 // Module — HandleRequest

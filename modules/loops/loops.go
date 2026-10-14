@@ -191,24 +191,6 @@ func (h *Handler) Reserved(peer string) (in, out int64) {
 	return
 }
 
-func (h *Handler) LinkDeleted(peer string) {
-	delete(h.Probes, peer)
-	for id, p := range h.Paths {
-		if p.Peer[0] == peer || p.Peer[1] == peer {
-			delete(h.Paths, id)
-		}
-	}
-	for id, cl := range h.Clearings {
-		for s := 0; s < 2; s++ {
-			if cl.Side[s].Peer == peer {
-				cl.Side[s] = ClearingSide{}
-			}
-		}
-		if cl.Side[0].Peer == "" && cl.Side[1].Peer == "" {
-			delete(h.Clearings, id)
-		}
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Module — HandleRequest

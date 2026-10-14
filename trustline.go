@@ -79,13 +79,6 @@ func loadTrustlines(raw json.RawMessage) map[string]*Trustline {
 	return map[string]*Trustline{}
 }
 
-// trustlineLinkDeleted is called when a link to peer is removed.
-func (n *Node) trustlineLinkDeleted(peer string) {
-	if p := n.trustlines[peer]; p != nil {
-		p.State = link.ConnectionState{}
-	}
-}
-
 // refTrustlineLink increments the ref count on the link's ConnectionState.
 func (n *Node) refTrustlineLink(peer string) {
 	if lk := n.links.Get(peer); lk != nil {

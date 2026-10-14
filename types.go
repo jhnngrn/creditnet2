@@ -76,7 +76,6 @@ type Module interface {
 	HandleResponse(peer string, t *Trustline, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 	NextTx(peer string) *link.QueuedMsg
-	LinkDeleted(peer string)
 }
 
 // Transport sends sync messages to peers.

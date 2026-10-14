@@ -129,8 +129,6 @@ A new link starts with no status and `IntentConnect = true`. Status becomes `wai
 
 Links use reference counting — modules that hold a link open (e.g. an active trustline) call `Ref()` on the link's `ConnectionState` when they connect and `UnrefClose()` when they close. `UnrefClose` decrements refs and sets `IntentClose` automatically when refs reach 0. `NextTx` only sends `link.close` when `IntentClose && Refs == 0`. This ensures modules finish their close handshakes before the link itself closes, and the link closes automatically when the last module disconnects.
 
-On deletion (link.close completes), `LinkDeleted` is called on each module before the link is removed.
-
 ### Invite mode
 
 Three-state `InviteMode` controls how a node handles incoming connections from unknown peers:
@@ -199,7 +197,7 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches by namesp
 
 `link.module` — bilateral module negotiation. Sent automatically after a link connects. Payload carries `{"name": "trustline"}`. Peer ACKs if it supports the module, enabling it on the link. In `open` mode, supported modules are auto-ACKed.
 
-`link.close` — close a connection. `LinkDeleted` is called on each module, then the link is removed. If the peer has no link, a synthetic ACK is returned.
+`link.close` — close a connection. Modules clean up before close via ref counting. If the peer has no link, a synthetic ACK is returned.
 
 **trustline namespace:**
 
