@@ -251,7 +251,11 @@ func enc(v any) json.RawMessage { d, _ := json.Marshal(v); return d }
 // HandleRequest processes an incoming link-namespace request.
 // Returns (ok, deleteLink, error). When deleteLink is true the caller
 // must remove the link and notify modules.
-func (l *Link) HandleRequest(method string, payload json.RawMessage, supported map[string]struct{}, inviteMode InviteMode) (bool, bool, error) {
+func (ls *Links) HandleRequest(peer, method string, payload json.RawMessage) (bool, bool, error) {
+	l := ls.Get(peer)
+	if l == nil {
+		return false, false, fmt.Errorf("no link to %s", peer)
+	}
 	switch method {
 	case "connect":
 		if l.State.IntentConnect || l.State.Status == Waiting {
@@ -259,7 +263,7 @@ func (l *Link) HandleRequest(method string, payload json.RawMessage, supported m
 			l.State.IntentConnect = false
 			return true, false, nil
 		}
-		if inviteMode == InviteModeOpen {
+		if ls.InviteMode == InviteModeOpen {
 			l.State.Status = Connected
 			return true, false, nil
 		}
@@ -269,7 +273,7 @@ func (l *Link) HandleRequest(method string, payload json.RawMessage, supported m
 		return true, true, nil
 
 	case "module":
-		ok, err := l.reqModule(payload, supported, inviteMode)
+		ok, err := l.reqModule(payload, ls.Supported, ls.InviteMode)
 		return ok, false, err
 	}
 	return false, false, fmt.Errorf("unknown link method %q", method)

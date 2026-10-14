@@ -256,7 +256,7 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	switch ns {
 	case "link":
 		var del bool
-		ok, del, reqErr = lk.HandleRequest(method, env.Payload, n.links.Supported, n.links.InviteMode)
+		ok, del, reqErr = n.links.HandleRequest(env.From, method, env.Payload)
 		if del {
 			n.DeleteLink(env.From)
 		}
