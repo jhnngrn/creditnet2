@@ -756,10 +756,10 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 	}
 	cl := h.Clearings[m.ID]
 	if cl == nil {
-		return false, nil, nil
+		return false, nil, fmt.Errorf("finalize: unknown clearing %s", m.ID)
 	}
 	if cl.Side[sideIN].Peer != peer {
-		return false, nil, nil
+		return false, nil, fmt.Errorf("finalize: wrong peer %s", peer)
 	}
 
 	pre, _ := hex.DecodeString(m.Preimage)
@@ -993,10 +993,10 @@ func (h *Handler) reqRollback(peer string, raw json.RawMessage) (bool, []string,
 	}
 	cl := h.Clearings[m.ID]
 	if cl == nil {
-		return false, nil, nil
+		return false, nil, fmt.Errorf("rollback: unknown clearing %s", m.ID)
 	}
 	if cl.Side[sideIN].Peer != peer {
-		return false, nil, nil
+		return false, nil, fmt.Errorf("rollback: wrong peer %s", peer)
 	}
 
 	h.unrefPeer(peer)
