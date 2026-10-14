@@ -376,39 +376,68 @@ func (n *Node) sendPending(peer string) {
 	}
 }
 
-// nextTx returns the next message to send for a peer, asking each
-// handler in registration order. The namespace prefix is added.
+// nextTx returns the next message to send for a peer.
+// Link-level messages (connect/close/module) have absolute priority.
+// Among trustline and external modules, the message with the oldest
+// QueuedAt wins. Unset QueuedAt (zero) always loses to any set value.
+// Equal values (including both unset) preserve registration order.
 func (n *Node) nextTx(peer string) *link.QueuedMsg {
 	lk := n.links.Get(peer)
 	if lk == nil {
 		return nil
 	}
-	// Link handler runs regardless of status.
+	// Link-level messages have absolute priority.
 	if msg := n.links.NextTx(peer); msg != nil {
 		msg.Method = "link." + msg.Method
 		return msg
 	}
+
+	var best *link.QueuedMsg
+
 	// Trustline runs on links with trustline module enabled.
 	if lk.ModuleEnabled("trustline") {
 		if msg := n.trustlineNextTx(peer); msg != nil {
 			msg.Method = "trustline." + msg.Method
-			return msg
+			best = msg
 		}
 	}
+
 	// External modules only run on connected links with the module enabled.
-	if lk.State.Status != link.Connected {
-		return nil
-	}
-	for _, entry := range n.modules {
-		if !lk.ModuleEnabled(entry.name) {
-			continue
+	if lk.State.Status == link.Connected {
+		for _, entry := range n.modules {
+			if !lk.ModuleEnabled(entry.name) {
+				continue
+			}
+			if msg := entry.module.NextTx(peer); msg != nil {
+				msg.Method = entry.name + "." + msg.Method
+				if olderQueuedMsg(msg, best) {
+					best = msg
+				}
+			}
 		}
-		if msg := entry.module.NextTx(peer); msg != nil {
-			msg.Method = entry.name + "." + msg.Method
-			return msg
-		}
 	}
-	return nil
+
+	return best
+}
+
+// olderQueuedMsg reports whether a should win over b.
+// Zero QueuedAt means unset — unset loses to any set value.
+// Equal values (including both zero) return false, preserving
+// the earlier candidate (registration order).
+func olderQueuedMsg(a, b *link.QueuedMsg) bool {
+	if b == nil {
+		return true
+	}
+	if a.QueuedAt == 0 && b.QueuedAt == 0 {
+		return false // both unset: keep b (first found)
+	}
+	if a.QueuedAt == 0 {
+		return false // a unset, b set: b wins
+	}
+	if b.QueuedAt == 0 {
+		return true // a set, b unset: a wins
+	}
+	return a.QueuedAt < b.QueuedAt
 }
 
 // KickAll kicks all peers. Used at boot to resume pending work.
