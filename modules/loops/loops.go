@@ -845,6 +845,7 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 			if nextCl.Side[sideOUT].Peer == "" {
 				nextCl.Side[sideOUT] = ClearingSide{Peer: outPeer, Penalty: cl.Side[sideOUT].Penalty}
 				h.refPeer(outPeer)
+				h.scheduleCleanup(nextID, sideOUT)
 			}
 			if cl.Seed != nil {
 				nextStep := cl.Step - 1
@@ -858,6 +859,11 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 				}
 				_, avl := h.bandwidth(outPeer)
 				nextCl.Final = nextStep <= 2 || avl < 2*int64(nextCl.Amount)
+				// Race: reqFinalize already set IN side — queue finalize now.
+				if nextCl.Side[sideIN].Peer != "" && len(nextCl.Side[sideOUT].Queue) == 0 {
+					link.Enqueue(&nextCl.Side[sideOUT].Queue, "finalize")
+				}
+				h.scheduleCancel(nextID)
 			}
 		}
 
