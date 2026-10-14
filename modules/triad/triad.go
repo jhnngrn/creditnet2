@@ -184,11 +184,11 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 
 	case m.Intermediary:
 		// Commit confirmation from creditor — all three committed, start finalize.
-		if peer != m.Creditor {
-			return false, nil, nil
-		}
 		nov := h.Novations[m.NovationID]
 		if nov == nil || nov.Role != "intermediary" {
+			return false, nil, nil
+		}
+		if nov.InPeer != peer {
 			return false, nil, nil
 		}
 		link.Enqueue(&nov.Queue, "finalize")
