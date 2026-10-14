@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"creditnet"
-	"creditnet/link"
+	"github.com/jhnngrn/link"
 )
 
 // ---------------------------------------------------------------------------

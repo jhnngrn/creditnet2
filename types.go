@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"creditnet/link"
+	"github.com/jhnngrn/link"
 )
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"creditnet/link"
+	"github.com/jhnngrn/link"
 )
 
 const retryDelay = 60 * time.Second

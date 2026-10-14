@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"creditnet/link"
+	"github.com/jhnngrn/link"
 )
 
 // ---------------------------------------------------------------------------
