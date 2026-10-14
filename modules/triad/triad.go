@@ -17,13 +17,12 @@ import (
 
 const (
 	MaxNovPerLink  = 3
-	MaxAmount      = uint64(1<<63 - 1)
 	NovateInterval = 5 * time.Minute
 )
 
 // Novation tracks a single three-party novation in progress.
 type Novation struct {
-	Amount  uint64   `json:"amount"`
+	Amount  int64    `json:"amount"`
 	Role    string   `json:"role"` // "intermediary", "debtor", "creditor"
 	InPeer  string   `json:"in_peer,omitempty"`
 	OutPeer string   `json:"out_peer,omitempty"`
@@ -42,7 +41,7 @@ type novCommitMsg struct {
 	Debtor       string `json:"debtor"`
 	Intermediary string `json:"intermediary"`
 	Creditor     string `json:"creditor"`
-	Amount       uint64 `json:"amount"`
+	Amount       int64  `json:"amount"`
 }
 
 type novFinalizeMsg struct {
@@ -86,10 +85,10 @@ func (h *Handler) Name() string { return "triad" }
 func (h *Handler) Reserved(peer string) (in, out int64) {
 	for _, nov := range h.Novations {
 		if nov.InPeer == peer {
-			in += int64(nov.Amount)
+			in += nov.Amount
 		}
 		if nov.OutPeer == peer {
-			out += int64(nov.Amount)
+			out += nov.Amount
 		}
 	}
 	return
@@ -122,7 +121,7 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
 	}
-	if m.Amount == 0 || m.Amount > MaxAmount {
+	if m.Amount <= 0 {
 		return false, nil, nil
 	}
 
@@ -134,7 +133,7 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 		}
 		// Check I owe intermediary enough: -eff - inReservations >= amount.
 		bwIn, _ := h.bandwidth(peer)
-		if bwIn-p.CreditLimit < int64(m.Amount) {
+		if bwIn-p.CreditLimit < m.Amount {
 			return false, nil, nil
 		}
 		if h.Novations[m.NovationID] != nil || !h.isConnected(m.Creditor) {
@@ -157,7 +156,7 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 		}
 		// Check incoming bandwidth from debtor (room for finalize balance increase).
 		bwIn, _ := h.bandwidth(peer)
-		if bwIn < int64(m.Amount) {
+		if bwIn < m.Amount {
 			return false, nil, nil
 		}
 		// Check link to intermediary and outgoing debt to intermediary.
@@ -166,7 +165,7 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 			return false, nil, nil
 		}
 		_, bwOut := h.bandwidth(m.Intermediary)
-		if bwOut-iPeer.CreditLimitIn < int64(m.Amount) {
+		if bwOut-iPeer.CreditLimitIn < m.Amount {
 			return false, nil, nil
 		}
 		if h.Novations[m.NovationID] != nil {
@@ -212,7 +211,7 @@ func (h *Handler) reqFinalize(peer string, p *creditnet.Trustline, raw json.RawM
 	if nov.InPeer != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
-	p.AddBalance(int64(nov.Amount), ts)
+	p.AddBalance(nov.Amount, ts)
 	h.unrefPeer(nov.InPeer)
 	nov.InPeer = ""
 	var kicks []string
@@ -295,7 +294,7 @@ func (h *Handler) respFinalize(p *creditnet.Trustline, raw json.RawMessage, ts i
 		return
 	}
 	link.Dequeue(&nov.Queue)
-	p.AddBalance(-int64(nov.Amount), ts)
+	p.AddBalance(-nov.Amount, ts)
 	h.unrefPeer(nov.OutPeer)
 	nov.OutPeer = ""
 	if nov.InPeer == "" {
@@ -420,7 +419,7 @@ func (h *Handler) tryNovate() []string {
 			}
 			novID := randomNovationID()
 			h.addNovation(novID, &Novation{
-				Amount:  uint64(amount),
+				Amount:  amount,
 				Role:    "intermediary",
 				InPeer:  creditor,
 				OutPeer: debtor,
