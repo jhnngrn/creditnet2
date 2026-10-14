@@ -251,7 +251,7 @@ func (n *Node) handleTrustlineResponse(peerID string, method string, payload jso
 		peer.PendingPayment = nil
 	}
 	if n.trustlines[peerID] != nil {
-		link.Dequeue(&peer.Queue)
+		Dequeue(&peer.Queue)
 	}
 	return nil
 }
@@ -276,7 +276,7 @@ func (n *Node) trustlineNextTx(peerID string) *link.QueuedMsg {
 		return nil
 	}
 	// Operations only when peer is connected.
-	method := link.QueueHead(peer.Queue)
+	method := QueueHead(peer.Queue)
 	if method == "" {
 		return nil
 	}
@@ -474,7 +474,7 @@ func (n *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, error) 
 		return nil, fmt.Errorf("credit limit change already pending")
 	}
 	peer.PendingLimit = &p.Amount
-	link.Enqueue(&peer.Queue, "set_credit_limit")
+	Enqueue(&peer.Queue, "set_credit_limit")
 	n.Kick(peerID)
 	return Enc("ok"), nil
 }
@@ -502,7 +502,7 @@ func (n *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("demurrage change already pending")
 	}
 	peer.PendingDemurrage = &p.Rate
-	link.Enqueue(&peer.Queue, "set_demurrage")
+	Enqueue(&peer.Queue, "set_demurrage")
 	n.Kick(peerID)
 	return Enc("ok"), nil
 }
@@ -534,7 +534,7 @@ func (n *Node) payment(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("insufficient credit")
 	}
 	peer.PendingPayment = &p.Amount
-	link.Enqueue(&peer.Queue, "payment")
+	Enqueue(&peer.Queue, "payment")
 	n.Kick(peerID)
 	return Enc("ok"), nil
 }

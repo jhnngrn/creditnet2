@@ -30,7 +30,7 @@ type Novation struct {
 }
 
 func (n *Novation) pendingPeer() string {
-	if link.QueueHead(n.Queue) == "rollback" {
+	if creditnet.QueueHead(n.Queue) == "rollback" {
 		return n.InPeer
 	}
 	return n.OutPeer
@@ -190,7 +190,7 @@ func (h *Handler) reqCommit(peer string, p *creditnet.Trustline, raw json.RawMes
 		if nov.InPeer != peer {
 			return false, nil, nil
 		}
-		link.Enqueue(&nov.Queue, "finalize")
+		creditnet.Enqueue(&nov.Queue, "finalize")
 		return true, []string{nov.OutPeer}, nil
 	}
 	return false, nil, nil
@@ -216,7 +216,7 @@ func (h *Handler) reqFinalize(peer string, p *creditnet.Trustline, raw json.RawM
 	nov.InPeer = ""
 	var kicks []string
 	if nov.OutPeer != "" {
-		link.Enqueue(&nov.Queue, "finalize")
+		creditnet.Enqueue(&nov.Queue, "finalize")
 		kicks = []string{nov.OutPeer}
 	}
 	if nov.OutPeer == "" {
@@ -243,7 +243,7 @@ func (h *Handler) reqRollback(peer string, raw json.RawMessage) (bool, []string,
 		h.removeNovation(m.NovationID)
 		return true, nil, nil
 	}
-	link.Enqueue(&nov.Queue, "rollback")
+	creditnet.Enqueue(&nov.Queue, "rollback")
 	return true, []string{nov.InPeer}, nil
 }
 
@@ -272,13 +272,13 @@ func (h *Handler) respCommit(raw json.RawMessage, ok bool) []string {
 	if nov == nil {
 		return nil
 	}
-	link.Dequeue(&nov.Queue)
+	creditnet.Dequeue(&nov.Queue)
 	if !ok {
 		if nov.Role == "intermediary" {
 			h.removeNovation(m.NovationID)
 			return nil
 		}
-		link.Enqueue(&nov.Queue, "rollback")
+		creditnet.Enqueue(&nov.Queue, "rollback")
 		return []string{nov.InPeer}
 	}
 	return nil
@@ -293,7 +293,7 @@ func (h *Handler) respFinalize(p *creditnet.Trustline, raw json.RawMessage, ts i
 	if nov == nil {
 		return
 	}
-	link.Dequeue(&nov.Queue)
+	creditnet.Dequeue(&nov.Queue)
 	p.AddBalance(-nov.Amount, ts)
 	h.unrefPeer(nov.OutPeer)
 	nov.OutPeer = ""
@@ -326,7 +326,7 @@ func (h *Handler) NextTx(peer string) *link.QueuedMsg {
 }
 
 func (h *Handler) buildMsg(id string, nov *Novation) *link.QueuedMsg {
-	switch link.QueueHead(nov.Queue) {
+	switch creditnet.QueueHead(nov.Queue) {
 	case "commit":
 		var d, i, c string
 		switch nov.Role {
