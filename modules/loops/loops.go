@@ -8,7 +8,7 @@
 // By the time that layer leaks (next finalize), the chunk is already settled.
 //
 // Unlike creditnet1 which used fire-and-forget messages for path search,
-// everything here is sync-based: search, found, prepare, and path cleanup
+// everything here is sync-based: search, found, and path cleanup
 // all go through the bilateral sync protocol.
 package loops
 
@@ -54,7 +54,6 @@ type Path struct {
 	Gas     uint64    `json:"gas"`
 	Depth   uint8     `json:"depth"`
 	Hops    uint8     `json:"hops"`
-	Commit  bool      `json:"commit,omitempty"`
 	Peer    [2]string `json:"peer"`
 	Seed    []byte    `json:"seed,omitempty"`
 	Queue   []string  `json:"queue,omitempty"`
@@ -63,7 +62,7 @@ type Path struct {
 
 func (p *Path) pendingPeer() string {
 	switch link.QueueHead(p.Queue) {
-	case "found", "prepare":
+	case "found":
 		return p.Peer[0]
 	case "expire":
 		if p.Peer[1] != "" {
@@ -181,16 +180,6 @@ func (h *Handler) Name() string { return "loops" }
 // ---------------------------------------------------------------------------
 
 func (h *Handler) Reserved(peer string) (in, out int64) {
-	for _, p := range h.Paths {
-		if p.Commit {
-			if p.Peer[0] == peer {
-				in += int64(p.Amount)
-			}
-			if p.Peer[1] == peer {
-				out += int64(p.Amount)
-			}
-		}
-	}
 	for _, cl := range h.Clearings {
 		if cl.Side[sideIN].Peer == peer {
 			in += int64(cl.Amount + cl.Side[sideIN].Penalty)
@@ -232,8 +221,6 @@ func (h *Handler) HandleRequest(peer string, t *creditnet.Trustline, method stri
 		return h.reqSearch(peer, t, payload, ts)
 	case "found":
 		return h.reqFound(peer, payload)
-	case "prepare":
-		return h.reqPrepare(peer, payload)
 	case "expire":
 		return h.reqExpire(peer, payload, ts)
 	// Clearing phase
@@ -261,8 +248,6 @@ func (h *Handler) HandleResponse(peer string, t *creditnet.Trustline, method str
 		return h.respSearch(peer, t, payload, ok, ts)
 	case "found":
 		h.respFound(payload, ok)
-	case "prepare":
-		h.respPrepare(payload, ok)
 	case "expire":
 		h.respExpire(payload)
 	case "commit":
@@ -295,7 +280,7 @@ func (h *Handler) NextTx(peer string) *link.QueuedMsg {
 			}),
 		}
 	}
-	// Then paths — found/prepare/expire.
+	// Then paths — found/expire.
 	for id, p := range h.Paths {
 		if len(p.Queue) > 0 && p.pendingPeer() == peer {
 			return h.buildPathMsg(id, p)
@@ -521,81 +506,7 @@ func (h *Handler) respFound(raw json.RawMessage, ok bool) {
 	link.Dequeue(&p.Queue)
 }
 
-// ---------------------------------------------------------------------------
-// Path — prepare request/response
-// ---------------------------------------------------------------------------
 
-func (h *Handler) reqPrepare(peer string, raw json.RawMessage) (bool, []string, error) {
-	var m struct {
-		ID     string `json:"clearing_id"`
-		Amount uint64 `json:"amount"`
-	}
-	if json.Unmarshal(raw, &m) != nil || m.Amount == 0 {
-		return false, nil, fmt.Errorf("bad payload")
-	}
-	p := h.Paths[m.ID]
-	if p == nil {
-		return false, nil, nil
-	}
-	if p.Peer[0] == peer {
-		return false, nil, nil // reject from direction we'd forward to
-	}
-
-	if p.Seed != nil {
-		// Initiator — prepare came back. Start 2PC.
-		if m.Amount > ChunkSize {
-			m.Amount = ChunkSize
-		}
-		step := Nchunks
-		preimage := chainHash(p.Seed, step-1)
-		cancelPre := chainHash(p.Seed, step-2)
-		h.startClearing(m.ID, m.Amount, p.Peer[0], preimage, cancelPre, p.Seed, step)
-		delete(h.Paths, m.ID)
-		return true, []string{p.Peer[0]}, nil
-	}
-
-	// Intermediate — check bandwidth and forward toward initiator (Peer[0]).
-	bwIn, _ := h.bandwidth(peer)
-	if bwIn < int64(m.Amount) {
-		return false, nil, nil
-	}
-	if p.Peer[0] == "" {
-		return false, nil, nil
-	}
-	_, bwOut := h.bandwidth(p.Peer[0])
-	if bwOut < int64(m.Amount) {
-		m.Amount = uint64(bwOut)
-	}
-	if m.Amount > ChunkSize {
-		m.Amount = ChunkSize
-	}
-	if m.Amount == 0 {
-		return false, nil, nil
-	}
-	p.Commit = true
-	p.Amount = m.Amount
-	link.Enqueue(&p.Queue, "prepare")
-	return true, []string{p.Peer[0]}, nil
-}
-
-func (h *Handler) respPrepare(raw json.RawMessage, ok bool) {
-	var m struct {
-		ID string `json:"clearing_id"`
-	}
-	if json.Unmarshal(raw, &m) != nil {
-		return
-	}
-	p := h.Paths[m.ID]
-	if p == nil {
-		return
-	}
-	link.Dequeue(&p.Queue)
-	if !ok {
-		p.Commit = false
-		// Could try with less amount, but for now just give up.
-		h.expirePath(m.ID)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Path — cleanup
@@ -696,11 +607,6 @@ func (h *Handler) buildPathMsg(id string, p *Path) *link.QueuedMsg {
 		return &link.QueuedMsg{
 			Method:  "found",
 			Payload: creditnet.Enc(map[string]any{"clearing_id": id, "hops": p.Hops}),
-		}
-	case "prepare":
-		return &link.QueuedMsg{
-			Method:  "prepare",
-			Payload: creditnet.Enc(map[string]any{"clearing_id": id, "amount": p.Amount}),
 		}
 	case "expire":
 		return &link.QueuedMsg{
@@ -923,7 +829,7 @@ func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok b
 		penConsumed := penaltyTick(cl.Amount, cl.Side[sideOUT].Penalty, cl.Side[sideOUT].Time, ts)
 		t.AddBalance(-int64(cl.Amount+penConsumed), ts)
 
-		// Continuation: prepare sideOUT half of next chunk.
+		// Continuation: set up sideOUT half of next chunk.
 		// Don't queue finalize yet — initiator waits for reqFinalize
 		// (payment received) before driving next round.
 		if cl.Preimage != nil && !cl.Final {
@@ -1376,8 +1282,11 @@ func (h *Handler) startLoop(searchID string) []string {
 		h.expirePath(searchID)
 		return nil
 	}
-	p.Amount = amount
-	link.Enqueue(&p.Queue, "prepare")
+	step := Nchunks
+	preimage := chainHash(p.Seed, step-1)
+	cancelPre := chainHash(p.Seed, step-2)
+	h.startClearing(searchID, amount, p.Peer[0], preimage, cancelPre, p.Seed, step)
+	delete(h.Paths, searchID)
 	return []string{p.Peer[0]}
 }
 
@@ -1470,7 +1379,7 @@ func (h *Handler) removeClearing(id string) {
 
 // linkSlots counts operations on a link.
 // reserved=false: all paths + all clearings (admission).
-// reserved=true: committed paths + all clearings (bandwidth).
+// reserved=true: clearings only (bandwidth).
 func (h *Handler) linkSlots(peer string, reserved bool) int {
 	count := 0
 	for _, cl := range h.Clearings {
@@ -1478,14 +1387,12 @@ func (h *Handler) linkSlots(peer string, reserved bool) int {
 			count++
 		}
 	}
-	for _, p := range h.Paths {
-		if p.Peer[0] != peer && p.Peer[1] != peer {
-			continue
+	if !reserved {
+		for _, p := range h.Paths {
+			if p.Peer[0] == peer || p.Peer[1] == peer {
+				count++
+			}
 		}
-		if reserved && !p.Commit {
-			continue
-		}
-		count++
 	}
 	return count
 }
