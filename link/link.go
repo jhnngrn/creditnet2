@@ -281,7 +281,11 @@ func (ls *Links) HandleRequest(peer, method string, payload json.RawMessage) (bo
 
 // HandleResponse processes a link-namespace response.
 // Returns true when the link should be deleted by the caller.
-func (l *Link) HandleResponse(method string, payload json.RawMessage, ok bool) bool {
+func (ls *Links) HandleResponse(peer, method string, payload json.RawMessage, ok bool) bool {
+	l := ls.Get(peer)
+	if l == nil {
+		return false
+	}
 	switch method {
 	case "connect":
 		if ok {
@@ -304,7 +308,11 @@ func (l *Link) HandleResponse(method string, payload json.RawMessage, ok bool) b
 }
 
 // NextTx returns the next link-level message to send, or nil.
-func (l *Link) NextTx() *QueuedMsg {
+func (ls *Links) NextTx(peer string) *QueuedMsg {
+	l := ls.Get(peer)
+	if l == nil {
+		return nil
+	}
 	if l.State.IntentClose && l.State.Refs == 0 {
 		return &QueuedMsg{Method: "close"}
 	}

@@ -295,8 +295,7 @@ func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.Syn
 	ns, method := SplitMethod(msg.Method)
 	switch ns {
 	case "link":
-		lk := n.links.Get(peer)
-		if lk != nil && lk.HandleResponse(method, msg.Payload, resp.OK) {
+		if n.links.HandleResponse(peer, method, msg.Payload, resp.OK) {
 			n.DeleteLink(peer)
 		}
 		return nil
@@ -406,7 +405,7 @@ func (n *Node) nextTx(peer string) *link.QueuedMsg {
 		return nil
 	}
 	// Link handler runs regardless of status.
-	if msg := lk.NextTx(); msg != nil {
+	if msg := n.links.NextTx(peer); msg != nil {
 		msg.Method = "link." + msg.Method
 		return msg
 	}
