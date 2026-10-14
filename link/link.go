@@ -122,17 +122,21 @@ type Links struct {
 	m          map[string]*Link
 	self       string
 	InviteMode InviteMode
+	Supported  map[string]struct{}
 }
 
 // NewLinks creates a Links collection for the given node identity.
-func NewLinks(self string, m map[string]*Link, mode InviteMode) *Links {
+func NewLinks(self string, m map[string]*Link, mode InviteMode, supported map[string]struct{}) *Links {
 	if m == nil {
 		m = map[string]*Link{}
 	}
 	if mode == "" {
 		mode = InviteModeInvite
 	}
-	return &Links{m: m, self: self, InviteMode: mode}
+	if supported == nil {
+		supported = map[string]struct{}{}
+	}
+	return &Links{m: m, self: self, InviteMode: mode, Supported: supported}
 }
 
 func (ls *Links) Get(peer string) *Link { return ls.m[peer] }
@@ -383,7 +387,7 @@ func (l *Link) respModule(payload json.RawMessage, ok bool) {
 
 // HandleAccount processes a link-namespace account operation.
 // Returns (result, peersToKick, error).
-func (ls *Links) HandleAccount(method string, payload json.RawMessage, supported map[string]struct{}) (json.RawMessage, []string, error) {
+func (ls *Links) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
 	switch method {
 	case "set_invite_mode":
 		var p struct {
@@ -412,7 +416,7 @@ func (ls *Links) HandleAccount(method string, payload json.RawMessage, supported
 		if lk == nil {
 			return nil, nil, fmt.Errorf("no link to %s", p.Peer)
 		}
-		lk.SetModules(p.Modules, supported)
+		lk.SetModules(p.Modules, ls.Supported)
 		return enc("ok"), []string{p.Peer}, nil
 
 	case "accept_module":

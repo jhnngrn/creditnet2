@@ -27,7 +27,6 @@ type Node struct {
 
 	modules   []moduleEntry
 	moduleMap map[string]Module
-	supported map[string]struct{}
 
 	transport Transport
 	store     Store
@@ -52,10 +51,9 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 	}
 	n := &Node{
 		id:         id,
-		links:      link.NewLinks(id, st.Links, st.InviteMode),
+		links:      link.NewLinks(id, st.Links, st.InviteMode, map[string]struct{}{"trustline": {}}),
 		trustlines: loadTrustlines(st.Handlers["trustline"]),
 		moduleMap:  map[string]Module{},
-		supported:  map[string]struct{}{"trustline": {}},
 		transport:  transport,
 		store:      store,
 	}
@@ -71,7 +69,7 @@ func (n *Node) RegisterModule(m Module) {
 	name := m.Name()
 	n.modules = append(n.modules, moduleEntry{name: name, module: m})
 	n.moduleMap[name] = m
-	n.supported[name] = struct{}{}
+	n.links.Supported[name] = struct{}{}
 }
 
 // Links returns the node's links. Caller must hold Lock.
@@ -109,7 +107,7 @@ func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.R
 	ns, method := SplitMethod(fullMethod)
 	switch ns {
 	case "link":
-		result, kicks, err := n.links.HandleAccount(method, payload, n.supported)
+		result, kicks, err := n.links.HandleAccount(method, payload)
 		for _, k := range kicks {
 			n.Kick(k)
 		}
@@ -258,7 +256,7 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	switch ns {
 	case "link":
 		var del bool
-		ok, del, reqErr = lk.HandleRequest(method, env.Payload, n.supported, n.links.InviteMode)
+		ok, del, reqErr = lk.HandleRequest(method, env.Payload, n.links.Supported, n.links.InviteMode)
 		if del {
 			n.DeleteLink(env.From)
 		}
