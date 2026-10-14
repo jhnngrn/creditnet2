@@ -773,6 +773,18 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 	outPeer := cl.Side[sideOUT].Peer
 	var kicks []string
 
+	// Intermediary: check if there's enough IN debt for another chunk.
+	// After settlement, compensate for this clearing's about-to-be-freed reservation.
+	// If not enough, skip continuation and forward final=true.
+	forwardFinal := m.Final
+	if cl.Seed == nil && !m.Final {
+		avl, _ := h.bandwidth(peer)
+		avl += cl.Amount + cl.Side[sideIN].Penalty
+		if avl < cl.Amount {
+			forwardFinal = true
+		}
+	}
+
 	// Continuation: create next chunk clearing.
 	if !m.Final {
 		nextID := hex.EncodeToString(pre)
@@ -811,7 +823,7 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 			}
 			link.Enqueue(&nextCl.Side[sideOUT].Queue, "finalize")
 			kicks = append(kicks, outPeer)
-		} else if cl.Seed == nil {
+		} else if cl.Seed == nil && !forwardFinal {
 			// Intermediary: create with IN side only.
 			// OUT side set by respFinalize when OUT peer accepts.
 			nextCl := h.Clearings[nextID]
@@ -835,13 +847,13 @@ func (h *Handler) reqFinalize(peer string, t *creditnet.Trustline, raw json.RawM
 	if outPeer != "" && len(cl.Side[sideOUT].Queue) == 0 {
 		link.Enqueue(&cl.Side[sideOUT].Queue, "finalize")
 		cl.Preimage = pre
-		cl.Final = m.Final
+		cl.Final = forwardFinal
 		kicks = []string{outPeer}
 	}
 	if cl.Side[sideIN].Peer == "" && cl.Side[sideOUT].Peer == "" {
 		h.removeClearing(m.ID)
 	}
-	return true, kicks, nil
+	return !forwardFinal || m.Final, kicks, nil
 }
 
 func (h *Handler) respFinalize(t *creditnet.Trustline, raw json.RawMessage, ok bool, ts int64) []string {
