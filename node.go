@@ -77,20 +77,13 @@ func (n *Node) Links() *link.Links {
 	return n.links
 }
 
-// DeleteLink removes a link. Caller must hold Lock.
-func (n *Node) DeleteLink(peer string) {
+// onLinkDeleted cleans up trustline and module state after link has
+// removed the peer from its collection. Caller must hold Lock.
+func (n *Node) onLinkDeleted(peer string) {
 	n.trustlineLinkDeleted(peer)
 	for _, entry := range n.modules {
 		entry.module.LinkDeleted(peer)
 	}
-	lk := n.links.Get(peer)
-	if lk != nil && lk.Send != nil {
-		if lk.Send.Timer != nil {
-			lk.Send.Timer.Stop()
-		}
-		lk.Send = nil
-	}
-	n.links.Delete(peer)
 }
 
 // ---------------------------------------------------------------------------
@@ -255,10 +248,9 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	var reqErr error
 	switch ns {
 	case "link":
-		var del bool
-		ok, del, reqErr = n.links.HandleRequest(env.From, method, env.Payload)
-		if del {
-			n.DeleteLink(env.From)
+		ok, reqErr = n.links.HandleRequest(env.From, method, env.Payload)
+		if n.links.Get(env.From) == nil {
+			n.onLinkDeleted(env.From)
 		}
 	case "trustline":
 		if !lk.ModuleEnabled(ns) {
@@ -295,8 +287,9 @@ func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.Syn
 	ns, method := SplitMethod(msg.Method)
 	switch ns {
 	case "link":
-		if n.links.HandleResponse(peer, method, msg.Payload, resp.OK) {
-			n.DeleteLink(peer)
+		n.links.HandleResponse(peer, method, msg.Payload, resp.OK)
+		if n.links.Get(peer) == nil {
+			n.onLinkDeleted(peer)
 		}
 		return nil
 	case "trustline":
