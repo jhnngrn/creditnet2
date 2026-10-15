@@ -37,12 +37,12 @@ creditnet and can be used standalone in any p2p application.
 ```
 github.com/jhnngrn/link   (external)
   link.go              bilateral sync primitive: Link, Links collection,
-                       ConnectionState, sync lifecycle, wire types, protocol handling
-                       (HandleRequest, HandleResponse, NextTx, HandleAccount),
-                       module negotiation, InviteMode, Supported, PeerSend
+                       ConnectionState, sync lifecycle, wire types, dispatch,
+                       module negotiation, InviteMode, PeerSend, EngineConfig
 
-types.go               identities, Module/Transport interfaces, errors, helpers
-node.go                Node: locking, transport, commit, dispatch, kick
+types.go               identities, Module interface, errors, helpers
+node.go                Node: app-level module implementing link.Module,
+                       holds trustlines and bandwidth, registers reservers
 trustline.go           trustline data and sync: credit limits, balances, payments
 demurrage.go           demurrage computation (decay over time)
 server.go              Server, Config, module factory registration, P2P
@@ -65,11 +65,13 @@ cmd/
 The link package ([github.com/jhnngrn/link](https://github.com/jhnngrn/link))
 is a self-contained bilateral sync primitive with no dependencies back to
 creditnet. It owns all bilateral state, protocol logic, module negotiation,
-collection management and policy (InviteMode, Supported, MaxLinks). Node is
-pure orchestration: locking, transport, commit and dispatch.
+collection management, policy (InviteMode, MaxLinks), dispatch, locking,
+persistence (via Commit callback), and the full sync loop (send, retry, kick).
+Node is the app-level module that implements link.Module — it holds trustlines
+and bandwidth that other modules depend on.
 Modules register under a namespace via `Server.Register(name, ModuleFactory)`
-and receive sync dispatch. Trustline handling is built into Node. Different
-binaries under `cmd/` combine different sets of modules.
+and receive sync dispatch. Different binaries under `cmd/` combine different
+sets of modules.
 
 ## Link layer
 
