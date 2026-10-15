@@ -363,7 +363,7 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 			return nil, nil, fmt.Errorf("link to %s is closing", peerID)
 		}
 	} else {
-		// Create link (inline AddLink logic).
+		// Create outgoing link.
 		if _, _, err := ParseIdentity(peerID); err != nil {
 			return nil, nil, err
 		}
@@ -413,7 +413,7 @@ func (h *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, []string, e
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	// Accept link (inline AcceptLink logic).
+	// Accept incoming link.
 	lk := h.links.Get(peerID)
 	if lk == nil {
 		return nil, nil, fmt.Errorf("no link to %s", peerID)
@@ -456,7 +456,7 @@ func (h *Node) rejectPeer(payload json.RawMessage) (json.RawMessage, []string, e
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	// Reject link (inline RejectLink logic).
+	// Reject incoming link.
 	lk := h.links.Get(peerID)
 	if lk == nil {
 		return nil, nil, fmt.Errorf("no link to %s", peerID)
