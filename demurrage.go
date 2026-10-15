@@ -38,7 +38,11 @@ func demurrageDecay(absBalance uint64, rate uint64, elapsedSecs int64) uint64 {
 // Must be called with a shared timestamp (from sync) for consistency.
 func (t *Trustline) MaterializeDemurrage(ts int64) {
 	if t.DemurrageTime == 0 || t.Balance == 0 {
-		t.DemurrageTime = ts
+		// Never set DemurrageTime backwards — a backward timestamp
+		// with zero balance could plant a past anchor for future decay.
+		if ts > t.DemurrageTime {
+			t.DemurrageTime = ts
+		}
 		return
 	}
 	elapsed := ts - t.DemurrageTime
