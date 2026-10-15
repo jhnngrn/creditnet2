@@ -160,6 +160,7 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
 			Now:    NowSecs,
 		},
 	)
+	ls.Protected = map[string]struct{}{"trustline": {}}
 
 	// Create and register the app-level Node first — other modules
 	// reference its Trustlines map and Bandwidth function.
