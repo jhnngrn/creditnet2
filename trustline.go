@@ -10,7 +10,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Trustline — per-peer credit data, owned by Node
+// Trustline — per-peer credit data
 // ---------------------------------------------------------------------------
 
 type Trustline struct {
@@ -28,38 +28,62 @@ type Trustline struct {
 }
 
 // ---------------------------------------------------------------------------
-// Trustline data on Node
+// TrustlineHandler — link.Module for bilateral credit
 // ---------------------------------------------------------------------------
 
-type trustlineState struct {
+// TrustlineHandler implements link.Module for the trustline protocol.
+type TrustlineHandler struct {
 	Trustlines map[string]*Trustline `json:"trustlines"`
+	nodeID     string
+	links      *link.Links
+	reservers  []Reserver
+	kick       func(string)
+}
+
+// NewTrustlineHandler creates a TrustlineHandler from persisted state.
+func NewTrustlineHandler(nodeID string, links *link.Links, kick func(string), state json.RawMessage) *TrustlineHandler {
+	h := &TrustlineHandler{
+		Trustlines: map[string]*Trustline{},
+		nodeID:     nodeID,
+		links:      links,
+		kick:       kick,
+	}
+	if state != nil {
+		json.Unmarshal(state, h)
+	}
+	if h.Trustlines == nil {
+		h.Trustlines = map[string]*Trustline{}
+	}
+	return h
+}
+
+func (h *TrustlineHandler) Name() string { return "trustline" }
+
+// RegisterReserver adds a Reserver whose reservations are subtracted
+// from available bandwidth.
+func (h *TrustlineHandler) RegisterReserver(r Reserver) {
+	h.reservers = append(h.reservers, r)
 }
 
 // GetTrustline returns the trustline data for a connected peer, or nil.
-func (n *Node) GetTrustline(peer string) *Trustline {
-	p := n.trustlines[peer]
+func (h *TrustlineHandler) GetTrustline(peer string) *Trustline {
+	p := h.Trustlines[peer]
 	if p == nil || p.State.Status != link.Connected {
 		return nil
 	}
 	return p
 }
 
-// RegisterReserver adds a Reserver whose reservations are subtracted
-// from available bandwidth. Call after creating module handlers.
-func (n *Node) RegisterReserver(r Reserver) {
-	n.reservers = append(n.reservers, r)
-}
-
 // Bandwidth returns available (in, out) capacity for a peer,
 // accounting for effective balance, credit limits, and all reservations.
-func (n *Node) Bandwidth(peer string) (in, out int64) {
-	p := n.GetTrustline(peer)
+func (h *TrustlineHandler) Bandwidth(peer string) (in, out int64) {
+	p := h.GetTrustline(peer)
 	if p == nil {
 		return 0, 0
 	}
 	eff := p.EffectiveBalance(time.Now().Unix())
 	var ri, ro int64
-	for _, r := range n.reservers {
+	for _, r := range h.reservers {
 		i, o := r.Reserved(peer)
 		ri += i
 		ro += o
@@ -69,84 +93,74 @@ func (n *Node) Bandwidth(peer string) (in, out int64) {
 	return
 }
 
-func loadTrustlines(raw json.RawMessage) map[string]*Trustline {
-	if raw != nil {
-		var st trustlineState
-		if json.Unmarshal(raw, &st) == nil && st.Trustlines != nil {
-			return st.Trustlines
-		}
-	}
-	return map[string]*Trustline{}
-}
-
-// refTrustlineLink increments the ref count on the link's ConnectionState.
-func (n *Node) refTrustlineLink(peer string) {
-	if lk := n.links.Get(peer); lk != nil {
+// refLink increments the ref count on the link's ConnectionState.
+func (h *TrustlineHandler) refLink(peer string) {
+	if lk := h.links.Get(peer); lk != nil {
 		lk.State.Ref()
 	}
 }
 
-// unrefTrustlineLink decrements the ref count on the link's ConnectionState.
-func (n *Node) unrefTrustlineLink(peer string) {
-	if lk := n.links.Get(peer); lk != nil {
+// unrefLink decrements the ref count on the link's ConnectionState.
+func (h *TrustlineHandler) unrefLink(peer string) {
+	if lk := h.links.Get(peer); lk != nil {
 		lk.State.UnrefClose()
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Sync — handleTrustlineRequest
+// link.Module — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (n *Node) handleTrustlineRequest(peerID string, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (h *TrustlineHandler) HandleRequest(peerID, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	case "connect":
-		peer := n.trustlines[peerID]
+		peer := h.Trustlines[peerID]
 		if peer == nil {
 			peer = &Trustline{}
-			n.trustlines[peerID] = peer
+			h.Trustlines[peerID] = peer
 		}
 		if peer.State.IntentConnect || peer.State.Status == link.Waiting {
 			peer.State.Status = link.Connected
 			peer.State.IntentConnect = false
-			n.refTrustlineLink(peerID)
+			h.refLink(peerID)
 			return true, nil, nil
 		}
-		if n.links.InviteMode == link.InviteModeOpen {
+		if h.links.InviteMode == link.InviteModeOpen {
 			peer.State.Status = link.Connected
-			n.refTrustlineLink(peerID)
+			h.refLink(peerID)
 			return true, nil, nil
 		}
 		peer.State.Status = link.Incoming
 		return false, nil, nil
 	case "close":
-		peer := n.trustlines[peerID]
+		peer := h.Trustlines[peerID]
 		if peer == nil {
 			return true, nil, nil // already gone
 		}
-		n.unrefTrustlineLink(peerID)
+		h.unrefLink(peerID)
 		peer.State = link.ConnectionState{}
 		return true, nil, nil
 	case "set_credit_limit":
-		ok, err := n.onSetCreditLimit(peerID, payload)
+		ok, err := h.onSetCreditLimit(peerID, payload)
 		return ok, nil, err
 	case "set_demurrage":
-		ok, err := n.onSetDemurrage(peerID, payload, ts)
+		ok, err := h.onSetDemurrage(peerID, payload, ts)
 		return ok, nil, err
 	case "payment":
-		ok, err := n.onPayment(peerID, payload, ts)
+		ok, err := h.onPayment(peerID, payload, ts)
 		return ok, nil, err
 	}
 	return false, nil, ErrBadMethod
 }
 
-func (n *Node) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, error) {
+func (h *TrustlineHandler) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, error) {
 	var p struct {
 		Amount int64 `json:"amount"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return false, nil
 	}
-	peer := n.trustlines[peerID]
+	peer := h.Trustlines[peerID]
 	if peer == nil || peer.State.Status != link.Connected {
 		return false, fmt.Errorf("peer not connected")
 	}
@@ -157,14 +171,14 @@ func (n *Node) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, e
 	return true, nil
 }
 
-func (n *Node) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) (bool, error) {
+func (h *TrustlineHandler) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) (bool, error) {
 	var p struct {
 		Rate int64 `json:"rate"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return false, nil
 	}
-	peer := n.trustlines[peerID]
+	peer := h.Trustlines[peerID]
 	if peer == nil || peer.State.Status != link.Connected {
 		return false, fmt.Errorf("peer not connected")
 	}
@@ -176,7 +190,7 @@ func (n *Node) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) 
 	return true, nil
 }
 
-func (n *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (bool, error) {
+func (h *TrustlineHandler) onPayment(peerID string, payload json.RawMessage, ts int64) (bool, error) {
 	var p struct {
 		Amount int64 `json:"amount"`
 	}
@@ -186,7 +200,7 @@ func (n *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (bool
 	if p.Amount <= 0 {
 		return false, nil
 	}
-	peer := n.trustlines[peerID]
+	peer := h.Trustlines[peerID]
 	if peer == nil || peer.State.Status != link.Connected {
 		return false, fmt.Errorf("peer not connected")
 	}
@@ -200,11 +214,11 @@ func (n *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (bool
 }
 
 // ---------------------------------------------------------------------------
-// Sync — handleTrustlineResponse
+// link.Module — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (n *Node) handleTrustlineResponse(peerID string, method string, payload json.RawMessage, ok bool, ts int64) []string {
-	peer := n.trustlines[peerID]
+func (h *TrustlineHandler) HandleResponse(peerID, method string, payload json.RawMessage, ok bool, ts int64) []string {
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return nil
 	}
@@ -212,7 +226,7 @@ func (n *Node) handleTrustlineResponse(peerID string, method string, payload jso
 	case "connect":
 		if ok {
 			peer.State.Status = link.Connected
-			n.refTrustlineLink(peerID)
+			h.refLink(peerID)
 		} else {
 			peer.State.Status = link.Waiting
 		}
@@ -220,7 +234,7 @@ func (n *Node) handleTrustlineResponse(peerID string, method string, payload jso
 		return nil
 	case "close":
 		if ok {
-			n.unrefTrustlineLink(peerID)
+			h.unrefLink(peerID)
 			peer.State = link.ConnectionState{}
 		} else {
 			peer.State.IntentClose = false
@@ -243,18 +257,18 @@ func (n *Node) handleTrustlineResponse(peerID string, method string, payload jso
 		}
 		peer.PendingPayment = nil
 	}
-	if n.trustlines[peerID] != nil {
+	if h.Trustlines[peerID] != nil {
 		Dequeue(&peer.Queue)
 	}
 	return nil
 }
 
 // ---------------------------------------------------------------------------
-// Sync — trustlineNextTx
+// link.Module — NextTx
 // ---------------------------------------------------------------------------
 
-func (n *Node) trustlineNextTx(peerID string) *link.QueuedMsg {
-	peer := n.trustlines[peerID]
+func (h *TrustlineHandler) NextTx(peerID string) *link.QueuedMsg {
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return nil
 	}
@@ -303,32 +317,32 @@ func (n *Node) trustlineNextTx(peerID string) *link.QueuedMsg {
 }
 
 // ---------------------------------------------------------------------------
-// Account API (trustline namespace)
+// link.Module — HandleAccount
 // ---------------------------------------------------------------------------
 
-func (n *Node) handleTrustlineAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+func (h *TrustlineHandler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {
 	case "add_peer":
-		return n.addPeer(payload)
+		return h.addPeer(payload)
 	case "accept_peer":
-		return n.acceptPeer(payload)
+		return h.acceptPeer(payload)
 	case "reject_peer":
-		return n.rejectPeer(payload)
+		return h.rejectPeer(payload)
 	case "remove_peer":
-		return n.removePeer(payload)
+		return h.removePeer(payload)
 	case "set_credit_limit":
-		return n.setCreditLimit(payload)
+		return h.setCreditLimit(payload)
 	case "set_demurrage":
-		return n.setDemurrage(payload)
+		return h.setDemurrage(payload)
 	case "payment":
-		return n.payment(payload)
+		return h.payment(payload)
 	case "status":
-		return n.trustlineStatus()
+		return h.trustlineStatus()
 	}
 	return nil, ErrBadMethod
 }
 
-func (n *Node) addPeer(payload json.RawMessage) (json.RawMessage, error) {
+func (h *TrustlineHandler) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer    string   `json:"peer"`
 		Modules []string `json:"modules,omitempty"`
@@ -337,39 +351,49 @@ func (n *Node) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	if peer := n.trustlines[peerID]; peer != nil && peer.State.Status == link.Connected {
+	if peer := h.Trustlines[peerID]; peer != nil && peer.State.Status == link.Connected {
 		return nil, fmt.Errorf("peer %s already exists", peerID)
 	}
-	if lk := n.links.Get(peerID); lk != nil {
+	if lk := h.links.Get(peerID); lk != nil {
 		if lk.State.IntentClose {
 			return nil, fmt.Errorf("link to %s is closing", peerID)
 		}
 	} else {
-		if err := n.AddLink(peerID); err != nil {
+		// Create link (inline AddLink logic).
+		if _, _, err := ParseIdentity(peerID); err != nil {
 			return nil, err
 		}
+		if peerID == h.nodeID {
+			return nil, fmt.Errorf("cannot link to self")
+		}
+		if h.links.Full() {
+			return nil, fmt.Errorf("max links reached")
+		}
+		lk := h.links.Create(peerID)
+		lk.State.IntentConnect = true
 	}
 	// Request trustline + chosen modules on this link.
-	lk := n.links.Get(peerID)
+	lk := h.links.Get(peerID)
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]*link.ConnectionState{}
 	}
 	lk.State.Modules["trustline"] = &link.ConnectionState{IntentConnect: true}
 	for _, name := range p.Modules {
-		if n.links.ModuleMap()[name] != nil {
+		if h.links.ModuleMap()[name] != nil {
 			lk.State.Modules[name] = &link.ConnectionState{IntentConnect: true}
 		}
 	}
-	peer := n.trustlines[peerID]
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		peer = &Trustline{}
-		n.trustlines[peerID] = peer
+		h.Trustlines[peerID] = peer
 	}
 	peer.State.IntentConnect = true
+	h.kick(peerID)
 	return Enc("ok"), nil
 }
 
-func (n *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
+func (h *TrustlineHandler) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer    string   `json:"peer"`
 		Modules []string `json:"modules,omitempty"`
@@ -378,11 +402,16 @@ func (n *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	if err := n.AcceptLink(peerID); err != nil {
-		return nil, err
+	// Accept link (inline AcceptLink logic).
+	lk := h.links.Get(peerID)
+	if lk == nil {
+		return nil, fmt.Errorf("no link to %s", peerID)
 	}
+	if lk.State.Status != link.Incoming {
+		return nil, fmt.Errorf("link to %s is not incoming", peerID)
+	}
+	lk.State.IntentConnect = true
 	// Request trustline + chosen modules on this link.
-	lk := n.links.Get(peerID)
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]*link.ConnectionState{}
 	}
@@ -391,7 +420,7 @@ func (n *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 	}
 	lk.State.Modules["trustline"].IntentConnect = true
 	for _, name := range p.Modules {
-		if n.links.ModuleMap()[name] != nil {
+		if h.links.ModuleMap()[name] != nil {
 			if lk.State.Modules[name] == nil {
 				lk.State.Modules[name] = &link.ConnectionState{}
 			}
@@ -399,30 +428,17 @@ func (n *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 		}
 	}
 	// Accept peer too — pre-set for mutual detection when trustline.connect arrives.
-	peer := n.trustlines[peerID]
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		peer = &Trustline{}
-		n.trustlines[peerID] = peer
+		h.Trustlines[peerID] = peer
 	}
 	peer.State.IntentConnect = true
-	n.Kick(peerID)
+	h.kick(peerID)
 	return Enc("ok"), nil
 }
 
-func (n *Node) rejectPeer(payload json.RawMessage) (json.RawMessage, error) {
-	var p struct {
-		Peer string `json:"peer"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return nil, fmt.Errorf("bad request")
-	}
-	if err := n.RejectLink(strings.ToLower(p.Peer)); err != nil {
-		return nil, err
-	}
-	return Enc("ok"), nil
-}
-
-func (n *Node) removePeer(payload json.RawMessage) (json.RawMessage, error) {
+func (h *TrustlineHandler) rejectPeer(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer string `json:"peer"`
 	}
@@ -430,21 +446,42 @@ func (n *Node) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := n.trustlines[peerID]
+	// Reject link (inline RejectLink logic).
+	lk := h.links.Get(peerID)
+	if lk == nil {
+		return nil, fmt.Errorf("no link to %s", peerID)
+	}
+	if lk.State.Status != link.Incoming {
+		return nil, fmt.Errorf("link to %s is not incoming", peerID)
+	}
+	lk.State.IntentClose = true
+	h.kick(peerID)
+	return Enc("ok"), nil
+}
+
+func (h *TrustlineHandler) removePeer(payload json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		Peer string `json:"peer"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("bad request")
+	}
+	peerID := strings.ToLower(p.Peer)
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
 	if peer.State.Status != link.Connected {
 		// Already disconnected — clean up local peer data.
-		delete(n.trustlines, peerID)
+		delete(h.Trustlines, peerID)
 		return Enc("ok"), nil
 	}
 	peer.State.IntentClose = true
-	n.Kick(peerID)
+	h.kick(peerID)
 	return Enc("ok"), nil
 }
 
-func (n *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, error) {
+func (h *TrustlineHandler) setCreditLimit(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer   string `json:"peer"`
 		Amount int64  `json:"amount"`
@@ -453,7 +490,7 @@ func (n *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, error) 
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := n.trustlines[peerID]
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
@@ -468,11 +505,11 @@ func (n *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, error) 
 	}
 	peer.PendingLimit = &p.Amount
 	Enqueue(&peer.Queue, "set_credit_limit")
-	n.Kick(peerID)
+	h.kick(peerID)
 	return Enc("ok"), nil
 }
 
-func (n *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, error) {
+func (h *TrustlineHandler) setDemurrage(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer string `json:"peer"`
 		Rate int64  `json:"rate"`
@@ -481,7 +518,7 @@ func (n *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := n.trustlines[peerID]
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
@@ -496,11 +533,11 @@ func (n *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, error) {
 	}
 	peer.PendingDemurrage = &p.Rate
 	Enqueue(&peer.Queue, "set_demurrage")
-	n.Kick(peerID)
+	h.kick(peerID)
 	return Enc("ok"), nil
 }
 
-func (n *Node) payment(payload json.RawMessage) (json.RawMessage, error) {
+func (h *TrustlineHandler) payment(payload json.RawMessage) (json.RawMessage, error) {
 	var p struct {
 		Peer   string `json:"peer"`
 		Amount int64  `json:"amount"`
@@ -509,7 +546,7 @@ func (n *Node) payment(payload json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := n.trustlines[peerID]
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
@@ -528,14 +565,14 @@ func (n *Node) payment(payload json.RawMessage) (json.RawMessage, error) {
 	}
 	peer.PendingPayment = &p.Amount
 	Enqueue(&peer.Queue, "payment")
-	n.Kick(peerID)
+	h.kick(peerID)
 	return Enc("ok"), nil
 }
 
-func (n *Node) trustlineStatus() (json.RawMessage, error) {
+func (h *TrustlineHandler) trustlineStatus() (json.RawMessage, error) {
 	now := time.Now().Unix()
 	peers := make(map[string]any)
-	for id, p := range n.trustlines {
+	for id, p := range h.Trustlines {
 		info := map[string]any{
 			"peer_state":        p.State,
 			"credit_limit":      p.CreditLimit,
@@ -554,15 +591,15 @@ func (n *Node) trustlineStatus() (json.RawMessage, error) {
 		if p.PendingDemurrage != nil {
 			info["pending_demurrage"] = *p.PendingDemurrage
 		}
-		if l := n.links.Get(id); l != nil {
+		if l := h.links.Get(id); l != nil {
 			info["link_state"] = l.State
 		}
 		peers[id] = info
 	}
 
 	// Show links without a peer yet (waiting or incoming).
-	for id, l := range n.links.Map() {
-		if n.trustlines[id] == nil {
+	for id, l := range h.links.Map() {
+		if h.Trustlines[id] == nil {
 			peers[id] = map[string]any{
 				"status":     string(l.State.Status),
 				"link_state": l.State,
@@ -572,6 +609,6 @@ func (n *Node) trustlineStatus() (json.RawMessage, error) {
 
 	return Enc(map[string]any{
 		"peers":       peers,
-		"invite_mode": n.links.InviteMode,
+		"invite_mode": h.links.InviteMode,
 	}), nil
 }

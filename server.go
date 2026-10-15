@@ -118,14 +118,17 @@ func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
 func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	n := newNode(id, raw, s, s.store)
 
+	// Create and register TrustlineHandler first — other modules
+	// reference its Trustlines map and Bandwidth function.
+	th := NewTrustlineHandler(n.id, n.Links(), n.Kick, handlerState(raw, "trustline"))
+	n.RegisterModule(th)
+
 	// Register external modules from factories.
-	if len(s.factories) > 0 {
-		for _, f := range s.factories {
-			m := f.factory(n.id, n.ScheduleFunc(), n.trustlines, n.Bandwidth, handlerState(raw, f.name))
-			n.RegisterModule(m)
-			if r, ok := m.(Reserver); ok {
-				n.RegisterReserver(r)
-			}
+	for _, f := range s.factories {
+		m := f.factory(n.id, n.ScheduleFunc(), th.Trustlines, th.Bandwidth, handlerState(raw, f.name))
+		n.RegisterModule(m)
+		if r, ok := m.(Reserver); ok {
+			th.RegisterReserver(r)
 		}
 	}
 
