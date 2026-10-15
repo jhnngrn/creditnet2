@@ -48,8 +48,8 @@ type novFinalizeMsg struct {
 	NovationID string `json:"novation_id"`
 }
 
-// Handler implements link.Module and creditnet.Reserver for novation.
-type Handler struct {
+// Triad implements link.Module and creditnet.Reserver for novation.
+type Triad struct {
 	Novations  map[string]*Novation `json:"novations,omitempty"`
 	nodeID     string
 	schedule   creditnet.ScheduleFunc
@@ -57,9 +57,9 @@ type Handler struct {
 	bandwidth  creditnet.BandwidthFunc
 }
 
-// NewHandler matches the ModuleFactory signature.
-func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) link.Module {
-	h := &Handler{
+// NewTriad matches the ModuleFactory signature.
+func NewTriad(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) link.Module {
+	h := &Triad{
 		Novations:  map[string]*Novation{},
 		nodeID:     nodeID,
 		schedule:   schedule,
@@ -76,13 +76,13 @@ func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[s
 	return h
 }
 
-func (h *Handler) Name() string { return "triad" }
+func (h *Triad) Name() string { return "triad" }
 
 // ---------------------------------------------------------------------------
 // Reserver — reports capacity reserved by in-flight novations
 // ---------------------------------------------------------------------------
 
-func (h *Handler) Reserved(peer string) (in, out int64) {
+func (h *Triad) Reserved(peer string) (in, out int64) {
 	for _, nov := range h.Novations {
 		if nov.InPeer == peer {
 			in += nov.Amount
@@ -99,7 +99,7 @@ func (h *Handler) Reserved(peer string) (in, out int64) {
 // Module — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	case "commit":
 		return h.reqCommit(peer, payload)
@@ -111,7 +111,7 @@ func (h *Handler) HandleRequest(peer, method string, payload json.RawMessage, ts
 	return false, nil, creditnet.ErrBadMethod
 }
 
-func (h *Handler) reqCommit(peer string, raw json.RawMessage) (bool, []string, error) {
+func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, error) {
 	p := h.trustlines[peer]
 	if p == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
@@ -195,7 +195,7 @@ func (h *Handler) reqCommit(peer string, raw json.RawMessage) (bool, []string, e
 	return false, nil, nil
 }
 
-func (h *Handler) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	p := h.trustlines[peer]
 	if p == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
@@ -225,7 +225,7 @@ func (h *Handler) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool,
 	return true, kicks, nil
 }
 
-func (h *Handler) reqRollback(peer string, raw json.RawMessage) (bool, []string, error) {
+func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, error) {
 	var m struct {
 		NovationID string `json:"novation_id"`
 	}
@@ -251,7 +251,7 @@ func (h *Handler) reqRollback(peer string, raw json.RawMessage) (bool, []string,
 // Module — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
+func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "commit":
 		return h.respCommit(payload, ok)
@@ -263,7 +263,7 @@ func (h *Handler) HandleResponse(peer, method string, payload json.RawMessage, o
 	return nil
 }
 
-func (h *Handler) respCommit(raw json.RawMessage, ok bool) []string {
+func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
 	var m novCommitMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return nil
@@ -284,7 +284,7 @@ func (h *Handler) respCommit(raw json.RawMessage, ok bool) []string {
 	return nil
 }
 
-func (h *Handler) respFinalize(peer string, raw json.RawMessage, ts int64) {
+func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	var m novFinalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return
@@ -304,7 +304,7 @@ func (h *Handler) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	}
 }
 
-func (h *Handler) respRollback(raw json.RawMessage) {
+func (h *Triad) respRollback(raw json.RawMessage) {
 	var m struct {
 		NovationID string `json:"novation_id"`
 	}
@@ -318,7 +318,7 @@ func (h *Handler) respRollback(raw json.RawMessage) {
 // Module — NextTx
 // ---------------------------------------------------------------------------
 
-func (h *Handler) NextTx(peer string) *link.QueuedMsg {
+func (h *Triad) NextTx(peer string) *link.QueuedMsg {
 	for id, nov := range h.Novations {
 		if len(nov.Queue) > 0 && nov.pendingPeer() == peer {
 			return h.buildMsg(id, nov)
@@ -327,7 +327,7 @@ func (h *Handler) NextTx(peer string) *link.QueuedMsg {
 	return nil
 }
 
-func (h *Handler) buildMsg(id string, nov *Novation) *link.QueuedMsg {
+func (h *Triad) buildMsg(id string, nov *Novation) *link.QueuedMsg {
 	switch creditnet.QueueHead(nov.Queue) {
 	case "commit":
 		var d, i, c string
@@ -361,7 +361,7 @@ func (h *Handler) buildMsg(id string, nov *Novation) *link.QueuedMsg {
 // Module — HandleAccount
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {
 	case "status":
 		return creditnet.Enc(map[string]any{"novations": len(h.Novations)}), nil
@@ -373,18 +373,18 @@ func (h *Handler) HandleAccount(method string, payload json.RawMessage) (json.Ra
 // Background novation scheduling
 // ---------------------------------------------------------------------------
 
-func (h *Handler) scheduleNovate() {
+func (h *Triad) scheduleNovate() {
 	h.schedule(NovateInterval, h.novateAndReschedule)
 }
 
-func (h *Handler) novateAndReschedule() []string {
+func (h *Triad) novateAndReschedule() []string {
 	kicks := h.tryNovate()
 	h.scheduleNovate()
 	return kicks
 }
 
 // tryNovate scans for circular debt and initiates novations as intermediary.
-func (h *Handler) tryNovate() []string {
+func (h *Triad) tryNovate() []string {
 	var kicks []string
 	peers := h.connectedPeers()
 	for _, debtor := range peers {
@@ -441,13 +441,13 @@ func (h *Handler) tryNovate() []string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func (h *Handler) isConnected(peer string) bool {
+func (h *Triad) isConnected(peer string) bool {
 	t := h.trustlines[peer]
 	return t != nil && t.State.Status == link.Connected && !t.State.IntentClose
 }
 
 // addNovation stores a novation and refs both peer trustlines.
-func (h *Handler) addNovation(id string, nov *Novation) {
+func (h *Triad) addNovation(id string, nov *Novation) {
 	h.Novations[id] = nov
 	if t := h.trustlines[nov.InPeer]; t != nil {
 		t.State.Ref()
@@ -458,7 +458,7 @@ func (h *Handler) addNovation(id string, nov *Novation) {
 }
 
 // removeNovation unrefs remaining peer trustlines and deletes the novation.
-func (h *Handler) removeNovation(id string) {
+func (h *Triad) removeNovation(id string) {
 	nov := h.Novations[id]
 	if nov == nil {
 		return
@@ -477,13 +477,13 @@ func (h *Handler) removeNovation(id string) {
 }
 
 // unrefPeer unrefs a single peer trustline for a novation side being cleared.
-func (h *Handler) unrefPeer(peer string) {
+func (h *Triad) unrefPeer(peer string) {
 	if t := h.trustlines[peer]; t != nil {
 		t.State.Unref()
 	}
 }
 
-func (h *Handler) connectedPeers() []string {
+func (h *Triad) connectedPeers() []string {
 	out := make([]string, 0, len(h.trustlines))
 	for id := range h.trustlines {
 		if h.isConnected(id) {
@@ -493,7 +493,7 @@ func (h *Handler) connectedPeers() []string {
 	return out
 }
 
-func (h *Handler) novLinkCount(peer string) int {
+func (h *Triad) novLinkCount(peer string) int {
 	c := 0
 	for _, n := range h.Novations {
 		if n.InPeer == peer || n.OutPeer == peer {

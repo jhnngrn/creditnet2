@@ -114,10 +114,10 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// Handler
+// Loops
 // ---------------------------------------------------------------------------
 
-type Handler struct {
+type Loops struct {
 	Paths     map[string]*Path          `json:"paths,omitempty"`
 	Clearings map[string]*Clearing      `json:"clearings,omitempty"`
 	Probes    map[string][]*SearchProbe `json:"probes,omitempty"` // peer → outgoing search probes
@@ -128,8 +128,8 @@ type Handler struct {
 	bandwidth  creditnet.BandwidthFunc
 }
 
-func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) link.Module {
-	h := &Handler{
+func NewLoops(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) link.Module {
+	h := &Loops{
 		Paths:      map[string]*Path{},
 		Clearings:  map[string]*Clearing{},
 		Probes:     map[string][]*SearchProbe{},
@@ -173,13 +173,13 @@ func NewHandler(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[s
 	return h
 }
 
-func (h *Handler) Name() string { return "loops" }
+func (h *Loops) Name() string { return "loops" }
 
 // ---------------------------------------------------------------------------
 // Reserver
 // ---------------------------------------------------------------------------
 
-func (h *Handler) Reserved(peer string) (in, out int64) {
+func (h *Loops) Reserved(peer string) (in, out int64) {
 	for _, cl := range h.Clearings {
 		if cl.Side[sideIN].Peer == peer {
 			in += cl.Amount + cl.Side[sideIN].Penalty
@@ -196,7 +196,7 @@ func (h *Handler) Reserved(peer string) (in, out int64) {
 // Module — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Loops) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	// Path phase
 	case "search":
@@ -224,7 +224,7 @@ func (h *Handler) HandleRequest(peer, method string, payload json.RawMessage, ts
 // Module — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
+func (h *Loops) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "search":
 		return h.respSearch(peer, payload, ok, ts)
@@ -250,7 +250,7 @@ func (h *Handler) HandleResponse(peer, method string, payload json.RawMessage, o
 // Module — NextTx
 // ---------------------------------------------------------------------------
 
-func (h *Handler) NextTx(peer string) *link.QueuedMsg {
+func (h *Loops) NextTx(peer string) *link.QueuedMsg {
 	// Probes first — flood search outgoing.
 	if probes := h.Probes[peer]; len(probes) > 0 {
 		probe := probes[0]
@@ -283,7 +283,7 @@ func (h *Handler) NextTx(peer string) *link.QueuedMsg {
 // Module — HandleAccount
 // ---------------------------------------------------------------------------
 
-func (h *Handler) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+func (h *Loops) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
 	switch method {
 	case "status":
 		return creditnet.Enc(map[string]any{
@@ -308,7 +308,7 @@ type searchMsg struct {
 	Hops      uint8  `json:"hops"`
 }
 
-func (h *Handler) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Loops) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m searchMsg
 	if json.Unmarshal(raw, &m) != nil || m.Amount <= 0 {
 		return false, nil, fmt.Errorf("bad payload")
@@ -366,7 +366,7 @@ func (h *Handler) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, [
 	return true, kicks, nil
 }
 
-func (h *Handler) respSearch(peer string, raw json.RawMessage, ok bool, ts int64) []string {
+func (h *Loops) respSearch(peer string, raw json.RawMessage, ok bool, ts int64) []string {
 	var m searchMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return nil
@@ -389,7 +389,7 @@ func (h *Handler) respSearch(peer string, raw json.RawMessage, ok bool, ts int64
 
 // floodForward creates probes for all eligible peers in the given direction,
 // dividing gas evenly among them (matching old creditnet's floodSearch).
-func (h *Handler) floodForward(searchID string, p *Path, dir uint8, exclude string) []string {
+func (h *Loops) floodForward(searchID string, p *Path, dir uint8, exclude string) []string {
 	var eligible []string
 	for peerID := range h.trustlines {
 		if peerID == exclude || !h.isConnected(peerID) {
@@ -442,7 +442,7 @@ func (h *Handler) floodForward(searchID string, p *Path, dir uint8, exclude stri
 	return kicks
 }
 
-func (h *Handler) addProbe(peer string, probe *SearchProbe) {
+func (h *Loops) addProbe(peer string, probe *SearchProbe) {
 	h.Probes[peer] = append(h.Probes[peer], probe)
 }
 
@@ -450,7 +450,7 @@ func (h *Handler) addProbe(peer string, probe *SearchProbe) {
 // Path — found request/response
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqFound(peer string, raw json.RawMessage) (bool, []string, error) {
+func (h *Loops) reqFound(peer string, raw json.RawMessage) (bool, []string, error) {
 	var m struct {
 		ID   string `json:"clearing_id"`
 		Hops uint8  `json:"hops"`
@@ -479,7 +479,7 @@ func (h *Handler) reqFound(peer string, raw json.RawMessage) (bool, []string, er
 	return true, nil, nil
 }
 
-func (h *Handler) respFound(raw json.RawMessage, ok bool) {
+func (h *Loops) respFound(raw json.RawMessage, ok bool) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -499,7 +499,7 @@ func (h *Handler) respFound(raw json.RawMessage, ok bool) {
 // Path — cleanup
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqExpire(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Loops) reqExpire(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -538,7 +538,7 @@ func (h *Handler) reqExpire(peer string, raw json.RawMessage, ts int64) (bool, [
 	return true, kicks, nil
 }
 
-func (h *Handler) respExpire(raw json.RawMessage) {
+func (h *Loops) respExpire(raw json.RawMessage) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -558,7 +558,7 @@ func (h *Handler) respExpire(raw json.RawMessage) {
 	}
 }
 
-func (h *Handler) expirePath(id string) []string {
+func (h *Loops) expirePath(id string) []string {
 	p := h.Paths[id]
 	if p == nil {
 		return nil
@@ -578,7 +578,7 @@ func (h *Handler) expirePath(id string) []string {
 	return kicks
 }
 
-func (h *Handler) schedulePathExpiry(id string) {
+func (h *Loops) schedulePathExpiry(id string) {
 	h.schedule(PathTTL, func() []string {
 		return h.expirePath(id)
 	})
@@ -588,7 +588,7 @@ func (h *Handler) schedulePathExpiry(id string) {
 // Path — message builders
 // ---------------------------------------------------------------------------
 
-func (h *Handler) buildPathMsg(id string, p *Path) *link.QueuedMsg {
+func (h *Loops) buildPathMsg(id string, p *Path) *link.QueuedMsg {
 	switch creditnet.QueueHead(p.Queue) {
 	case "found":
 		return &link.QueuedMsg{
@@ -608,7 +608,7 @@ func (h *Handler) buildPathMsg(id string, p *Path) *link.QueuedMsg {
 // Clearing — commit
 // ---------------------------------------------------------------------------
 
-func (h *Handler) startClearing(id string, amount int64, outPeer string, preimage, cancelPre, seed []byte, step int) {
+func (h *Loops) startClearing(id string, amount int64, outPeer string, preimage, cancelPre, seed []byte, step int) {
 	pen := amount * PenaltyRate / 1000
 	h.Clearings[id] = &Clearing{
 		Amount: amount, PenaltyRate: pen,
@@ -623,7 +623,7 @@ func (h *Handler) startClearing(id string, amount int64, outPeer string, preimag
 	h.refPeer(outPeer)
 }
 
-func (h *Handler) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	var m struct {
 		ID      string `json:"clearing_id"`
 		Amount  int64  `json:"amount"`
@@ -694,7 +694,7 @@ func (h *Handler) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, [
 	return true, nil, nil
 }
 
-func (h *Handler) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
+func (h *Loops) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -729,7 +729,7 @@ func (h *Handler) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 // Clearing — finalize
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	t := h.trustlines[peer]
 	if t == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
@@ -844,7 +844,7 @@ func (h *Handler) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool,
 	return !forwardFinal || m.Final, kicks, nil
 }
 
-func (h *Handler) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64) []string {
+func (h *Loops) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64) []string {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -903,7 +903,7 @@ func (h *Handler) respFinalize(peer string, raw json.RawMessage, ok bool, ts int
 // Clearing — cancel
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Loops) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	t := h.trustlines[peer]
 	if t == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
@@ -945,7 +945,7 @@ func (h *Handler) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, [
 	return true, kicks, nil
 }
 
-func (h *Handler) respCancel(peer string, raw json.RawMessage, ok bool, ts int64) {
+func (h *Loops) respCancel(peer string, raw json.RawMessage, ok bool, ts int64) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -977,7 +977,7 @@ func (h *Handler) respCancel(peer string, raw json.RawMessage, ok bool, ts int64
 // Clearing — rollback
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqRollback(peer string, raw json.RawMessage) (bool, []string, error) {
+func (h *Loops) reqRollback(peer string, raw json.RawMessage) (bool, []string, error) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -1002,7 +1002,7 @@ func (h *Handler) reqRollback(peer string, raw json.RawMessage) (bool, []string,
 	return true, nil, nil
 }
 
-func (h *Handler) respRollback(raw json.RawMessage) {
+func (h *Loops) respRollback(raw json.RawMessage) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -1025,7 +1025,7 @@ func (h *Handler) respRollback(raw json.RawMessage) {
 // Clearing — cleanup (timeout settlement)
 // ---------------------------------------------------------------------------
 
-func (h *Handler) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+func (h *Loops) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	t := h.trustlines[peer]
 	if t == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
@@ -1082,7 +1082,7 @@ func (h *Handler) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, 
 	return true, kicks, nil
 }
 
-func (h *Handler) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64) {
+func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -1139,7 +1139,7 @@ func (h *Handler) respCleanup(peer string, raw json.RawMessage, ok bool, ts int6
 // Clearing — message builders
 // ---------------------------------------------------------------------------
 
-func (h *Handler) buildClearingMsg(id string, cl *Clearing, side int) *link.QueuedMsg {
+func (h *Loops) buildClearingMsg(id string, cl *Clearing, side int) *link.QueuedMsg {
 	switch creditnet.QueueHead(cl.Side[side].Queue) {
 	case "commit":
 		return &link.QueuedMsg{
@@ -1179,17 +1179,17 @@ func (h *Handler) buildClearingMsg(id string, cl *Clearing, side int) *link.Queu
 // Search scheduling
 // ---------------------------------------------------------------------------
 
-func (h *Handler) scheduleSearch() {
+func (h *Loops) scheduleSearch() {
 	h.schedule(SearchInterval, h.searchAndReschedule)
 }
 
-func (h *Handler) searchAndReschedule() []string {
+func (h *Loops) searchAndReschedule() []string {
 	kicks := h.sendSearches()
 	h.scheduleSearch()
 	return kicks
 }
 
-func (h *Handler) sendSearches() []string {
+func (h *Loops) sendSearches() []string {
 	// Quick check: need at least one debtor and one creditor.
 	var hasDebtor, hasCreditor bool
 	var amount int64
@@ -1230,7 +1230,7 @@ func (h *Handler) sendSearches() []string {
 	return kicks
 }
 
-func (h *Handler) floodSearchInitiator(searchID string, p *Path) []string {
+func (h *Loops) floodSearchInitiator(searchID string, p *Path) []string {
 	var debtors, creditors []string
 	for peerID := range h.trustlines {
 		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
@@ -1308,7 +1308,7 @@ func (h *Handler) floodSearchInitiator(searchID string, p *Path) []string {
 	return kicks
 }
 
-func (h *Handler) scheduleDepthIncrease(id string) {
+func (h *Loops) scheduleDepthIncrease(id string) {
 	h.schedule(RefractoryDelay, func() []string {
 		p := h.Paths[id]
 		if p == nil || (p.Peer[0] != "" && p.Peer[1] != "") {
@@ -1325,7 +1325,7 @@ func (h *Handler) scheduleDepthIncrease(id string) {
 	})
 }
 
-func (h *Handler) startLoop(searchID string) []string {
+func (h *Loops) startLoop(searchID string) []string {
 	p := h.Paths[searchID]
 	if p == nil || p.Peer[0] == "" {
 		return nil
@@ -1358,7 +1358,7 @@ func (h *Handler) startLoop(searchID string) []string {
 // Cancel scheduling
 // ---------------------------------------------------------------------------
 
-func (h *Handler) scheduleCancel(id string) {
+func (h *Loops) scheduleCancel(id string) {
 	h.schedule(CancelTimeout, func() []string {
 		cl := h.Clearings[id]
 		if cl == nil || cl.Seed == nil || cl.CancelPre == nil {
@@ -1379,7 +1379,7 @@ func (h *Handler) scheduleCancel(id string) {
 // Cleanup scheduling
 // ---------------------------------------------------------------------------
 
-func (h *Handler) scheduleCleanup(id string, side int) {
+func (h *Loops) scheduleCleanup(id string, side int) {
 	cl := h.Clearings[id]
 	if cl == nil {
 		return
@@ -1411,24 +1411,24 @@ func (h *Handler) scheduleCleanup(id string, side int) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func (h *Handler) isConnected(peer string) bool {
+func (h *Loops) isConnected(peer string) bool {
 	t := h.trustlines[peer]
 	return t != nil && t.State.Status == link.Connected && !t.State.IntentClose
 }
 
-func (h *Handler) refPeer(peer string) {
+func (h *Loops) refPeer(peer string) {
 	if t := h.trustlines[peer]; t != nil {
 		t.State.Ref()
 	}
 }
 
-func (h *Handler) unrefPeer(peer string) {
+func (h *Loops) unrefPeer(peer string) {
 	if t := h.trustlines[peer]; t != nil {
 		t.State.Unref()
 	}
 }
 
-func (h *Handler) removeClearing(id string) {
+func (h *Loops) removeClearing(id string) {
 	cl := h.Clearings[id]
 	if cl == nil {
 		return
@@ -1444,7 +1444,7 @@ func (h *Handler) removeClearing(id string) {
 // linkSlots counts operations on a link.
 // reserved=false: all paths + all clearings (admission).
 // reserved=true: clearings only (bandwidth).
-func (h *Handler) linkSlots(peer string, reserved bool) int {
+func (h *Loops) linkSlots(peer string, reserved bool) int {
 	count := 0
 	for _, cl := range h.Clearings {
 		if cl.Side[sideIN].Peer == peer || cl.Side[sideOUT].Peer == peer {
@@ -1461,7 +1461,7 @@ func (h *Handler) linkSlots(peer string, reserved bool) int {
 	return count
 }
 
-func (h *Handler) connectedPeers() []string {
+func (h *Loops) connectedPeers() []string {
 	out := make([]string, 0, len(h.trustlines))
 	for id := range h.trustlines {
 		if h.isConnected(id) {

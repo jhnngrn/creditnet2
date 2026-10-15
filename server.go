@@ -161,9 +161,9 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
 		},
 	)
 
-	// Create and register TrustlineHandler first — other modules
+	// Create and register the app-level Node first — other modules
 	// reference its Trustlines map and Bandwidth function.
-	th := NewTrustlineHandler(id, ls, ls.Kick, handlerState(raw, "trustline"))
+	th := NewNode(id, ls, ls.Kick, handlerState(raw, "trustline"))
 	ls.RegisterModule(th)
 
 	// Register external modules from factories.
