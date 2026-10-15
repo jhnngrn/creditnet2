@@ -82,11 +82,8 @@ type Reserver interface {
 // ---------------------------------------------------------------------------
 
 var (
-	ErrNoLink          = errors.New("no link")
-	ErrMaxLinks        = errors.New("max links")
-	ErrInvitesDisabled = errors.New("invites disabled")
-	ErrBadMethod       = errors.New("unknown sync method")
-	ErrNotFound        = errors.New("not found")
+	ErrBadMethod = errors.New("unknown sync method")
+	ErrNotFound  = errors.New("not found")
 )
 
 // ---------------------------------------------------------------------------

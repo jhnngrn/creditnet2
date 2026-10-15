@@ -21,12 +21,13 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n.Lock()
-	result, appErr := n.HandleAccount(req.Method, req.Payload)
+	ls := n.Links()
+	ls.Lock()
+	result, appErr := ls.HandleAccount(req.Method, req.Payload)
 	if appErr == nil {
-		n.Commit()
+		ls.Commit()
 	}
-	n.Unlock()
+	ls.Unlock()
 	if appErr != nil {
 		ApiError(w, appErr.Error())
 		return

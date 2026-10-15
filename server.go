@@ -120,7 +120,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 
 	// Create and register TrustlineHandler first — other modules
 	// reference its Trustlines map and Bandwidth function.
-	th := NewTrustlineHandler(n.id, n.Links(), n.Kick, handlerState(raw, "trustline"))
+	th := NewTrustlineHandler(n.id, n.Links(), n.Links().Kick, handlerState(raw, "trustline"))
 	n.RegisterModule(th)
 
 	// Register external modules from factories.
@@ -196,7 +196,7 @@ func (s *Server) Init() error {
 	}
 	// Resume pending sends from boot.
 	for _, n := range s.nodes {
-		n.KickAll()
+		n.Links().KickAll()
 	}
 	if s.cfg.AdminUser != "" && s.cfg.AdminPass != "" {
 		if err := s.bootstrapAdmin(s.cfg.AdminUser, s.cfg.AdminPass); err != nil {
@@ -288,7 +288,7 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Early rejection before expensive signature verification.
-	if n.QuickReject(env.From, env.Method) {
+	if n.Links().QuickReject(env.From, env.Method) {
 		HttpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -298,14 +298,14 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, syncErr := n.HandleSync(env)
+	resp, syncErr := n.Links().HandleSync(env)
 	if syncErr != nil {
 		switch {
-		case errors.Is(syncErr, ErrNoLink):
+		case errors.Is(syncErr, link.ErrNoLink):
 			HttpError(w, http.StatusNotFound, "no link")
-		case errors.Is(syncErr, ErrInvitesDisabled):
+		case errors.Is(syncErr, link.ErrInvitesDisabled):
 			HttpError(w, http.StatusForbidden, "invites disabled")
-		case errors.Is(syncErr, ErrMaxLinks):
+		case errors.Is(syncErr, link.ErrMaxLinks):
 			HttpError(w, http.StatusBadRequest, "max links")
 		case errors.Is(syncErr, link.ErrStaleCounter), errors.Is(syncErr, link.ErrCounterAhead), errors.Is(syncErr, link.ErrCollision):
 			HttpError(w, http.StatusConflict, syncErr.Error())
