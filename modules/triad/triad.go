@@ -446,45 +446,21 @@ func (h *Triad) tryNovate() []string {
 
 func (h *Triad) isConnected(peer string) bool {
 	t := h.trustlines[peer]
-	return t != nil && t.State.Status == link.Connected && !t.State.IntentClose
+	return t != nil && t.Connected && !t.WantClose
 }
 
-// addNovation stores a novation and refs both peer trustlines.
+// addNovation stores a novation.
 func (h *Triad) addNovation(id string, nov *Novation) {
 	h.Novations[id] = nov
-	if t := h.trustlines[nov.InPeer]; t != nil {
-		t.State.Ref()
-	}
-	if t := h.trustlines[nov.OutPeer]; t != nil {
-		t.State.Ref()
-	}
 }
 
-// removeNovation unrefs remaining peer trustlines and deletes the novation.
+// removeNovation deletes the novation.
 func (h *Triad) removeNovation(id string) {
-	nov := h.Novations[id]
-	if nov == nil {
-		return
-	}
-	if nov.InPeer != "" {
-		if t := h.trustlines[nov.InPeer]; t != nil {
-			t.State.Unref()
-		}
-	}
-	if nov.OutPeer != "" {
-		if t := h.trustlines[nov.OutPeer]; t != nil {
-			t.State.Unref()
-		}
-	}
 	delete(h.Novations, id)
 }
 
-// unrefPeer unrefs a single peer trustline for a novation side being cleared.
-func (h *Triad) unrefPeer(peer string) {
-	if t := h.trustlines[peer]; t != nil {
-		t.State.Unref()
-	}
-}
+// unrefPeer is a no-op placeholder (trustline ref counting removed).
+func (h *Triad) unrefPeer(peer string) {}
 
 func (h *Triad) connectedPeers() []string {
 	out := make([]string, 0, len(h.trustlines))

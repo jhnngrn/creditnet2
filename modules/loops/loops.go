@@ -1416,20 +1416,12 @@ func (h *Loops) scheduleCleanup(id string, side int) {
 
 func (h *Loops) isConnected(peer string) bool {
 	t := h.trustlines[peer]
-	return t != nil && t.State.Status == link.Connected && !t.State.IntentClose
+	return t != nil && t.Connected && !t.WantClose
 }
 
-func (h *Loops) refPeer(peer string) {
-	if t := h.trustlines[peer]; t != nil {
-		t.State.Ref()
-	}
-}
-
-func (h *Loops) unrefPeer(peer string) {
-	if t := h.trustlines[peer]; t != nil {
-		t.State.Unref()
-	}
-}
+// refPeer / unrefPeer are no-op placeholders (trustline ref counting removed).
+func (h *Loops) refPeer(peer string)   {}
+func (h *Loops) unrefPeer(peer string) {}
 
 func (h *Loops) removeClearing(id string) {
 	cl := h.Clearings[id]
