@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/jhnngrn/link"
 )
 
 // ---------------------------------------------------------------------------
@@ -64,11 +62,6 @@ type ScheduleFunc func(delay time.Duration, fn func() []string)
 // BandwidthFunc returns available (in, out) capacity for a peer,
 // accounting for effective balance, credit limits, and all reservations.
 type BandwidthFunc func(peer string) (in, out int64)
-
-// Transport sends sync messages to peers.
-type Transport interface {
-	Send(peerDomain string, msg link.SyncRequest) ([]byte, error)
-}
 
 // Reserver reports capacity reserved by a module on a given peer.
 // Modules that hold temporary reservations (e.g. in-flight ripple hops)

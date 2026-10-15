@@ -101,7 +101,7 @@ func (s *Server) Register(name string, factory ModuleFactory) {
 	s.factories = append(s.factories, moduleReg{name: name, factory: factory})
 }
 
-// Send implements Transport.
+// Send posts a sync message to a peer's domain.
 func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
 	status, body, err := s.postSigned(peerDomain, "/p2p/tx", msg)
 	if err != nil {
