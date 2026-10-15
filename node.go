@@ -25,16 +25,8 @@ type Node struct {
 	trustlines map[string]*Trustline
 	reservers  []Reserver
 
-	modules   []moduleEntry
-	moduleMap map[string]link.Module
-
 	transport Transport
 	store     Store
-}
-
-type moduleEntry struct {
-	name   string
-	module link.Module
 }
 
 type nodeState struct {
@@ -53,7 +45,6 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 		id:         id,
 		links:      link.NewLinks(id, st.Links, st.InviteMode, map[string]struct{}{"trustline": {}}),
 		trustlines: loadTrustlines(st.Handlers["trustline"]),
-		moduleMap:  map[string]link.Module{},
 		transport:  transport,
 		store:      store,
 	}
@@ -66,10 +57,7 @@ func newNode(id string, raw json.RawMessage, transport Transport, store Store) *
 // ---------------------------------------------------------------------------
 
 func (n *Node) RegisterModule(m link.Module) {
-	name := m.Name()
-	n.modules = append(n.modules, moduleEntry{name: name, module: m})
-	n.moduleMap[name] = m
-	n.links.Supported[name] = struct{}{}
+	n.links.RegisterModule(m)
 }
 
 // Links returns the node's links. Caller must hold Lock.
@@ -90,21 +78,14 @@ func (n *Node) ID() string            { return n.id }
 // Caller must hold Lock.
 func (n *Node) HandleAccount(fullMethod string, payload json.RawMessage) (json.RawMessage, error) {
 	ns, method := SplitMethod(fullMethod)
-	switch ns {
-	case "link":
-		result, kicks, err := n.links.HandleAccount(method, payload)
-		for _, k := range kicks {
-			n.Kick(k)
-		}
-		return result, err
-	case "trustline":
+	if ns == "trustline" {
 		return n.handleTrustlineAccount(method, payload)
 	}
-	mod := n.moduleMap[ns]
-	if mod == nil {
-		return nil, ErrBadMethod
+	result, kicks, err := n.links.HandleAccount(fullMethod, payload)
+	for _, k := range kicks {
+		n.Kick(k)
 	}
-	return mod.HandleAccount(method, payload)
+	return result, err
 }
 
 // Commit persists the node state. Caller must hold Lock.
@@ -116,9 +97,9 @@ func (n *Node) Commit() {
 		st.Handlers["trustline"] = data
 	}
 	// External modules.
-	for _, entry := range n.modules {
-		if data, err := json.Marshal(entry.module); err == nil {
-			st.Handlers[entry.name] = data
+	for name, mod := range n.links.ModuleMap() {
+		if data, err := json.Marshal(mod); err == nil {
+			st.Handlers[name] = data
 		}
 	}
 	if err := n.store.SaveNode(n.id, st); err != nil {
@@ -238,22 +219,14 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 	var ok bool
 	var kicks []string
 	var reqErr error
-	switch ns {
-	case "link":
-		ok, reqErr = n.links.HandleRequest(env.From, method, env.Payload)
-	case "trustline":
+	if ns == "trustline" {
 		if !lk.ModuleEnabled(ns) {
 			n.mu.Unlock()
 			return nil, ErrBadMethod
 		}
 		ok, kicks, reqErr = n.handleTrustlineRequest(env.From, method, env.Payload, ts)
-	default:
-		mod := n.moduleMap[ns]
-		if mod == nil || !lk.ModuleEnabled(ns) {
-			n.mu.Unlock()
-			return nil, ErrBadMethod
-		}
-		ok, kicks, reqErr = mod.HandleRequest(env.From, method, env.Payload, ts)
+	} else {
+		ok, kicks, reqErr = n.links.HandleRequest(env.From, env.Method, env.Payload, ts)
 	}
 	if reqErr != nil {
 		n.mu.Unlock()
@@ -274,17 +247,10 @@ func (n *Node) HandleSync(env link.SyncRequest) (*link.SyncResponse, error) {
 // Caller must hold Lock.
 func (n *Node) dispatchResponse(peer string, msg *link.QueuedMsg, resp *link.SyncResponse) []string {
 	ns, method := SplitMethod(msg.Method)
-	switch ns {
-	case "link":
-		n.links.HandleResponse(peer, method, msg.Payload, resp.OK)
-		return nil
-	case "trustline":
+	if ns == "trustline" {
 		return n.handleTrustlineResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
 	}
-	if rh := n.moduleMap[ns]; rh != nil {
-		return rh.HandleResponse(peer, method, msg.Payload, resp.OK, resp.Timestamp)
-	}
-	return nil
+	return n.links.HandleResponse(peer, msg.Method, msg.Payload, resp.OK, resp.Timestamp)
 }
 
 // ---------------------------------------------------------------------------
@@ -377,67 +343,24 @@ func (n *Node) sendPending(peer string) {
 }
 
 // nextTx returns the next message to send for a peer.
-// Link-level messages (connect/close/module) have absolute priority.
-// Among trustline and external modules, the message with the oldest
-// QueuedAt wins. Unset QueuedAt (zero) always loses to any set value.
-// Equal values (including both unset) preserve registration order.
+// Links.NextTx handles link-level priority and registered modules.
+// Trustline is handled here until it becomes a link.Module.
 func (n *Node) nextTx(peer string) *link.QueuedMsg {
 	lk := n.links.Get(peer)
 	if lk == nil {
 		return nil
 	}
-	// Link-level messages have absolute priority.
-	if msg := n.links.NextTx(peer); msg != nil {
-		msg.Method = "link." + msg.Method
-		return msg
-	}
-
-	var best *link.QueuedMsg
-
+	best := n.links.NextTx(peer)
 	// Trustline runs on links with trustline module enabled.
 	if lk.ModuleEnabled("trustline") {
 		if msg := n.trustlineNextTx(peer); msg != nil {
 			msg.Method = "trustline." + msg.Method
-			best = msg
-		}
-	}
-
-	// External modules only run on connected links with the module enabled.
-	if lk.State.Status == link.Connected {
-		for _, entry := range n.modules {
-			if !lk.ModuleEnabled(entry.name) {
-				continue
-			}
-			if msg := entry.module.NextTx(peer); msg != nil {
-				msg.Method = entry.name + "." + msg.Method
-				if olderQueuedMsg(msg, best) {
-					best = msg
-				}
+			if link.OlderQueuedMsg(msg, best) {
+				best = msg
 			}
 		}
 	}
-
 	return best
-}
-
-// olderQueuedMsg reports whether a should win over b.
-// Zero QueuedAt means unset — unset loses to any set value.
-// Equal values (including both zero) return false, preserving
-// the earlier candidate (registration order).
-func olderQueuedMsg(a, b *link.QueuedMsg) bool {
-	if b == nil {
-		return true
-	}
-	if a.QueuedAt == 0 && b.QueuedAt == 0 {
-		return false // both unset: keep b (first found)
-	}
-	if a.QueuedAt == 0 {
-		return false // a unset, b set: b wins
-	}
-	if b.QueuedAt == 0 {
-		return true // a set, b unset: a wins
-	}
-	return a.QueuedAt < b.QueuedAt
 }
 
 // KickAll kicks all peers. Used at boot to resume pending work.

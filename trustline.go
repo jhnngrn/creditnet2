@@ -356,7 +356,7 @@ func (n *Node) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 	}
 	lk.State.Modules["trustline"] = &link.ConnectionState{IntentConnect: true}
 	for _, name := range p.Modules {
-		if n.moduleMap[name] != nil {
+		if n.links.ModuleMap()[name] != nil {
 			lk.State.Modules[name] = &link.ConnectionState{IntentConnect: true}
 		}
 	}
@@ -391,7 +391,7 @@ func (n *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, error) {
 	}
 	lk.State.Modules["trustline"].IntentConnect = true
 	for _, name := range p.Modules {
-		if n.moduleMap[name] != nil {
+		if n.links.ModuleMap()[name] != nil {
 			if lk.State.Modules[name] == nil {
 				lk.State.Modules[name] = &link.ConnectionState{}
 			}
