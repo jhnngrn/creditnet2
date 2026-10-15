@@ -178,11 +178,6 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
 		}
 	}
 
-	// Persist the fully assembled state.
-	ls.Lock()
-	ls.Commit()
-	ls.Unlock()
-
 	return ls
 }
 
