@@ -49,7 +49,7 @@ type novFinalizeMsg struct {
 	NovationID string `json:"novation_id"`
 }
 
-// Triad implements link.Module and creditnet.Reserver for novation.
+// Triad implements the link Module interface and creditnet.Reserver for novation.
 type Triad struct {
 	Novations  map[string]*Novation `json:"novations,omitempty"`
 	nodeID     string
@@ -321,16 +321,16 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 // Module — NextTx
 // ---------------------------------------------------------------------------
 
-func (h *Triad) NextTx(peer string) *link.QueuedMsg {
+func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
 	for id, nov := range h.Novations {
 		if len(nov.Queue) > 0 && nov.pendingPeer() == peer {
 			return h.buildMsg(id, nov)
 		}
 	}
-	return nil
+	return "", nil, 0
 }
 
-func (h *Triad) buildMsg(id string, nov *Novation) *link.QueuedMsg {
+func (h *Triad) buildMsg(id string, nov *Novation) (string, json.RawMessage, int64) {
 	switch creditnet.QueueHead(nov.Queue) {
 	case "commit":
 		var d, i, c string
@@ -342,22 +342,13 @@ func (h *Triad) buildMsg(id string, nov *Novation) *link.QueuedMsg {
 		case "creditor":
 			d, i, c = nov.InPeer, nov.OutPeer, h.nodeID
 		}
-		return &link.QueuedMsg{
-			Method:  "commit",
-			Payload: creditnet.Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}),
-		}
+		return "commit", creditnet.Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}), 0
 	case "finalize":
-		return &link.QueuedMsg{
-			Method:  "finalize",
-			Payload: creditnet.Enc(novFinalizeMsg{NovationID: id}),
-		}
+		return "finalize", creditnet.Enc(novFinalizeMsg{NovationID: id}), 0
 	case "rollback":
-		return &link.QueuedMsg{
-			Method:  "rollback",
-			Payload: creditnet.Enc(map[string]string{"novation_id": id}),
-		}
+		return "rollback", creditnet.Enc(map[string]string{"novation_id": id}), 0
 	}
-	return nil
+	return "", nil, 0
 }
 
 // ---------------------------------------------------------------------------

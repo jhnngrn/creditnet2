@@ -265,50 +265,41 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 // link.Module — NextTx
 // ---------------------------------------------------------------------------
 
-func (h *Node) NextTx(peerID string) *link.QueuedMsg {
+func (h *Node) NextTx(peerID string) (string, json.RawMessage, int64) {
 	peer := h.Trustlines[peerID]
 	if peer == nil {
-		return nil
+		return "", nil, 0
 	}
 	// Trustline lifecycle.
 	if peer.IntentClose {
-		return &link.QueuedMsg{Method: "close"}
+		return "close", nil, 0
 	}
 	if !peer.Connected {
-		return &link.QueuedMsg{Method: "connect"}
+		return "connect", nil, 0
 	}
 	// Operations only when peer is connected.
 	method := QueueHead(peer.Queue)
 	if method == "" {
-		return nil
+		return "", nil, 0
 	}
 	switch method {
 	case "set_credit_limit":
 		if peer.PendingLimit == nil {
-			return nil
+			return "", nil, 0
 		}
-		return &link.QueuedMsg{
-			Method:  "set_credit_limit",
-			Payload: Enc(map[string]int64{"amount": *peer.PendingLimit}),
-		}
+		return "set_credit_limit", Enc(map[string]int64{"amount": *peer.PendingLimit}), 0
 	case "set_demurrage":
 		if peer.PendingDemurrage == nil {
-			return nil
+			return "", nil, 0
 		}
-		return &link.QueuedMsg{
-			Method:  "set_demurrage",
-			Payload: Enc(map[string]int64{"rate": *peer.PendingDemurrage}),
-		}
+		return "set_demurrage", Enc(map[string]int64{"rate": *peer.PendingDemurrage}), 0
 	case "payment":
 		if peer.PendingPayment == nil {
-			return nil
+			return "", nil, 0
 		}
-		return &link.QueuedMsg{
-			Method:  "payment",
-			Payload: Enc(map[string]int64{"amount": *peer.PendingPayment}),
-		}
+		return "payment", Enc(map[string]int64{"amount": *peer.PendingPayment}), 0
 	}
-	return nil
+	return "", nil, 0
 }
 
 // ---------------------------------------------------------------------------

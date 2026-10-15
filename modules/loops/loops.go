@@ -253,17 +253,14 @@ func (h *Loops) HandleResponse(peer, method string, payload json.RawMessage, ok 
 // Module — NextTx
 // ---------------------------------------------------------------------------
 
-func (h *Loops) NextTx(peer string) *link.QueuedMsg {
+func (h *Loops) NextTx(peer string) (string, json.RawMessage, int64) {
 	// Probes first — flood search outgoing.
 	if probes := h.Probes[peer]; len(probes) > 0 {
 		probe := probes[0]
-		return &link.QueuedMsg{
-			Method: "search",
-			Payload: creditnet.Enc(searchMsg{
-				ID: probe.SearchID, Amount: probe.Amount, Penalty: probe.Penalty,
-				Depth: probe.Depth, Gas: probe.Gas, Direction: probe.Direction, Hops: probe.Hops,
-			}),
-		}
+		return "search", creditnet.Enc(searchMsg{
+			ID: probe.SearchID, Amount: probe.Amount, Penalty: probe.Penalty,
+			Depth: probe.Depth, Gas: probe.Gas, Direction: probe.Direction, Hops: probe.Hops,
+		}), 0
 	}
 	// Then paths — found/expire.
 	for id, p := range h.Paths {
@@ -279,7 +276,7 @@ func (h *Loops) NextTx(peer string) *link.QueuedMsg {
 			}
 		}
 	}
-	return nil
+	return "", nil, 0
 }
 
 // ---------------------------------------------------------------------------
@@ -591,20 +588,14 @@ func (h *Loops) schedulePathExpiry(id string) {
 // Path — message builders
 // ---------------------------------------------------------------------------
 
-func (h *Loops) buildPathMsg(id string, p *Path) *link.QueuedMsg {
+func (h *Loops) buildPathMsg(id string, p *Path) (string, json.RawMessage, int64) {
 	switch creditnet.QueueHead(p.Queue) {
 	case "found":
-		return &link.QueuedMsg{
-			Method:  "found",
-			Payload: creditnet.Enc(map[string]any{"clearing_id": id, "hops": p.Hops}),
-		}
+		return "found", creditnet.Enc(map[string]any{"clearing_id": id, "hops": p.Hops}), 0
 	case "expire":
-		return &link.QueuedMsg{
-			Method:  "expire",
-			Payload: creditnet.Enc(map[string]string{"clearing_id": id}),
-		}
+		return "expire", creditnet.Enc(map[string]string{"clearing_id": id}), 0
 	}
-	return nil
+	return "", nil, 0
 }
 
 // ---------------------------------------------------------------------------
@@ -1142,13 +1133,10 @@ func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 // Clearing — message builders
 // ---------------------------------------------------------------------------
 
-func (h *Loops) buildClearingMsg(id string, cl *Clearing, side int) *link.QueuedMsg {
+func (h *Loops) buildClearingMsg(id string, cl *Clearing, side int) (string, json.RawMessage, int64) {
 	switch creditnet.QueueHead(cl.Side[side].Queue) {
 	case "commit":
-		return &link.QueuedMsg{
-			Method:  "commit",
-			Payload: creditnet.Enc(map[string]any{"clearing_id": id, "amount": cl.Amount, "penalty": cl.PenaltyRate}),
-		}
+		return "commit", creditnet.Enc(map[string]any{"clearing_id": id, "amount": cl.Amount, "penalty": cl.PenaltyRate}), 0
 	case "finalize":
 		m := map[string]any{"clearing_id": id}
 		if cl.Preimage != nil {
@@ -1157,25 +1145,19 @@ func (h *Loops) buildClearingMsg(id string, cl *Clearing, side int) *link.Queued
 		if cl.Final {
 			m["final"] = true
 		}
-		return &link.QueuedMsg{Method: "finalize", Payload: creditnet.Enc(m)}
+		return "finalize", creditnet.Enc(m), 0
 	case "cancel":
 		m := map[string]any{"clearing_id": id}
 		if cl.CancelPre != nil {
 			m["preimage"] = hex.EncodeToString(cl.CancelPre)
 		}
-		return &link.QueuedMsg{Method: "cancel", Payload: creditnet.Enc(m)}
+		return "cancel", creditnet.Enc(m), 0
 	case "rollback":
-		return &link.QueuedMsg{
-			Method:  "rollback",
-			Payload: creditnet.Enc(map[string]string{"clearing_id": id}),
-		}
+		return "rollback", creditnet.Enc(map[string]string{"clearing_id": id}), 0
 	case "cleanup":
-		return &link.QueuedMsg{
-			Method:  "cleanup",
-			Payload: creditnet.Enc(map[string]string{"clearing_id": id}),
-		}
+		return "cleanup", creditnet.Enc(map[string]string{"clearing_id": id}), 0
 	}
-	return nil
+	return "", nil, 0
 }
 
 // ---------------------------------------------------------------------------
