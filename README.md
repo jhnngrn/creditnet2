@@ -37,8 +37,8 @@ creditnet and can be used standalone in any p2p application.
 ```
 github.com/jhnngrn/link   (external)
   link.go              bilateral sync primitive: Link, Links collection,
-                       ConnectionState, sync lifecycle, wire types, dispatch,
-                       module negotiation, InviteMode, PeerSend, EngineConfig
+                       sync lifecycle, wire types, dispatch, module negotiation,
+                       InviteMode, PeerSend, EngineConfig
 
 types.go               identities, Module interface, errors, helpers
 node.go                Node: app-level module implementing link.Module,
