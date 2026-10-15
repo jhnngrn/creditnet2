@@ -129,7 +129,7 @@ recv link.connect  |  |  |                 |      |  RejectLink
 
 A new link starts with no status and `IntentConnect = true`. Status becomes `waiting` after a NACK, `connected` after mutual detection or ACK.
 
-Links use reference counting — modules that hold a link open (e.g. an active trustline) call `Ref()` on the link's `ConnectionState` when they connect and `UnrefClose()` when they close. `UnrefClose` decrements refs and sets `IntentClose` automatically when refs reach 0. `NextTx` only sends `link.close` when `IntentClose && Refs == 0`. This ensures modules finish their close handshakes before the link itself closes, and the link closes automatically when the last module disconnects.
+Links use reference counting — modules that hold a link open call `Ref()` on the link's `ConnectionState` when they connect and `UnrefClose()` when they close. `UnrefClose` decrements refs and sets `IntentClose` automatically when refs reach 0. `NextTx` only sends `link.close` when `IntentClose && Refs == 0`. This ensures modules finish their close handshakes before the link itself closes, and the link closes automatically when the last module disconnects.
 
 ### Invite mode
 
@@ -145,41 +145,37 @@ Trustline handling is built into Node under the `"trustline"` namespace. It mana
 
 ### Trustline lifecycle
 
-Trustlines use the same `ConnectionState` pattern as links and modules — `Status` only changes via sync, local decisions set intent bools.
+Trustlines use two booleans: `Connected` (bilateral agreement) and `IntentClose` (local intent to disconnect). Module consent implies trustline consent — accepting the trustline module on a link is sufficient to establish trustlines on it.
 
 ```
   add_peer                        incoming link.connect
   (creates link +                 (from peer)
-   local Trustline with                 |
-   IntentConnect)                       v
-       |                          link incoming
-       v                          (no trustline yet)
-  link waiting                         |
-  trustline IntentConnect         accept_peer
-       |                          (AcceptLink + module
-       |                           + Trustline IntentConnect)
-  link.connect completes               |
-  + module negotiation            link connects
-  + trustline.connect sent        + module negotiation
-       |                          + trustline.connect
-       v                            mutual detection
-  trustline connected                  |
-  bilaterally                          v
-       |                          trustline connected
+   empty Trustline)                     |
+       |                                v
+       v                          link incoming
+  link waiting                    (no trustline yet)
+       |                                |
+       |                          accept_peer
+  link.connect completes          (AcceptLink + module)
+  + module negotiation                  |
+  + trustline.connect sent        link connects
+       |                          + module negotiation
+       v                          + trustline.connect
+  trustline Connected                   |
+  bilaterally                           v
+       |                          trustline Connected
   remove_peer
-  (trustline IntentClose)
+  (sets IntentClose)
        |
   trustline.close sent
-  trustline State cleared
-  (both sides)
-       |
-  remove_peer again
-  (deletes trustline data)
+  peer.Connected = false
+  (IntentClose stays true
+   → tombstone)
 ```
 
-The initiator creates the `Trustline` locally in `add_peer` with `IntentConnect`. After link and module connect, `trustline.connect` is sent. The receiver creates the `Trustline` when `trustline.connect` arrives — if the receiver has already called `accept_peer` (which pre-sets `IntentConnect`), mutual detection connects both sides immediately. Otherwise the trustline is `incoming`, awaiting `accept_peer`.
+The initiator creates an empty `Trustline` in `add_peer`. After link and module connect, `trustline.connect` is sent and auto-accepted — the receiver creates the `Trustline` with `Connected = true`.
 
-Disconnection uses `trustline.close` — `remove_peer` sets `IntentClose` on the trustline. The trustline close handshake runs first (trustline `IntentClose && Refs == 0`). When the trustline closes, it calls `UnrefClose` on the link, which decrements refs and sets `IntentClose` on the link when refs reach 0. The link close handshake then runs automatically. A second `remove_peer` deletes local trustline data.
+Disconnection uses `trustline.close` — `remove_peer` sets `IntentClose` on the trustline. After the close handshake, `Connected` becomes false but `IntentClose` stays true, forming a tombstone: `!Connected && IntentClose` causes `trustline.connect` to be rejected, preventing reconnection. If the close is rejected by the peer, `IntentClose` is cleared.
 
 ### Sync protocol
 
@@ -203,7 +199,7 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches by namesp
 
 **trustline namespace:**
 
-`trustline.connect` — establish bilateral peer relationship. Same `ConnectionState` pattern as `link.connect`: mutual add → instant `connected`, incoming from unknown → `incoming` (NACKed, awaiting accept). In `open` mode, auto-ACKed.
+`trustline.connect` — establish bilateral peer relationship. Auto-accepted if the trustline module is active. Sets `Connected = true` on both sides. Rejected if the trustline is tombstoned (`!Connected && IntentClose`).
 
 `trustline.close` — close a peer relationship. Both sides clear peer State, retaining data (balance, limits) for display until explicitly removed.
 
@@ -226,7 +222,7 @@ All endpoints accept JSON `{method, payload}`.
 - `trustline.add_peer` (`{peer, modules?}`) — create link + peer with `IntentConnect`, initiates `link.connect` → `link.module` → `trustline.connect`. Optional `modules` list (e.g. `["loops"]`) proposes those modules on the link. Returns error if the link exists and is closing (`IntentClose`).
 - `trustline.accept_peer` (`{peer, modules?}`) — accept incoming link + module + peer (sets `IntentConnect` at all three layers). Optional `modules` list proposes those modules on the link.
 - `trustline.reject_peer` (`{peer}`) — reject incoming link (sends `link.close`)
-- `trustline.remove_peer` (`{peer}`) — sets `IntentClose` on peer. Trustline close runs first; when it completes, `UnrefClose` sets `IntentClose` on the link automatically. Call again to delete peer data.
+- `trustline.remove_peer` (`{peer}`) — sets `IntentClose` on peer. Trustline close handshake runs; after close, the trustline becomes a tombstone (`!Connected && IntentClose`), preventing reconnection.
 - `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
 - `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
 - `trustline.payment` (`{peer, amount}`) — send payment to peer
