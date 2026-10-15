@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"creditnet"
@@ -67,7 +68,9 @@ func NewTriad(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[str
 		bandwidth:  bandwidth,
 	}
 	if state != nil {
-		json.Unmarshal(state, h)
+		if err := json.Unmarshal(state, h); err != nil {
+			log.Fatalf("triad %s: corrupt state: %v", nodeID, err)
+		}
 	}
 	if h.Novations == nil {
 		h.Novations = map[string]*Novation{}

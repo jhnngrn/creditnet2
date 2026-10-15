@@ -128,7 +128,9 @@ type nodeState struct {
 func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
 	var st nodeState
 	if raw != nil {
-		json.Unmarshal(raw, &st)
+		if err := json.Unmarshal(raw, &st); err != nil {
+			log.Fatalf("node %s: corrupt state: %v", id, err)
+		}
 	}
 
 	// ls is captured by the commit closure below — declared first

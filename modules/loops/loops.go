@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"creditnet"
@@ -139,7 +140,9 @@ func NewLoops(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[str
 		bandwidth:  bandwidth,
 	}
 	if state != nil {
-		json.Unmarshal(state, h)
+		if err := json.Unmarshal(state, h); err != nil {
+			log.Fatalf("loops %s: corrupt state: %v", nodeID, err)
+		}
 	}
 	if h.Paths == nil {
 		h.Paths = map[string]*Path{}

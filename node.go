@@ -3,6 +3,7 @@ package creditnet
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -51,7 +52,9 @@ func NewNode(nodeID string, links *link.Links, kick func(string), state json.Raw
 		kick:       kick,
 	}
 	if state != nil {
-		json.Unmarshal(state, h)
+		if err := json.Unmarshal(state, h); err != nil {
+			log.Fatalf("node %s: corrupt trustline state: %v", nodeID, err)
+		}
 	}
 	if h.Trustlines == nil {
 		h.Trustlines = map[string]*Trustline{}
@@ -379,10 +382,18 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, error) {
 	if lk.State.Modules == nil {
 		lk.State.Modules = map[string]*link.ConnectionState{}
 	}
-	lk.State.Modules["trustline"] = &link.ConnectionState{IntentConnect: true}
+	if mod := lk.State.Modules["trustline"]; mod == nil {
+		lk.State.Modules["trustline"] = &link.ConnectionState{IntentConnect: true}
+	} else if mod.Status != link.Connected {
+		mod.IntentConnect = true
+	}
 	for _, name := range p.Modules {
 		if h.links.ModuleMap()[name] != nil {
-			lk.State.Modules[name] = &link.ConnectionState{IntentConnect: true}
+			if mod := lk.State.Modules[name]; mod == nil {
+				lk.State.Modules[name] = &link.ConnectionState{IntentConnect: true}
+			} else if mod.Status != link.Connected {
+				mod.IntentConnect = true
+			}
 		}
 	}
 	peer := h.Trustlines[peerID]
