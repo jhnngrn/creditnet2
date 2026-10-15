@@ -286,15 +286,15 @@ func (h *Loops) NextTx(peer string) *link.QueuedMsg {
 // Module — HandleAccount
 // ---------------------------------------------------------------------------
 
-func (h *Loops) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+func (h *Loops) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
 	switch method {
 	case "status":
 		return creditnet.Enc(map[string]any{
 			"paths":     len(h.Paths),
 			"clearings": len(h.Clearings),
-		}), nil
+		}), nil, nil
 	}
-	return nil, creditnet.ErrBadMethod
+	return nil, nil, creditnet.ErrBadMethod
 }
 
 // ---------------------------------------------------------------------------

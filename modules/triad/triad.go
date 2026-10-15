@@ -364,12 +364,12 @@ func (h *Triad) buildMsg(id string, nov *Novation) *link.QueuedMsg {
 // Module — HandleAccount
 // ---------------------------------------------------------------------------
 
-func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
 	switch method {
 	case "status":
-		return creditnet.Enc(map[string]any{"novations": len(h.Novations)}), nil
+		return creditnet.Enc(map[string]any{"novations": len(h.Novations)}), nil, nil
 	}
-	return nil, creditnet.ErrBadMethod
+	return nil, nil, creditnet.ErrBadMethod
 }
 
 // ---------------------------------------------------------------------------
