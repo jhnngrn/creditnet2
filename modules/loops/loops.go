@@ -1416,7 +1416,7 @@ func (h *Loops) scheduleCleanup(id string, side int) {
 
 func (h *Loops) isConnected(peer string) bool {
 	t := h.trustlines[peer]
-	return t != nil && t.Connected && !t.WantClose
+	return t != nil && t.Connected && !t.IntentClose
 }
 
 // refPeer / unrefPeer are no-op placeholders (trustline ref counting removed).

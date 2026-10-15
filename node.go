@@ -16,7 +16,7 @@ import (
 
 type Trustline struct {
 	Connected        bool     `json:"connected"`
-	WantClose        bool     `json:"want_close,omitempty"`
+	IntentClose      bool     `json:"intent_close,omitempty"` // !Connected && IntentClose = tombstone
 	Queue            []string `json:"queue,omitempty"`
 	CreditLimit      int64    `json:"credit_limit"`
 	CreditLimitIn    int64    `json:"credit_limit_in"`
@@ -124,8 +124,11 @@ func (h *Node) HandleRequest(peerID, method string, payload json.RawMessage, ts 
 			peer = &Trustline{}
 			h.Trustlines[peerID] = peer
 		}
+		if peer.IntentClose && !peer.Connected {
+			return false, nil, nil // tombstone — rejected
+		}
 		peer.Connected = true
-		peer.WantClose = false
+		peer.IntentClose = false
 		h.refLink(peerID)
 		return true, nil, nil
 	case "close":
@@ -229,9 +232,10 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 	case "close":
 		if ok {
 			h.unrefLink(peerID)
-			delete(h.Trustlines, peerID)
+			peer.Connected = false
+			// IntentClose stays true → tombstone
 		} else {
-			peer.WantClose = false
+			peer.IntentClose = false
 		}
 		return nil
 	case "set_credit_limit":
@@ -267,7 +271,7 @@ func (h *Node) NextTx(peerID string) *link.QueuedMsg {
 		return nil
 	}
 	// Trustline lifecycle.
-	if peer.WantClose {
+	if peer.IntentClose {
 		return &link.QueuedMsg{Method: "close"}
 	}
 	if !peer.Connected {
@@ -467,7 +471,7 @@ func (h *Node) removePeer(payload json.RawMessage) (json.RawMessage, []string, e
 		delete(h.Trustlines, peerID)
 		return Enc("ok"), nil, nil
 	}
-	peer.WantClose = true
+	peer.IntentClose = true
 	return Enc("ok"), []string{peerID}, nil
 }
 
