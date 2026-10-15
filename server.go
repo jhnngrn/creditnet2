@@ -153,7 +153,6 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
 	}
 
 	ls = link.NewLinks(id, st.Links, st.InviteMode,
-		map[string]struct{}{"trustline": {}},
 		link.EngineConfig{
 			Send:   send,
 			Commit: commit,
