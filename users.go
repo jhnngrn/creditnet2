@@ -63,7 +63,6 @@ func (s *Server) createUser(username, password string, admin bool) error {
 	if admin { return nil }
 	nodeID := username + "@" + s.cfg.Domain
 	ls := s.newLinks(nodeID, nil)
-	ls.Lock(); ls.Commit(); ls.Unlock()
 	s.nmu.Lock(); s.nodes[username] = ls; s.nmu.Unlock()
 	return nil
 }
