@@ -134,7 +134,12 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		for t, ss := range s.sessions { if ss.user == p.Username { delete(s.sessions, t) } }
 		err := s.store.SaveUsers(s.users); s.umu.Unlock()
 		if err != nil { ApiError(w, "persist failed"); return }
-		s.nmu.Lock(); delete(s.nodes, p.Username); s.nmu.Unlock()
+		s.nmu.Lock()
+		if ls := s.nodes[p.Username]; ls != nil {
+			ls.Close()
+		}
+		delete(s.nodes, p.Username)
+		s.nmu.Unlock()
 		s.store.DeleteNode(p.Username + "@" + s.cfg.Domain); ApiOK(w, true)
 	case "list_users":
 		s.umu.Lock()
