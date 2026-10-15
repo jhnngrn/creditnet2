@@ -136,7 +136,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		if err != nil { ApiError(w, "persist failed"); return }
 		s.nmu.Lock()
 		if ls := s.nodes[p.Username]; ls != nil {
-			ls.Close()
+			ls.Stop()
 		}
 		delete(s.nodes, p.Username)
 		s.nmu.Unlock()
