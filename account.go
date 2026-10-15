@@ -21,12 +21,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ls.Lock()
 	result, appErr := ls.HandleAccount(req.Method, req.Payload)
-	if appErr == nil {
-		ls.Commit()
-	}
-	ls.Unlock()
 	if appErr != nil {
 		ApiError(w, appErr.Error())
 		return
