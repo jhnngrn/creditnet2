@@ -86,7 +86,7 @@ type Server struct {
 	factories []moduleReg
 
 	nmu   sync.RWMutex
-	nodes map[string]*Node
+	nodes map[string]*link.Links
 
 	umu      sync.Mutex
 	users    map[string]*UserRecord
@@ -113,26 +113,72 @@ func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
 	return body, nil
 }
 
-// newNode creates a Node from persisted state (or nil for new).
-// Method on Server so it has access to registered factories.
-func (s *Server) newNode(id string, raw json.RawMessage) *Node {
-	n := newNode(id, raw, s, s.store)
+// ---------------------------------------------------------------------------
+// Node state — persisted per identity
+// ---------------------------------------------------------------------------
+
+type nodeState struct {
+	ID         string                     `json:"id"`
+	Links      map[string]*link.Link      `json:"links"`
+	InviteMode link.InviteMode            `json:"invite_mode,omitempty"`
+	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
+}
+
+// newLinks creates a Links from persisted state (or nil for new).
+func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
+	var st nodeState
+	if raw != nil {
+		json.Unmarshal(raw, &st)
+	}
+
+	// ls is captured by the commit closure below — declared first
+	// so the closure can reference it.
+	var ls *link.Links
+
+	commit := func() {
+		ns := nodeState{ID: id, Links: ls.Map(), InviteMode: ls.InviteMode}
+		ns.Handlers = make(map[string]json.RawMessage)
+		for name, mod := range ls.ModuleMap() {
+			if data, err := json.Marshal(mod); err == nil {
+				ns.Handlers[name] = data
+			}
+		}
+		if err := s.store.SaveNode(id, ns); err != nil {
+			log.Fatalf("node %s: persist failed: %v", id, err)
+		}
+	}
+
+	send := func(peer string, msg link.SyncRequest) ([]byte, error) {
+		return s.Send(PeerDomain(peer), msg)
+	}
+
+	ls = link.NewLinks(id, st.Links, st.InviteMode,
+		map[string]struct{}{"trustline": {}},
+		link.EngineConfig{
+			Send:   send,
+			Commit: commit,
+			Now:    NowSecs,
+		},
+	)
 
 	// Create and register TrustlineHandler first — other modules
 	// reference its Trustlines map and Bandwidth function.
-	th := NewTrustlineHandler(n.id, n.Links(), n.Links().Kick, handlerState(raw, "trustline"))
-	n.RegisterModule(th)
+	th := NewTrustlineHandler(id, ls, ls.Kick, handlerState(raw, "trustline"))
+	ls.RegisterModule(th)
 
 	// Register external modules from factories.
+	schedule := func(delay time.Duration, fn func() []string) {
+		ls.Schedule(delay, fn)
+	}
 	for _, f := range s.factories {
-		m := f.factory(n.id, n.ScheduleFunc(), th.Trustlines, th.Bandwidth, handlerState(raw, f.name))
-		n.RegisterModule(m)
+		m := f.factory(id, schedule, th.Trustlines, th.Bandwidth, handlerState(raw, f.name))
+		ls.RegisterModule(m)
 		if r, ok := m.(Reserver); ok {
 			th.RegisterReserver(r)
 		}
 	}
 
-	return n
+	return ls
 }
 
 // handlerState extracts a handler's persisted state from the node's raw JSON.
@@ -171,7 +217,7 @@ func NewServer(cfg Config) (*Server, error) {
 	return &Server{
 		cfg: cfg, store: store, key: key,
 		client:   &http.Client{Timeout: cfg.HTTPTimeout},
-		nodes:    map[string]*Node{},
+		nodes:    map[string]*link.Links{},
 		users:    users,
 		sessions: map[string]*session{},
 		keyCache: map[string]cachedKey{},
@@ -192,11 +238,11 @@ func (s *Server) Init() error {
 		if err != nil || domain != s.cfg.Domain {
 			continue
 		}
-		s.nodes[user] = s.newNode(id, raw)
+		s.nodes[user] = s.newLinks(id, raw)
 	}
 	// Resume pending sends from boot.
-	for _, n := range s.nodes {
-		n.Links().KickAll()
+	for _, ls := range s.nodes {
+		ls.KickAll()
 	}
 	if s.cfg.AdminUser != "" && s.cfg.AdminPass != "" {
 		if err := s.bootstrapAdmin(s.cfg.AdminUser, s.cfg.AdminPass); err != nil {
@@ -248,18 +294,18 @@ func (s *Server) logf(format string, args ...any) {
 	}
 }
 
-func (s *Server) getNode(user string) *Node {
+func (s *Server) getLinks(user string) *link.Links {
 	s.nmu.RLock()
 	defer s.nmu.RUnlock()
 	return s.nodes[user]
 }
 
-func (s *Server) nodeByIdentity(id string) *Node {
+func (s *Server) linksByIdentity(id string) *link.Links {
 	user, domain, err := ParseIdentity(id)
 	if err != nil || domain != s.cfg.Domain {
 		return nil
 	}
-	return s.getNode(user)
+	return s.getLinks(user)
 }
 
 // ---------------------------------------------------------------------------
@@ -281,14 +327,14 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		HttpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	n := s.nodeByIdentity(env.To)
-	if n == nil {
+	ls := s.linksByIdentity(env.To)
+	if ls == nil {
 		HttpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	// Early rejection before expensive signature verification.
-	if n.Links().QuickReject(env.From, env.Method) {
+	if ls.QuickReject(env.From, env.Method) {
 		HttpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -298,7 +344,7 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, syncErr := n.Links().HandleSync(env)
+	resp, syncErr := ls.HandleSync(env)
 	if syncErr != nil {
 		switch {
 		case errors.Is(syncErr, link.ErrNoLink):

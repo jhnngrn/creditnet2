@@ -15,13 +15,12 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	n := s.getNode(sess.user)
-	if n == nil {
+	ls := s.getLinks(sess.user)
+	if ls == nil {
 		HttpError(w, http.StatusInternalServerError, "no node")
 		return
 	}
 
-	ls := n.Links()
 	ls.Lock()
 	result, appErr := ls.HandleAccount(req.Method, req.Payload)
 	if appErr == nil {
