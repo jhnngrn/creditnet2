@@ -93,11 +93,4 @@ var (
 func Enc(v any) json.RawMessage { d, _ := json.Marshal(v); return d }
 func NowSecs() int64            { return time.Now().Unix() }
 
-func SplitMethod(method string) (ns, name string) {
-	i := strings.Index(method, ".")
-	if i < 0 {
-		return "", method
-	}
-	return method[:i], method[i+1:]
-}
 
