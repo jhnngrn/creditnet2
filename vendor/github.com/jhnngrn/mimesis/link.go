@@ -209,12 +209,16 @@ func (n *Node) registerModule(name string, m Module) {
 func (n *Node) ModuleMap() map[string]Module { return n.moduleMap }
 
 func (n *Node) Get(peer string) *Link { return n.Links[peer] }
-func (n *Node) Len() int              { return len(n.Links) }
-func (n *Node) Full() bool            { return len(n.Links) >= maxLinks }
+func (n *Node) len() int              { return len(n.Links) }
+func (n *Node) full() bool            { return len(n.Links) >= maxLinks }
 func (n *Node) delete(peer string)    { delete(n.Links, peer) }
 
 // Create adds a new link to peer and returns it.
+// Returns errMaxLinks if the node is at capacity.
 func (n *Node) Create(peer string) (*Link, error) {
+	if n.full() {
+		return nil, errMaxLinks
+	}
 	_, _, err := ParseIdentity(peer)
 	if err != nil {
 		return nil, err
@@ -774,10 +778,6 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 			n.mu.Unlock()
 			return nil, errInvitesDisabled
 		}
-		if n.Full() {
-			n.mu.Unlock()
-			return nil, errMaxLinks
-		}
 		var err error
 		lk, err = n.Create(env.From)
 		if err != nil {
@@ -853,7 +853,7 @@ func (n *Node) kick(peer string) { go n.sendPending(peer) }
 // KickAll kicks all peers. Used at boot to resume pending work.
 func (n *Node) kickAll() {
 	n.mu.Lock()
-	peers := make([]string, 0, n.Len())
+	peers := make([]string, 0, n.len())
 	for peer := range n.Links {
 		peers = append(peers, peer)
 	}

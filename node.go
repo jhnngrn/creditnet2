@@ -376,14 +376,8 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 		}
 	} else {
 		// Create outgoing link.
-		if _, _, err := ParseIdentity(peerID); err != nil {
-			return nil, nil, err
-		}
 		if peerID == h.nodeID {
 			return nil, nil, fmt.Errorf("cannot link to self")
-		}
-		if h.links.Full() {
-			return nil, nil, fmt.Errorf("max links reached")
 		}
 		lk, err := h.links.Create(peerID)
 		if err != nil {
