@@ -281,6 +281,10 @@ func (h *Loops) NextTx(peer string) (string, json.RawMessage, int64) {
 // Module — HandleAccount
 // ---------------------------------------------------------------------------
 
+func (h *Loops) Status() json.RawMessage {
+	return creditnet.Enc(map[string]any{"clearings": len(h.Clearings), "paths": len(h.Paths)})
+}
+
 func (h *Loops) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
 	switch method {
 	case "status":

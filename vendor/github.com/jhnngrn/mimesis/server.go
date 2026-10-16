@@ -114,7 +114,7 @@ func (s *Server) Register(name string, factory ModuleFactory, protected bool) {
 }
 
 // Send posts a signed sync message to a peer's domain.
-func (s *Server) Send(peerDomain string, msg SyncRequest) ([]byte, error) {
+func (s *Server) Send(peerDomain string, msg TxRequest) ([]byte, error) {
 	status, body, err := s.postSigned(peerDomain, "/p2p/tx", msg)
 	if err != nil {
 		return nil, err
@@ -160,7 +160,7 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *Links {
 		}
 	}
 
-	send := func(peer string, msg SyncRequest) ([]byte, error) {
+	send := func(peer string, msg TxRequest) ([]byte, error) {
 		return s.Send(PeerDomain(peer), msg)
 	}
 
@@ -320,7 +320,7 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	var env SyncRequest
+	var env TxRequest
 	if json.Unmarshal(body, &env) != nil {
 		httpError(w, http.StatusBadRequest, "malformed")
 		return
@@ -345,7 +345,7 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, syncErr := ls.HandleSync(env)
+	resp, syncErr := ls.HandleIncoming(env)
 	if syncErr != nil {
 		switch {
 		case errors.Is(syncErr, ErrNoLink):

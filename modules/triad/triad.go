@@ -353,6 +353,10 @@ func (h *Triad) buildMsg(id string, nov *Novation) (string, json.RawMessage, int
 // Module — HandleAccount
 // ---------------------------------------------------------------------------
 
+func (h *Triad) Status() json.RawMessage {
+	return creditnet.Enc(map[string]any{"novations": len(h.Novations)})
+}
+
 func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
 	switch method {
 	case "status":

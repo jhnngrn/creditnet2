@@ -260,6 +260,26 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 }
 
 // ---------------------------------------------------------------------------
+// link.Module — Status
+// ---------------------------------------------------------------------------
+
+func (h *Node) Status() json.RawMessage {
+	now := time.Now().Unix()
+	peers := make(map[string]any)
+	for id, p := range h.Trustlines {
+		peers[id] = map[string]any{
+			"connected":         p.Connected,
+			"credit_limit":      p.CreditLimit,
+			"credit_limit_in":   p.CreditLimitIn,
+			"balance":           p.Balance,
+			"effective_balance": p.EffectiveBalance(now),
+			"demurrage":         p.Demurrage,
+			"demurrage_in":      p.DemurrageIn,
+		}
+	}
+	return Enc(map[string]any{"peers": peers})
+}
+
 // link.Module — NextTx
 // ---------------------------------------------------------------------------
 
