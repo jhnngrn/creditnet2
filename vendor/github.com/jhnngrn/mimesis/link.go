@@ -153,7 +153,7 @@ func (l *Link) ModuleEnabled(name string) bool {
 }
 
 // Dominant returns true when this side owns the current counter slot.
-func (l *Link) Dominant() bool { return l.Counter%2 == l.TurnBit }
+func (l *Link) dominant() bool { return l.Counter%2 == l.TurnBit }
 
 // newLink creates a Link with the turn bit derived from identity ordering.
 func newLink(self, peer string) *Link {
@@ -249,7 +249,7 @@ func (l *Link) ValidateRequest(counter uint64) (*txResponse, error) {
 	if counter > l.Counter {
 		return nil, errCounterAhead
 	}
-	if l.Pending != nil && l.Dominant() {
+	if l.Pending != nil && l.dominant() {
 		return nil, errCollision
 	}
 	return nil, nil
@@ -813,7 +813,7 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 	}
 
 	ts := env.Timestamp
-	if lk.Dominant() {
+	if lk.dominant() {
 		ts = now
 		if ts < lk.Timestamp {
 			ts = lk.Timestamp
@@ -947,7 +947,7 @@ func (n *Node) sendPending(peer string) {
 		From: n.ID, To: peer, Counter: counter,
 		Method: msg.Method, Payload: msg.Payload,
 	}
-	if lk.Dominant() {
+	if lk.dominant() {
 		env.Timestamp = nowSecs()
 		if env.Timestamp < lk.Timestamp {
 			env.Timestamp = lk.Timestamp
