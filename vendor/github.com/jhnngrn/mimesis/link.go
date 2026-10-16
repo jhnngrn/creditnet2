@@ -217,14 +217,17 @@ func (n *Node) delete(peer string)    { delete(n.Links, peer) }
 // The link is created with IntentConnect set, so the sync loop
 // will initiate a connection. Returns errMaxLinks if at capacity.
 func (n *Node) Connect(peer string) (*Link, error) {
-	if n.full() {
-		return nil, errMaxLinks
-	}
 	_, _, err := ParseIdentity(peer)
 	if err != nil {
 		return nil, err
 	}
 	peer = strings.ToLower(peer)
+	if n.Links[peer] != nil {
+		return nil, fmt.Errorf("link to %s already exists", peer)
+	}
+	if n.full() {
+		return nil, errMaxLinks
+	}
 	lk := newLink(n.ID, peer)
 	lk.State.IntentConnect = true
 	n.Links[peer] = lk
