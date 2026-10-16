@@ -600,6 +600,54 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		result = enc("ok")
 		kicks = []string{p.Peer}
 
+	case ns == "link" && method == "accept":
+		var p struct {
+			Peer    string   `json:"peer"`
+			Modules []string `json:"modules,omitempty"`
+		}
+		if err = json.Unmarshal(payload, &p); err != nil {
+			n.mu.Unlock()
+			return nil, fmt.Errorf("bad request")
+		}
+		p.Peer = strings.ToLower(p.Peer)
+		lk := n.Get(p.Peer)
+		if lk == nil {
+			n.mu.Unlock()
+			return nil, fmt.Errorf("no link to %s", p.Peer)
+		}
+		if lk.State.Status != Incoming {
+			n.mu.Unlock()
+			return nil, fmt.Errorf("link to %s is not incoming", p.Peer)
+		}
+		lk.State.IntentConnect = true
+		if len(p.Modules) > 0 {
+			lk.SetModules(p.Modules, n.moduleMap)
+		}
+		result = enc("ok")
+		kicks = []string{p.Peer}
+
+	case ns == "link" && method == "reject":
+		var p struct {
+			Peer string `json:"peer"`
+		}
+		if err = json.Unmarshal(payload, &p); err != nil {
+			n.mu.Unlock()
+			return nil, fmt.Errorf("bad request")
+		}
+		p.Peer = strings.ToLower(p.Peer)
+		lk := n.Get(p.Peer)
+		if lk == nil {
+			n.mu.Unlock()
+			return nil, fmt.Errorf("no link to %s", p.Peer)
+		}
+		if lk.State.Status != Incoming {
+			n.mu.Unlock()
+			return nil, fmt.Errorf("link to %s is not incoming", p.Peer)
+		}
+		lk.State.IntentClose = true
+		result = enc("ok")
+		kicks = []string{p.Peer}
+
 	case ns == "link" && method == "accept_module":
 		var p struct {
 			Peer   string `json:"peer"`

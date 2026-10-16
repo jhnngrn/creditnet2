@@ -340,10 +340,6 @@ func (h *Node) HandleAccount(method string, payload json.RawMessage) (json.RawMe
 	switch method {
 	case "add_peer":
 		return h.addPeer(payload)
-	case "accept_peer":
-		return h.acceptPeer(payload)
-	case "reject_peer":
-		return h.rejectPeer(payload)
 	case "remove_peer":
 		return h.removePeer(payload)
 	case "set_credit_limit":
@@ -410,66 +406,6 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 	return Enc("ok"), []string{peerID}, nil
 }
 
-func (h *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, []string, error) {
-	var p struct {
-		Peer    string   `json:"peer"`
-		Modules []string `json:"modules,omitempty"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return nil, nil, fmt.Errorf("bad request")
-	}
-	peerID := strings.ToLower(p.Peer)
-	// Accept incoming link.
-	lk := h.links.Get(peerID)
-	if lk == nil {
-		return nil, nil, fmt.Errorf("no link to %s", peerID)
-	}
-	if lk.State.Status != mimesis.Incoming {
-		return nil, nil, fmt.Errorf("link to %s is not incoming", peerID)
-	}
-	lk.State.IntentConnect = true
-	// Request trustline + chosen modules on this link.
-	if lk.State.Modules == nil {
-		lk.State.Modules = map[string]*mimesis.ConnectionState{}
-	}
-	if lk.State.Modules["trustline"] == nil {
-		lk.State.Modules["trustline"] = &mimesis.ConnectionState{}
-	}
-	lk.State.Modules["trustline"].IntentConnect = true
-	for _, name := range p.Modules {
-		if h.links.ModuleMap()[name] != nil {
-			if lk.State.Modules[name] == nil {
-				lk.State.Modules[name] = &mimesis.ConnectionState{}
-			}
-			lk.State.Modules[name].IntentConnect = true
-		}
-	}
-	// Create trustline slot — will be connected when trustline.connect is exchanged.
-	if h.Trustlines[peerID] == nil {
-		h.Trustlines[peerID] = &Trustline{}
-	}
-	return Enc("ok"), []string{peerID}, nil
-}
-
-func (h *Node) rejectPeer(payload json.RawMessage) (json.RawMessage, []string, error) {
-	var p struct {
-		Peer string `json:"peer"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return nil, nil, fmt.Errorf("bad request")
-	}
-	peerID := strings.ToLower(p.Peer)
-	// Reject incoming link.
-	lk := h.links.Get(peerID)
-	if lk == nil {
-		return nil, nil, fmt.Errorf("no link to %s", peerID)
-	}
-	if lk.State.Status != mimesis.Incoming {
-		return nil, nil, fmt.Errorf("link to %s is not incoming", peerID)
-	}
-	lk.State.IntentClose = true
-	return Enc("ok"), []string{peerID}, nil
-}
 
 func (h *Node) removePeer(payload json.RawMessage) (json.RawMessage, []string, error) {
 	var p struct {
