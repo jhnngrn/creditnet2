@@ -154,13 +154,7 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
 		return s.Send(PeerDomain(peer), msg)
 	}
 
-	ls = link.NewLinks(id, st.Links, st.InviteMode,
-		link.EngineConfig{
-			Send:   send,
-			Commit: commit,
-			Now:    NowSecs,
-		},
-	)
+	ls = link.NewLinks(id, st.Links, st.InviteMode, send, commit)
 	ls.Protected = map[string]struct{}{"trustline": {}}
 
 	// Create and register the app-level Node first — other modules

@@ -84,6 +84,5 @@ var (
 // ---------------------------------------------------------------------------
 
 func Enc(v any) json.RawMessage { d, _ := json.Marshal(v); return d }
-func NowSecs() int64            { return time.Now().Unix() }
 
 
