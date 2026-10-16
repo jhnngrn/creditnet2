@@ -61,8 +61,6 @@ func NewNode(nodeID string, links *mimesis.Links, state json.RawMessage) *Node {
 	return h
 }
 
-func (h *Node) Name() string { return "trustline" }
-
 // RegisterReserver adds a Reserver whose reservations are subtracted
 // from available bandwidth.
 func (h *Node) RegisterReserver(r Reserver) {

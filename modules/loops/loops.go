@@ -176,8 +176,6 @@ func NewLoops(nodeID string, schedule mimesis.ScheduleFunc, trustlines map[strin
 	return h
 }
 
-func (h *Loops) Name() string { return "loops" }
-
 // ---------------------------------------------------------------------------
 // Reserver
 // ---------------------------------------------------------------------------

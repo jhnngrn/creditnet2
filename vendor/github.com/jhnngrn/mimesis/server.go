@@ -172,7 +172,7 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *Links {
 
 	for _, f := range s.factories {
 		m := f.factory(id, ls, schedule, handlerState(raw, f.name))
-		ls.RegisterModule(m)
+		ls.RegisterModule(f.name, m)
 		if f.protected {
 			ls.Protected[f.name] = struct{}{}
 		}

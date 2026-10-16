@@ -91,7 +91,6 @@ type LinkState struct {
 // queuedAt is the unix-second timestamp of when the message was first queued;
 // when multiple modules return a candidate for the same peer, the oldest wins.
 type Module interface {
-	Name() string
 	HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
 	HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error)
@@ -188,9 +187,9 @@ func NewLinks(self string, m map[string]*Link, mode InviteMode, send func(string
 // Self returns the node identity.
 func (ls *Links) Self() string { return ls.self }
 
-// RegisterModule adds a module to the link collection.
-func (ls *Links) RegisterModule(m Module) {
-	ls.moduleMap[m.Name()] = m
+// RegisterModule adds a module to the link collection under the given name.
+func (ls *Links) RegisterModule(name string, m Module) {
+	ls.moduleMap[name] = m
 }
 
 // ModuleMap returns the registered modules for serialization.

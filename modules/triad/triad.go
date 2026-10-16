@@ -79,8 +79,6 @@ func NewTriad(nodeID string, schedule mimesis.ScheduleFunc, trustlines map[strin
 	return h
 }
 
-func (h *Triad) Name() string { return "triad" }
-
 // ---------------------------------------------------------------------------
 // Reserver — reports capacity reserved by in-flight novations
 // ---------------------------------------------------------------------------
