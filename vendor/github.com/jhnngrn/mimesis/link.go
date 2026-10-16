@@ -213,8 +213,9 @@ func (n *Node) len() int              { return len(n.Links) }
 func (n *Node) full() bool            { return len(n.Links) >= maxLinks }
 func (n *Node) delete(peer string)    { delete(n.Links, peer) }
 
-// Create adds a new link to peer and returns it.
-// Returns errMaxLinks if the node is at capacity.
+// Create adds a new outgoing link to peer and returns it.
+// The link is created with IntentConnect set, so the sync loop
+// will initiate a connection. Returns errMaxLinks if at capacity.
 func (n *Node) Create(peer string) (*Link, error) {
 	if n.full() {
 		return nil, errMaxLinks
@@ -225,6 +226,7 @@ func (n *Node) Create(peer string) (*Link, error) {
 	}
 	peer = strings.ToLower(peer)
 	lk := newLink(n.ID, peer)
+	lk.State.IntentConnect = true
 	n.Links[peer] = lk
 	return lk, nil
 }
@@ -826,12 +828,12 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 			n.mu.Unlock()
 			return nil, errInvitesDisabled
 		}
-		var err error
-		lk, err = n.Create(env.From)
-		if err != nil {
+		if n.full() {
 			n.mu.Unlock()
-			return nil, err
+			return nil, errMaxLinks
 		}
+		lk = newLink(n.ID, env.From)
+		n.Links[env.From] = lk
 		lk.State.Status = Incoming
 	}
 
