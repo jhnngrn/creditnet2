@@ -2,7 +2,7 @@ package creditnet
 
 import (
 	"encoding/json"
-	"sync"
+	"fmt"
 
 	"github.com/jhnngrn/mimesis"
 )
@@ -25,33 +25,12 @@ type AppModuleFactory func(
 	state json.RawMessage,
 ) mimesis.Module
 
-// nodeRegistry holds per-node Node references so that subsequent module
-// factories can access the Node's trustlines and bandwidth.
-var (
-	nodesMu sync.Mutex
-	nodes   = map[string]*Node{}
-)
-
-func storeNode(nodeID string, n *Node) {
-	nodesMu.Lock()
-	nodes[nodeID] = n
-	nodesMu.Unlock()
-}
-
-func getNode(nodeID string) *Node {
-	nodesMu.Lock()
-	defer nodesMu.Unlock()
-	return nodes[nodeID]
-}
-
 // RegisterNode registers the trustline Node module on the server.
 // This must be called before any Register calls, because other modules
 // depend on the Node's trustlines and bandwidth.
 func RegisterNode(srv *mimesis.Server) {
 	srv.Register("trustline", func(nodeID string, links *mimesis.Links, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-		n := NewNode(nodeID, links, state)
-		storeNode(nodeID, n)
-		return n
+		return NewNode(nodeID, links, state)
 	}, true)
 }
 
@@ -60,12 +39,15 @@ func RegisterNode(srv *mimesis.Server) {
 // which must be registered first via RegisterNode.
 func Register(srv *mimesis.Server, name string, factory AppModuleFactory) {
 	srv.Register(name, func(nodeID string, links *mimesis.Links, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-		n := getNode(nodeID)
-		mod := factory(nodeID, schedule, n.Trustlines, n.Bandwidth, state)
-		// If the module is a Reserver, register it with the Node.
-		if r, ok := mod.(Reserver); ok {
+		mod := links.ModuleMap()["trustline"]
+		if mod == nil {
+			panic(fmt.Sprintf("creditnet.Register: trustline module not found for %s — call RegisterNode before Register", nodeID))
+		}
+		n := mod.(*Node)
+		m := factory(nodeID, schedule, n.Trustlines, n.Bandwidth, state)
+		if r, ok := m.(Reserver); ok {
 			n.RegisterReserver(r)
 		}
-		return mod
+		return m
 	}, false)
 }
