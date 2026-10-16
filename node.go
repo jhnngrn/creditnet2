@@ -267,7 +267,7 @@ func (h *Node) Status() json.RawMessage {
 	now := time.Now().Unix()
 	peers := make(map[string]any)
 	for id, p := range h.Trustlines {
-		peers[id] = map[string]any{
+		info := map[string]any{
 			"connected":         p.Connected,
 			"credit_limit":      p.CreditLimit,
 			"credit_limit_in":   p.CreditLimitIn,
@@ -276,6 +276,16 @@ func (h *Node) Status() json.RawMessage {
 			"demurrage":         p.Demurrage,
 			"demurrage_in":      p.DemurrageIn,
 		}
+		if p.PendingLimit != nil {
+			info["pending_limit"] = *p.PendingLimit
+		}
+		if p.PendingPayment != nil {
+			info["pending_payment"] = *p.PendingPayment
+		}
+		if p.PendingDemurrage != nil {
+			info["pending_demurrage"] = *p.PendingDemurrage
+		}
+		peers[id] = info
 	}
 	return Enc(map[string]any{"peers": peers})
 }
@@ -341,8 +351,7 @@ func (h *Node) HandleAccount(method string, payload json.RawMessage) (json.RawMe
 	case "payment":
 		return h.payment(payload)
 	case "status":
-		r, err := h.trustlineStatus()
-		return r, nil, err
+		return h.Status(), nil, nil
 	}
 	return nil, nil, ErrBadMethod
 }
@@ -572,46 +581,3 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 	return Enc("ok"), []string{peerID}, nil
 }
 
-func (h *Node) trustlineStatus() (json.RawMessage, error) {
-	now := time.Now().Unix()
-	peers := make(map[string]any)
-	for id, p := range h.Trustlines {
-		info := map[string]any{
-			"connected":         p.Connected,
-			"credit_limit":      p.CreditLimit,
-			"credit_limit_in":   p.CreditLimitIn,
-			"balance":           p.Balance,
-			"effective_balance": p.EffectiveBalance(now),
-			"demurrage":         p.Demurrage,
-			"demurrage_in":      p.DemurrageIn,
-		}
-		if p.PendingLimit != nil {
-			info["pending_limit"] = *p.PendingLimit
-		}
-		if p.PendingPayment != nil {
-			info["pending_payment"] = *p.PendingPayment
-		}
-		if p.PendingDemurrage != nil {
-			info["pending_demurrage"] = *p.PendingDemurrage
-		}
-		if l := h.links.Get(id); l != nil {
-			info["link_state"] = l.State
-		}
-		peers[id] = info
-	}
-
-	// Show links without a peer yet (waiting or incoming).
-	for id, l := range h.links.Map() {
-		if h.Trustlines[id] == nil {
-			peers[id] = map[string]any{
-				"status":     string(l.State.Status),
-				"link_state": l.State,
-			}
-		}
-	}
-
-	return Enc(map[string]any{
-		"peers":       peers,
-		"invite_mode": h.links.InviteMode,
-	}), nil
-}
