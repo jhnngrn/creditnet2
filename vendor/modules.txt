@@ -1,6 +1,6 @@
-# github.com/jhnngrn/link v0.1.0
-## explicit; go 1.22
-github.com/jhnngrn/link
+# github.com/jhnngrn/mimesis v0.1.0 => ../mimesis
+## explicit; go 1.23
+github.com/jhnngrn/mimesis
 # golang.org/x/crypto v0.31.0
 ## explicit; go 1.20
 golang.org/x/crypto/argon2
@@ -8,3 +8,4 @@ golang.org/x/crypto/blake2b
 # golang.org/x/sys v0.28.0
 ## explicit; go 1.18
 golang.org/x/sys/cpu
+# github.com/jhnngrn/mimesis => ../mimesis

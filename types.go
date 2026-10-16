@@ -2,62 +2,22 @@ package creditnet
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
-	"strings"
-	"time"
+
+	"github.com/jhnngrn/mimesis"
 )
 
-// ---------------------------------------------------------------------------
-// Identities
-// ---------------------------------------------------------------------------
+// Re-export mimesis symbols used throughout creditnet and its modules.
+var (
+	ErrBadMethod = mimesis.ErrBadMethod
+	ErrNotFound  = mimesis.ErrNotFound
+)
 
-func ParseIdentity(id string) (user, domain string, err error) {
-	id = strings.ToLower(id)
-	i := strings.Index(id, "@")
-	if i <= 0 || i == len(id)-1 {
-		return "", "", fmt.Errorf("invalid identity %q (want user@domain)", id)
-	}
-	user, domain = id[:i], id[i+1:]
-	if !ValidUsername(user) {
-		return "", "", fmt.Errorf("invalid username %q", user)
-	}
-	return user, domain, nil
-}
-
-func ValidUsername(u string) bool {
-	if len(u) == 0 || len(u) > 64 {
-		return false
-	}
-	for _, c := range u {
-		if !(c == '_' || c == '-' || c == '.' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
-			return false
-		}
-	}
-	return true
-}
-
-func PeerDomain(peer string) string {
-	_, d, err := ParseIdentity(peer)
-	if err != nil {
-		return ""
-	}
-	return d
-}
-
-func IdentityInDomain(identity, domain string) bool {
-	_, d, err := ParseIdentity(identity)
-	return err == nil && d == domain
-}
+// Aliases so modules don't need to import mimesis directly for these.
+var ParseIdentity = mimesis.ParseIdentity
 
 // ---------------------------------------------------------------------------
 // Interfaces
 // ---------------------------------------------------------------------------
-
-// ScheduleFunc schedules a callback to run after a delay.
-// The node runs the callback under its own lock, commits, and kicks
-// any peers returned by the callback.
-type ScheduleFunc func(delay time.Duration, fn func() []string)
 
 // BandwidthFunc returns available (in, out) capacity for a peer,
 // accounting for effective balance, credit limits, and all reservations.
@@ -71,18 +31,7 @@ type Reserver interface {
 }
 
 // ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-var (
-	ErrBadMethod = errors.New("unknown sync method")
-	ErrNotFound  = errors.New("not found")
-)
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 func Enc(v any) json.RawMessage { d, _ := json.Marshal(v); return d }
-
-

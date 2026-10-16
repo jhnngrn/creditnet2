@@ -1,4 +1,4 @@
-package creditnet
+package mimesis
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	sess, _, err := s.authenticate(r)
 	if err != nil {
-		HttpError(w, http.StatusUnauthorized, err.Error())
+		httpError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	req, ok := readAPIRequest(w, r)
@@ -17,17 +17,17 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	ls := s.getLinks(sess.user)
 	if ls == nil {
-		HttpError(w, http.StatusInternalServerError, "no node")
+		httpError(w, http.StatusInternalServerError, "no node")
 		return
 	}
 
 	result, appErr := ls.HandleAccount(req.Method, req.Payload)
 	if appErr != nil {
-		ApiError(w, appErr.Error())
+		apiError(w, appErr.Error())
 		return
 	}
 	if result == nil {
 		result = json.RawMessage("true")
 	}
-	ApiOK(w, result)
+	apiOK(w, result)
 }

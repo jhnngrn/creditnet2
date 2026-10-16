@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"creditnet"
-	"github.com/jhnngrn/link"
+	"github.com/jhnngrn/mimesis"
 )
 
 // ---------------------------------------------------------------------------
@@ -53,13 +53,13 @@ type novFinalizeMsg struct {
 type Triad struct {
 	Novations  map[string]*Novation `json:"novations,omitempty"`
 	nodeID     string
-	schedule   creditnet.ScheduleFunc
+	schedule   mimesis.ScheduleFunc
 	trustlines map[string]*creditnet.Trustline
 	bandwidth  creditnet.BandwidthFunc
 }
 
 // NewTriad matches the ModuleFactory signature.
-func NewTriad(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) link.Module {
+func NewTriad(nodeID string, schedule mimesis.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) mimesis.Module {
 	h := &Triad{
 		Novations:  map[string]*Novation{},
 		nodeID:     nodeID,
@@ -111,7 +111,7 @@ func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts i
 	case "rollback":
 		return h.reqRollback(peer, payload)
 	}
-	return false, nil, creditnet.ErrBadMethod
+	return false, nil, mimesis.ErrBadMethod
 }
 
 func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, error) {
@@ -360,7 +360,7 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	case "status":
 		return creditnet.Enc(map[string]any{"novations": len(h.Novations)}), nil, nil
 	}
-	return nil, nil, creditnet.ErrBadMethod
+	return nil, nil, mimesis.ErrBadMethod
 }
 
 // ---------------------------------------------------------------------------

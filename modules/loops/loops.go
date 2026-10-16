@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"creditnet"
-	"github.com/jhnngrn/link"
+	"github.com/jhnngrn/mimesis"
 )
 
 const (
@@ -124,12 +124,12 @@ type Loops struct {
 	Probes    map[string][]*SearchProbe `json:"probes,omitempty"` // peer → outgoing search probes
 
 	nodeID     string
-	schedule   creditnet.ScheduleFunc
+	schedule   mimesis.ScheduleFunc
 	trustlines map[string]*creditnet.Trustline
 	bandwidth  creditnet.BandwidthFunc
 }
 
-func NewLoops(nodeID string, schedule creditnet.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) link.Module {
+func NewLoops(nodeID string, schedule mimesis.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) mimesis.Module {
 	h := &Loops{
 		Paths:      map[string]*Path{},
 		Clearings:  map[string]*Clearing{},
@@ -220,7 +220,7 @@ func (h *Loops) HandleRequest(peer, method string, payload json.RawMessage, ts i
 	case "cleanup":
 		return h.reqCleanup(peer, payload, ts)
 	}
-	return false, nil, creditnet.ErrBadMethod
+	return false, nil, mimesis.ErrBadMethod
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +291,7 @@ func (h *Loops) HandleAccount(method string, payload json.RawMessage) (json.RawM
 			"clearings": len(h.Clearings),
 		}), nil, nil
 	}
-	return nil, nil, creditnet.ErrBadMethod
+	return nil, nil, mimesis.ErrBadMethod
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv.Register("loops", loops.NewLoops)
+	creditnet.RegisterNode(srv)
+	creditnet.Register(srv, "loops", loops.NewLoops)
 	creditnet.RunAndWait(srv)
 }

@@ -1,4 +1,4 @@
-package creditnet
+package mimesis
 
 import (
 	"context"
@@ -12,14 +12,13 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/jhnngrn/link"
 )
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
+// Config configures a Server.
 type Config struct {
 	Domain  string
 	Listen  string
@@ -64,19 +63,30 @@ func (c *Config) fill() error {
 }
 
 // ---------------------------------------------------------------------------
+// ScheduleFunc + ModuleFactory
+// ---------------------------------------------------------------------------
+
+// ScheduleFunc schedules a callback to run after a delay.
+// The callback runs under the node's lock; it returns peers to kick.
+type ScheduleFunc func(delay time.Duration, fn func() []string)
+
+// ModuleFactory creates a module for a newly loaded or created node.
+// The factory receives the node identity, a scheduler for periodic work,
+// and persisted state (nil if new). App-specific dependencies (e.g.
+// shared data structures between modules) are captured in the closure.
+type ModuleFactory func(nodeID string, schedule ScheduleFunc, state json.RawMessage) Module
+
+type moduleReg struct {
+	name      string
+	factory   ModuleFactory
+	protected bool
+}
+
+// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
-// ModuleFactory creates a module for a newly loaded or created node.
-// Modules receive the node ID, a scheduler for periodic work, the
-// trustlines map for direct access, a bandwidth function, and persisted state (nil if new).
-type ModuleFactory func(nodeID string, schedule ScheduleFunc, trustlines map[string]*Trustline, bandwidth BandwidthFunc, state json.RawMessage) link.Module
-
-type moduleReg struct {
-	name    string
-	factory ModuleFactory
-}
-
+// Server is a multi-tenant p2p server that hosts Links nodes.
 type Server struct {
 	cfg       Config
 	store     Store
@@ -86,7 +96,7 @@ type Server struct {
 	factories []moduleReg
 
 	nmu   sync.RWMutex
-	nodes map[string]*link.Links
+	nodes map[string]*Links
 
 	umu      sync.Mutex
 	users    map[string]*UserRecord
@@ -96,13 +106,14 @@ type Server struct {
 	keyCache map[string]cachedKey
 }
 
-// Register adds a module factory. Call before Init/RunAndWait.
-func (s *Server) Register(name string, factory ModuleFactory) {
-	s.factories = append(s.factories, moduleReg{name: name, factory: factory})
+// Register adds a module factory. Call before Init.
+// If protected is true, the module cannot be removed via SetModules.
+func (s *Server) Register(name string, factory ModuleFactory, protected bool) {
+	s.factories = append(s.factories, moduleReg{name: name, factory: factory, protected: protected})
 }
 
-// Send posts a sync message to a peer's domain.
-func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
+// Send posts a signed sync message to a peer's domain.
+func (s *Server) Send(peerDomain string, msg SyncRequest) ([]byte, error) {
 	status, body, err := s.postSigned(peerDomain, "/p2p/tx", msg)
 	if err != nil {
 		return nil, err
@@ -119,13 +130,13 @@ func (s *Server) Send(peerDomain string, msg link.SyncRequest) ([]byte, error) {
 
 type nodeState struct {
 	ID         string                     `json:"id"`
-	Links      map[string]*link.Link      `json:"links"`
-	InviteMode link.InviteMode            `json:"invite_mode,omitempty"`
+	Links      map[string]*Link           `json:"links"`
+	InviteMode InviteMode                 `json:"invite_mode,omitempty"`
 	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
 }
 
-// newLinks creates a Links from persisted state (or nil for new).
-func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
+// NewLinks creates a Links from persisted state (or nil for new).
+func (s *Server) newLinks(id string, raw json.RawMessage) *Links {
 	var st nodeState
 	if raw != nil {
 		if err := json.Unmarshal(raw, &st); err != nil {
@@ -133,9 +144,7 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
 		}
 	}
 
-	// ls is captured by the commit closure below — declared first
-	// so the closure can reference it.
-	var ls *link.Links
+	var ls *Links
 
 	commit := func() {
 		ns := nodeState{ID: id, Links: ls.Map(), InviteMode: ls.InviteMode}
@@ -150,34 +159,27 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *link.Links {
 		}
 	}
 
-	send := func(peer string, msg link.SyncRequest) ([]byte, error) {
+	send := func(peer string, msg SyncRequest) ([]byte, error) {
 		return s.Send(PeerDomain(peer), msg)
 	}
 
-	ls = link.NewLinks(id, st.Links, st.InviteMode, send, commit)
-	ls.Protected = map[string]struct{}{"trustline": {}}
+	ls = NewLinks(id, st.Links, st.InviteMode, send, commit)
 
-	// Create and register the app-level Node first — other modules
-	// reference its Trustlines map and Bandwidth function.
-	th := NewNode(id, ls, handlerState(raw, "trustline"))
-	ls.RegisterModule(th)
-
-	// Register external modules from factories.
 	schedule := func(delay time.Duration, fn func() []string) {
 		ls.Schedule(delay, fn)
 	}
+
 	for _, f := range s.factories {
-		m := f.factory(id, schedule, th.Trustlines, th.Bandwidth, handlerState(raw, f.name))
+		m := f.factory(id, schedule, handlerState(raw, f.name))
 		ls.RegisterModule(m)
-		if r, ok := m.(Reserver); ok {
-			th.RegisterReserver(r)
+		if f.protected {
+			ls.Protected[f.name] = struct{}{}
 		}
 	}
 
 	return ls
 }
 
-// handlerState extracts a handler's persisted state from the node's raw JSON.
 func handlerState(raw json.RawMessage, name string) json.RawMessage {
 	if raw == nil {
 		return nil
@@ -191,6 +193,7 @@ func handlerState(raw json.RawMessage, name string) json.RawMessage {
 	return st.Handlers[name]
 }
 
+// NewServer creates a new server with the given configuration.
 func NewServer(cfg Config) (*Server, error) {
 	if err := cfg.fill(); err != nil {
 		return nil, err
@@ -213,13 +216,14 @@ func NewServer(cfg Config) (*Server, error) {
 	return &Server{
 		cfg: cfg, store: store, key: key,
 		client:   &http.Client{Timeout: cfg.HTTPTimeout},
-		nodes:    map[string]*link.Links{},
+		nodes:    map[string]*Links{},
 		users:    users,
 		sessions: map[string]*session{},
 		keyCache: map[string]cachedKey{},
 	}, nil
 }
 
+// Init loads persisted nodes and sets up HTTP routes.
 func (s *Server) Init() error {
 	ids, err := s.store.ListNodes()
 	if err != nil {
@@ -236,7 +240,6 @@ func (s *Server) Init() error {
 		}
 		s.nodes[user] = s.newLinks(id, raw)
 	}
-	// Resume pending sends from boot.
 	for _, ls := range s.nodes {
 		ls.KickAll()
 	}
@@ -254,6 +257,7 @@ func (s *Server) Init() error {
 	return nil
 }
 
+// Run listens on the configured address and serves until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.cfg.Listen)
 	if err != nil {
@@ -262,6 +266,7 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.Serve(ctx, ln)
 }
 
+// Serve serves on the given listener until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	hs := &http.Server{Handler: s.mux}
 	tctx, cancel := context.WithCancel(ctx)
@@ -286,17 +291,17 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 
 func (s *Server) logf(format string, args ...any) {
 	if s.cfg.Verbose {
-		log.Printf("[creditnet %s] "+format, append([]any{s.cfg.Domain}, args...)...)
+		log.Printf("[mimesis %s] "+format, append([]any{s.cfg.Domain}, args...)...)
 	}
 }
 
-func (s *Server) getLinks(user string) *link.Links {
+func (s *Server) getLinks(user string) *Links {
 	s.nmu.RLock()
 	defer s.nmu.RUnlock()
 	return s.nodes[user]
 }
 
-func (s *Server) linksByIdentity(id string) *link.Links {
+func (s *Server) linksByIdentity(id string) *Links {
 	user, domain, err := ParseIdentity(id)
 	if err != nil || domain != s.cfg.Domain {
 		return nil
@@ -309,56 +314,55 @@ func (s *Server) linksByIdentity(id string) *link.Links {
 // ---------------------------------------------------------------------------
 
 func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
-	sigDomain, sig, body, err := ReadP2P(r)
+	sigDomain, sig, body, err := readP2P(r)
 	if err != nil {
-		HttpError(w, http.StatusUnauthorized, "unauthorized")
+		httpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	var env link.SyncRequest
+	var env SyncRequest
 	if json.Unmarshal(body, &env) != nil {
-		HttpError(w, http.StatusBadRequest, "malformed")
+		httpError(w, http.StatusBadRequest, "malformed")
 		return
 	}
 	if !IdentityInDomain(env.From, sigDomain) {
-		HttpError(w, http.StatusUnauthorized, "unauthorized")
+		httpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	ls := s.linksByIdentity(env.To)
 	if ls == nil {
-		HttpError(w, http.StatusUnauthorized, "unauthorized")
+		httpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	// Early rejection before expensive signature verification.
 	if ls.QuickReject(env.From, env.Method) {
-		HttpError(w, http.StatusUnauthorized, "unauthorized")
+		httpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	if err := s.verifyP2PSignature(sigDomain, r.URL.Path, sig, body); err != nil {
-		HttpError(w, http.StatusUnauthorized, "unauthorized")
+		httpError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	resp, syncErr := ls.HandleSync(env)
 	if syncErr != nil {
 		switch {
-		case errors.Is(syncErr, link.ErrNoLink):
-			HttpError(w, http.StatusNotFound, "no link")
-		case errors.Is(syncErr, link.ErrInvitesDisabled):
-			HttpError(w, http.StatusForbidden, "invites disabled")
-		case errors.Is(syncErr, link.ErrMaxLinks):
-			HttpError(w, http.StatusBadRequest, "max links")
-		case errors.Is(syncErr, link.ErrStaleCounter), errors.Is(syncErr, link.ErrCounterAhead), errors.Is(syncErr, link.ErrCollision):
-			HttpError(w, http.StatusConflict, syncErr.Error())
-		case errors.Is(syncErr, link.ErrTimestamp):
-			HttpError(w, http.StatusConflict, syncErr.Error())
+		case errors.Is(syncErr, ErrNoLink):
+			httpError(w, http.StatusNotFound, "no link")
+		case errors.Is(syncErr, ErrInvitesDisabled):
+			httpError(w, http.StatusForbidden, "invites disabled")
+		case errors.Is(syncErr, ErrMaxLinks):
+			httpError(w, http.StatusBadRequest, "max links")
+		case errors.Is(syncErr, ErrStaleCounter), errors.Is(syncErr, ErrCounterAhead), errors.Is(syncErr, ErrCollision):
+			httpError(w, http.StatusConflict, syncErr.Error())
+		case errors.Is(syncErr, ErrTimestamp):
+			httpError(w, http.StatusConflict, syncErr.Error())
 		case errors.Is(syncErr, ErrBadMethod):
-			HttpError(w, http.StatusBadRequest, syncErr.Error())
+			httpError(w, http.StatusBadRequest, syncErr.Error())
 		default:
-			HttpError(w, http.StatusBadRequest, syncErr.Error())
+			httpError(w, http.StatusBadRequest, syncErr.Error())
 		}
 		return
 	}
-	WriteJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, resp)
 }

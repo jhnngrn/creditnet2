@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jhnngrn/link"
+	"github.com/jhnngrn/mimesis"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,12 +39,12 @@ type Trustline struct {
 type Node struct {
 	Trustlines map[string]*Trustline `json:"trustlines"`
 	nodeID     string
-	links      *link.Links
+	links      *mimesis.Links
 	reservers  []Reserver
 }
 
 // NewNode creates a Node from persisted state.
-func NewNode(nodeID string, links *link.Links, state json.RawMessage) *Node {
+func NewNode(nodeID string, links *mimesis.Links, state json.RawMessage) *Node {
 	h := &Node{
 		Trustlines: map[string]*Trustline{},
 		nodeID:     nodeID,
@@ -62,6 +62,10 @@ func NewNode(nodeID string, links *link.Links, state json.RawMessage) *Node {
 }
 
 func (h *Node) Name() string { return "trustline" }
+
+// SetLinks implements mimesis.LinksAware. Called by Links.RegisterModule
+// to inject the Links reference after construction.
+func (h *Node) SetLinks(ls *mimesis.Links) { h.links = ls }
 
 // RegisterReserver adds a Reserver whose reservations are subtracted
 // from available bandwidth.
@@ -356,24 +360,27 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 		if h.links.Full() {
 			return nil, nil, fmt.Errorf("max links reached")
 		}
-		lk := h.links.Create(peerID)
+		lk, err := h.links.Create(peerID)
+		if err != nil {
+			return nil, nil, err
+		}
 		lk.State.IntentConnect = true
 	}
 	// Request trustline + chosen modules on this link.
 	lk := h.links.Get(peerID)
 	if lk.State.Modules == nil {
-		lk.State.Modules = map[string]*link.ConnectionState{}
+		lk.State.Modules = map[string]*mimesis.ConnectionState{}
 	}
 	if mod := lk.State.Modules["trustline"]; mod == nil {
-		lk.State.Modules["trustline"] = &link.ConnectionState{IntentConnect: true}
-	} else if mod.Status != link.Connected {
+		lk.State.Modules["trustline"] = &mimesis.ConnectionState{IntentConnect: true}
+	} else if mod.Status != mimesis.Connected {
 		mod.IntentConnect = true
 	}
 	for _, name := range p.Modules {
 		if h.links.ModuleMap()[name] != nil {
 			if mod := lk.State.Modules[name]; mod == nil {
-				lk.State.Modules[name] = &link.ConnectionState{IntentConnect: true}
-			} else if mod.Status != link.Connected {
+				lk.State.Modules[name] = &mimesis.ConnectionState{IntentConnect: true}
+			} else if mod.Status != mimesis.Connected {
 				mod.IntentConnect = true
 			}
 		}
@@ -398,22 +405,22 @@ func (h *Node) acceptPeer(payload json.RawMessage) (json.RawMessage, []string, e
 	if lk == nil {
 		return nil, nil, fmt.Errorf("no link to %s", peerID)
 	}
-	if lk.State.Status != link.Incoming {
+	if lk.State.Status != mimesis.Incoming {
 		return nil, nil, fmt.Errorf("link to %s is not incoming", peerID)
 	}
 	lk.State.IntentConnect = true
 	// Request trustline + chosen modules on this link.
 	if lk.State.Modules == nil {
-		lk.State.Modules = map[string]*link.ConnectionState{}
+		lk.State.Modules = map[string]*mimesis.ConnectionState{}
 	}
 	if lk.State.Modules["trustline"] == nil {
-		lk.State.Modules["trustline"] = &link.ConnectionState{}
+		lk.State.Modules["trustline"] = &mimesis.ConnectionState{}
 	}
 	lk.State.Modules["trustline"].IntentConnect = true
 	for _, name := range p.Modules {
 		if h.links.ModuleMap()[name] != nil {
 			if lk.State.Modules[name] == nil {
-				lk.State.Modules[name] = &link.ConnectionState{}
+				lk.State.Modules[name] = &mimesis.ConnectionState{}
 			}
 			lk.State.Modules[name].IntentConnect = true
 		}
@@ -438,7 +445,7 @@ func (h *Node) rejectPeer(payload json.RawMessage) (json.RawMessage, []string, e
 	if lk == nil {
 		return nil, nil, fmt.Errorf("no link to %s", peerID)
 	}
-	if lk.State.Status != link.Incoming {
+	if lk.State.Status != mimesis.Incoming {
 		return nil, nil, fmt.Errorf("link to %s is not incoming", peerID)
 	}
 	lk.State.IntentClose = true

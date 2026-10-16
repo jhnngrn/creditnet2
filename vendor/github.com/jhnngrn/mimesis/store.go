@@ -1,4 +1,4 @@
-package creditnet
+package mimesis
 
 import (
 	"encoding/json"
@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+// Store is the persistence interface. Implementations must be safe for
+// concurrent use.
 type Store interface {
 	SaveNode(id string, v any) error
 	LoadNode(id string) (json.RawMessage, error)
@@ -19,6 +21,7 @@ type Store interface {
 	LoadServerKey() ([]byte, error)
 }
 
+// UserRecord is a persisted user account.
 type UserRecord struct {
 	Name  string `json:"name"`
 	Salt  []byte `json:"salt"`
@@ -26,8 +29,10 @@ type UserRecord struct {
 	Admin bool   `json:"admin"`
 }
 
+// FileStore is a file-based Store implementation.
 type FileStore struct{ dir string }
 
+// NewFileStore creates a file-based store in the given directory.
 func NewFileStore(dir string) (*FileStore, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "nodes"), 0o700); err != nil {
 		return nil, err
@@ -42,32 +47,48 @@ func (fs *FileStore) nodePath(id string) string {
 
 func (fs *FileStore) SaveNode(id string, v any) error {
 	b, err := json.MarshalIndent(v, "", " ")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	return atomicWrite(fs.nodePath(id), b)
 }
 
 func (fs *FileStore) LoadNode(id string) (json.RawMessage, error) {
 	b, err := os.ReadFile(fs.nodePath(id))
-	if os.IsNotExist(err) { return nil, ErrNotFound }
+	if os.IsNotExist(err) {
+		return nil, ErrNotFound
+	}
 	return json.RawMessage(b), err
 }
 
 func (fs *FileStore) DeleteNode(id string) error {
 	err := os.Remove(fs.nodePath(id))
-	if os.IsNotExist(err) { return nil }
+	if os.IsNotExist(err) {
+		return nil
+	}
 	return err
 }
 
 func (fs *FileStore) ListNodes() ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join(fs.dir, "nodes"))
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	var ids []string
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") { continue }
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
 		b, err := os.ReadFile(filepath.Join(fs.dir, "nodes", e.Name()))
-		if err != nil { continue }
-		var peek struct{ ID string `json:"id"` }
-		if json.Unmarshal(b, &peek) == nil && peek.ID != "" { ids = append(ids, peek.ID) }
+		if err != nil {
+			continue
+		}
+		var peek struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(b, &peek) == nil && peek.ID != "" {
+			ids = append(ids, peek.ID)
+		}
 	}
 	return ids, nil
 }
@@ -79,10 +100,16 @@ func (fs *FileStore) SaveUsers(users map[string]*UserRecord) error {
 
 func (fs *FileStore) LoadUsers() (map[string]*UserRecord, error) {
 	b, err := os.ReadFile(filepath.Join(fs.dir, "users.json"))
-	if os.IsNotExist(err) { return map[string]*UserRecord{}, nil }
-	if err != nil { return nil, err }
+	if os.IsNotExist(err) {
+		return map[string]*UserRecord{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	users := map[string]*UserRecord{}
-	if err := json.Unmarshal(b, &users); err != nil { return nil, err }
+	if err := json.Unmarshal(b, &users); err != nil {
+		return nil, err
+	}
 	return users, nil
 }
 
@@ -92,8 +119,12 @@ func (fs *FileStore) SaveServerKey(seed []byte) error {
 
 func (fs *FileStore) LoadServerKey() ([]byte, error) {
 	b, err := os.ReadFile(filepath.Join(fs.dir, "server_key"))
-	if os.IsNotExist(err) { return nil, ErrNotFound }
-	if err != nil { return nil, err }
+	if os.IsNotExist(err) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
 	var seed []byte
 	_, err = fmt.Sscanf(strings.TrimSpace(string(b)), "%x", &seed)
 	return seed, err
@@ -102,11 +133,26 @@ func (fs *FileStore) LoadServerKey() ([]byte, error) {
 func atomicWrite(path string, data []byte) error {
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil { return err }
-	if _, err = f.Write(data); err == nil { err = f.Sync() }
-	if cerr := f.Close(); err == nil { err = cerr }
-	if err != nil { os.Remove(tmp); return err }
-	if err := os.Rename(tmp, path); err != nil { os.Remove(tmp); return err }
-	if d, derr := os.Open(filepath.Dir(path)); derr == nil { d.Sync(); d.Close() }
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if d, derr := os.Open(filepath.Dir(path)); derr == nil {
+		d.Sync()
+		d.Close()
+	}
 	return nil
 }

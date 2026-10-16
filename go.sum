@@ -1,5 +1,3 @@
-github.com/jhnngrn/link v0.1.0 h1:MoIb09CjKfI+XhBxAogg95DUyoRBwldrPhARtx7We/M=
-github.com/jhnngrn/link v0.1.0/go.mod h1:xfo3/I6BQO1Ef06Oj5V2C1A4xDYFUCVqggSHDyijLYI=
 golang.org/x/crypto v0.31.0 h1:ihbySMvVjLAeSH1IbfcRTkD/iNscyz8rGzjF/E5hV6U=
 golang.org/x/crypto v0.31.0/go.mod h1:kDsLvtWBEx7MV9tJOj9bnXsPbxwJQ6csT/x4KIN4Ssk=
 golang.org/x/sys v0.28.0 h1:Fksou7UEQUWlKvIdsqzJmUmCX3cZuD2+P3XyyzwMhlA=
