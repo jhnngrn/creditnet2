@@ -14,14 +14,14 @@ func ParseIdentity(id string) (user, domain string, err error) {
 		return "", "", fmt.Errorf("invalid identity %q (want user@domain)", id)
 	}
 	user, domain = id[:i], id[i+1:]
-	if !ValidUsername(user) {
+	if !validUsername(user) {
 		return "", "", fmt.Errorf("invalid username %q", user)
 	}
 	return user, domain, nil
 }
 
-// ValidUsername returns true if u is a valid username component.
-func ValidUsername(u string) bool {
+// validUsername returns true if u is a valid username component.
+func validUsername(u string) bool {
 	if len(u) == 0 || len(u) > 64 {
 		return false
 	}
@@ -33,8 +33,8 @@ func ValidUsername(u string) bool {
 	return true
 }
 
-// PeerDomain extracts the domain part of a peer identity.
-func PeerDomain(peer string) string {
+// peerDomain extracts the domain part of a peer identity.
+func peerDomain(peer string) string {
 	_, d, err := ParseIdentity(peer)
 	if err != nil {
 		return ""
@@ -42,8 +42,8 @@ func PeerDomain(peer string) string {
 	return d
 }
 
-// IdentityInDomain reports whether the identity belongs to the given domain.
-func IdentityInDomain(identity, domain string) bool {
+// identityInDomain reports whether the identity belongs to the given domain.
+func identityInDomain(identity, domain string) bool {
 	_, d, err := ParseIdentity(identity)
 	return err == nil && d == domain
 }

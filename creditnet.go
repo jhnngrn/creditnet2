@@ -29,17 +29,17 @@ type AppModuleFactory func(
 // This must be called before any Register calls, because other modules
 // depend on the Node's trustlines and bandwidth.
 func RegisterNode(srv *mimesis.Server) {
-	srv.Register("trustline", func(nodeID string, links *mimesis.Links, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-		return NewNode(nodeID, links, state)
-	}, true)
+	srv.Register("trustline", func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+		return NewNode(name, nodeID, node, state)
+	})
 }
 
 // Register registers a creditnet app module factory on the server.
 // The factory receives trustlines and bandwidth from the Node module,
 // which must be registered first via RegisterNode.
 func Register(srv *mimesis.Server, name string, factory AppModuleFactory) {
-	srv.Register(name, func(nodeID string, links *mimesis.Links, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-		mod := links.ModuleMap()["trustline"]
+	srv.Register(name, func(_ string, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+		mod := node.ModuleMap()["trustline"]
 		if mod == nil {
 			panic(fmt.Sprintf("creditnet.Register: trustline module not found for %s — call RegisterNode before Register", nodeID))
 		}
@@ -49,5 +49,5 @@ func Register(srv *mimesis.Server, name string, factory AppModuleFactory) {
 			n.RegisterReserver(r)
 		}
 		return m
-	}, false)
+	})
 }

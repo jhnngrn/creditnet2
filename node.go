@@ -38,15 +38,17 @@ type Trustline struct {
 // Bandwidth function that other modules depend on.
 type Node struct {
 	Trustlines map[string]*Trustline `json:"trustlines"`
+	name       string
 	nodeID     string
-	links      *mimesis.Links
+	links      *mimesis.Node
 	reservers  []Reserver
 }
 
 // NewNode creates a Node from persisted state.
-func NewNode(nodeID string, links *mimesis.Links, state json.RawMessage) *Node {
+func NewNode(name, nodeID string, links *mimesis.Node, state json.RawMessage) *Node {
 	h := &Node{
 		Trustlines: map[string]*Trustline{},
+		name:       name,
 		nodeID:     nodeID,
 		links:      links,
 	}
@@ -95,17 +97,17 @@ func (h *Node) Bandwidth(peer string) (in, out int64) {
 	return
 }
 
-// refLink increments the ref count on the link's ConnectionState.
+// refLink increments the module's ref count on the link.
 func (h *Node) refLink(peer string) {
 	if lk := h.links.Get(peer); lk != nil {
-		lk.State.Ref()
+		lk.RefModule(h.name)
 	}
 }
 
-// unrefLink decrements the ref count on the link's ConnectionState.
+// unrefLink decrements the module's ref count on the link.
 func (h *Node) unrefLink(peer string) {
 	if lk := h.links.Get(peer); lk != nil {
-		lk.State.UnrefClose()
+		lk.UnrefCloseModule(h.name)
 	}
 }
 
