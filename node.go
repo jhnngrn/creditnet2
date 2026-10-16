@@ -375,7 +375,7 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 		if peerID == h.nodeID {
 			return nil, nil, fmt.Errorf("cannot link to self")
 		}
-		if _, err := h.links.Create(peerID); err != nil {
+		if _, err := h.links.Connect(peerID); err != nil {
 			return nil, nil, err
 		}
 	}

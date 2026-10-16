@@ -213,10 +213,10 @@ func (n *Node) len() int              { return len(n.Links) }
 func (n *Node) full() bool            { return len(n.Links) >= maxLinks }
 func (n *Node) delete(peer string)    { delete(n.Links, peer) }
 
-// Create adds a new outgoing link to peer and returns it.
+// Connect creates a new outgoing link to peer and returns it.
 // The link is created with IntentConnect set, so the sync loop
 // will initiate a connection. Returns errMaxLinks if at capacity.
-func (n *Node) Create(peer string) (*Link, error) {
+func (n *Node) Connect(peer string) (*Link, error) {
 	if n.full() {
 		return nil, errMaxLinks
 	}
