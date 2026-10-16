@@ -29,49 +29,39 @@ Flags:
 
 ## Architecture
 
-The bilateral sync primitive lives in its own repository
-([github.com/jhnngrn/link](https://github.com/jhnngrn/link)) and is
-imported as an external package. It has zero dependencies back to
-creditnet and can be used standalone in any p2p application.
+creditnet is built on [mimesis](https://github.com/jhnngrn/mimesis), a
+framework for federated p2p applications. Mimesis provides the bilateral
+sync primitive, multi-tenant HTTP server, ed25519 peer authentication,
+argon2 user auth, and file-based persistence. creditnet only implements
+the application logic as modules.
 
 ```
-github.com/jhnngrn/link   (external)
-  link.go              bilateral sync primitive: Link, Links collection,
-                       sync lifecycle, wire types, dispatch, module negotiation,
-                       InviteMode, PeerSend
+github.com/jhnngrn/mimesis   (external)
+  bilateral sync, server, crypto, auth, persistence, identity
 
-types.go               identities, Module interface, errors, helpers
-node.go                Node: app-level module implementing link.Module,
+creditnet.go           thin wrapper: Boot, RegisterNode, Register
+types.go               creditnet-specific types and re-exports
+node.go                Node: trustline module implementing mimesis.Module,
                        holds trustlines and bandwidth, registers reservers
 trustline.go           trustline data and sync: credit limits, balances, payments
 demurrage.go           demurrage computation (decay over time)
-server.go              Server, Config, module factory registration, P2P
-account.go             namespace-routed account API dispatch
-keys.go                Ed25519 signing and verification
-users.go               auth, sessions, admin, argon2 password hashing
-store.go               persistence (file-based)
-run.go                 Boot/RunAndWait helpers
+queue.go               generic enqueue/dequeue helpers
 
 modules/
   triad/               three-party novation for circular debt elimination
   loops/               multi-hop loop clearing with hash-chain 2PC settlement
 
 cmd/
-  base/                server with built-in trustline module
+  base/                server with trustline module
   triad/               server with trustline + triad modules
   loops/               server with trustline + loops modules
 ```
 
-The link package ([github.com/jhnngrn/link](https://github.com/jhnngrn/link))
-is a self-contained bilateral sync primitive with no dependencies back to
-creditnet. It owns all bilateral state, protocol logic, module negotiation,
-collection management, policy (InviteMode, MaxLinks), dispatch, locking,
-persistence (via Commit callback), and the full sync loop (send, retry, kick).
-Node is the app-level module that implements link.Module — it holds trustlines
-and bandwidth that other modules depend on.
-Modules register under a namespace via `Server.Register(name, ModuleFactory)`
-and receive sync dispatch. Different binaries under `cmd/` combine different
-sets of modules.
+Node is the core module — it holds trustlines and bandwidth that other
+modules depend on. `RegisterNode` registers it first, then `Register`
+wraps app-specific factories so they receive trustlines and bandwidth
+from the Node via `links.ModuleMap()["trustline"]`. Different binaries
+under `cmd/` combine different sets of modules.
 
 ## Link layer
 
