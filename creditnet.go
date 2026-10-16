@@ -48,19 +48,8 @@ func getNode(nodeID string) *Node {
 // This must be called before any Register calls, because other modules
 // depend on the Node's trustlines and bandwidth.
 func RegisterNode(srv *mimesis.Server) {
-	srv.Register("trustline", func(nodeID string, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-		// We need the Links for this node. The Node module receives
-		// its Links via NewNode — but at registration time we don't
-		// have the Links yet. The mimesis server calls the factory
-		// from newLinks, and by then the Links is being built.
-		//
-		// The Node needs a *mimesis.Links to call Get/Create/Full/Map etc.
-		// But mimesis.newLinks creates the Links and then calls factories.
-		// The factory receives (nodeID, schedule, state) — no Links.
-		//
-		// Solution: create Node without Links, store it, and set Links later
-		// via a SetLinks method. The Links ref is set before any sync happens.
-		n := NewNode(nodeID, nil, state)
+	srv.Register("trustline", func(nodeID string, links *mimesis.Links, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+		n := NewNode(nodeID, links, state)
 		storeNode(nodeID, n)
 		return n
 	}, true)
@@ -70,7 +59,7 @@ func RegisterNode(srv *mimesis.Server) {
 // The factory receives trustlines and bandwidth from the Node module,
 // which must be registered first via RegisterNode.
 func Register(srv *mimesis.Server, name string, factory AppModuleFactory) {
-	srv.Register(name, func(nodeID string, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+	srv.Register(name, func(nodeID string, links *mimesis.Links, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
 		n := getNode(nodeID)
 		mod := factory(nodeID, schedule, n.Trustlines, n.Bandwidth, state)
 		// If the module is a Reserver, register it with the Node.

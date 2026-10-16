@@ -63,10 +63,6 @@ func NewNode(nodeID string, links *mimesis.Links, state json.RawMessage) *Node {
 
 func (h *Node) Name() string { return "trustline" }
 
-// SetLinks implements mimesis.LinksAware. Called by Links.RegisterModule
-// to inject the Links reference after construction.
-func (h *Node) SetLinks(ls *mimesis.Links) { h.links = ls }
-
 // RegisterReserver adds a Reserver whose reservations are subtracted
 // from available bandwidth.
 func (h *Node) RegisterReserver(r Reserver) {

@@ -189,17 +189,8 @@ func NewLinks(self string, m map[string]*Link, mode InviteMode, send func(string
 func (ls *Links) Self() string { return ls.self }
 
 // RegisterModule adds a module to the link collection.
-// LinksAware is an optional interface a Module can implement to receive
-// a reference to its owning Links after registration.
-type LinksAware interface {
-	SetLinks(ls *Links)
-}
-
 func (ls *Links) RegisterModule(m Module) {
 	ls.moduleMap[m.Name()] = m
-	if la, ok := m.(LinksAware); ok {
-		la.SetLinks(ls)
-	}
 }
 
 // ModuleMap returns the registered modules for serialization.

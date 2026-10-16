@@ -71,10 +71,11 @@ func (c *Config) fill() error {
 type ScheduleFunc func(delay time.Duration, fn func() []string)
 
 // ModuleFactory creates a module for a newly loaded or created node.
-// The factory receives the node identity, a scheduler for periodic work,
-// and persisted state (nil if new). App-specific dependencies (e.g.
-// shared data structures between modules) are captured in the closure.
-type ModuleFactory func(nodeID string, schedule ScheduleFunc, state json.RawMessage) Module
+// The factory receives the node identity, the owning Links, a scheduler
+// for periodic work, and persisted state (nil if new). App-specific
+// dependencies (e.g. shared data structures between modules) are
+// captured in the closure.
+type ModuleFactory func(nodeID string, links *Links, schedule ScheduleFunc, state json.RawMessage) Module
 
 type moduleReg struct {
 	name      string
@@ -170,7 +171,7 @@ func (s *Server) newLinks(id string, raw json.RawMessage) *Links {
 	}
 
 	for _, f := range s.factories {
-		m := f.factory(id, schedule, handlerState(raw, f.name))
+		m := f.factory(id, ls, schedule, handlerState(raw, f.name))
 		ls.RegisterModule(m)
 		if f.protected {
 			ls.Protected[f.name] = struct{}{}
