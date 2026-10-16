@@ -107,7 +107,7 @@ func (h *Node) refLink(peer string) {
 // unrefLink decrements the module's ref count on the link.
 func (h *Node) unrefLink(peer string) {
 	if lk := h.links.Get(peer); lk != nil {
-		lk.UnrefCloseModule(h.name)
+		lk.UnrefModule(h.name)
 	}
 }
 

@@ -59,21 +59,6 @@ type ConnectionState struct {
 	Refs          uint             `json:"refs,omitempty"`
 }
 
-// Ref increments the reference count.
-func (c *ConnectionState) Ref()   { c.Refs++ }
-
-// Unref decrements the reference count.
-func (c *ConnectionState) Unref() { if c.Refs > 0 { c.Refs-- } }
-
-// UnrefClose decrements refs and sets IntentClose when refs reach 0.
-func (c *ConnectionState) UnrefClose() {
-	if c.Refs > 0 {
-		c.Refs--
-	}
-	if c.Refs == 0 {
-		c.IntentClose = true
-	}
-}
 
 // LinkState is a ConnectionState (for the link itself) plus per-module connections.
 type LinkState struct {
@@ -146,6 +131,7 @@ func (l *Link) RefModule(name string) {
 
 // UnrefModule decrements the named module's ref count on this link.
 // If the module goes from 1 to 0 refs, the link-level ref count is also decremented.
+// When all link-level refs reach 0, IntentClose is set.
 func (l *Link) UnrefModule(name string) {
 	mod := l.State.Modules[name]
 	if mod == nil || mod.Refs == 0 {
@@ -155,12 +141,6 @@ func (l *Link) UnrefModule(name string) {
 	if mod.Refs == 0 && l.State.Refs > 0 {
 		l.State.Refs--
 	}
-}
-
-// UnrefCloseModule decrements the module's refs and sets link IntentClose when
-// all link-level refs reach 0.
-func (l *Link) UnrefCloseModule(name string) {
-	l.UnrefModule(name)
 	if l.State.Refs == 0 {
 		l.State.IntentClose = true
 	}
