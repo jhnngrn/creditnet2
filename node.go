@@ -367,7 +367,7 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 		return nil, nil, fmt.Errorf("peer %s already exists", peerID)
 	}
 	if lk := h.links.Get(peerID); lk != nil {
-		if lk.State.IntentClose {
+		if lk.Closing() {
 			return nil, nil, fmt.Errorf("link to %s is closing", peerID)
 		}
 	} else {
@@ -381,23 +381,7 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 	}
 	// Request trustline + chosen modules on this link.
 	lk := h.links.Get(peerID)
-	if lk.State.Modules == nil {
-		lk.State.Modules = map[string]*mimesis.ConnectionState{}
-	}
-	if mod := lk.State.Modules["trustline"]; mod == nil {
-		lk.State.Modules["trustline"] = &mimesis.ConnectionState{IntentConnect: true}
-	} else if mod.Status != mimesis.Connected {
-		mod.IntentConnect = true
-	}
-	for _, name := range p.Modules {
-		if h.links.ModuleMap()[name] != nil {
-			if mod := lk.State.Modules[name]; mod == nil {
-				lk.State.Modules[name] = &mimesis.ConnectionState{IntentConnect: true}
-			} else if mod.Status != mimesis.Connected {
-				mod.IntentConnect = true
-			}
-		}
-	}
+	lk.ConnectModules(append([]string{"trustline"}, p.Modules...), h.links.ModuleMap())
 	if h.Trustlines[peerID] == nil {
 		h.Trustlines[peerID] = &Trustline{}
 	}

@@ -146,6 +146,9 @@ func (l *Link) UnrefModule(name string) {
 	}
 }
 
+// Closing returns true if this link is closing (IntentClose is set).
+func (l *Link) Closing() bool { return l.State.IntentClose }
+
 // ModuleEnabled returns true if the named module is bilaterally active on this link.
 func (l *Link) ModuleEnabled(name string) bool {
 	c := l.State.Modules[name]
@@ -745,6 +748,25 @@ func (n *Node) status() json.RawMessage {
 		}
 	}
 	return enc(result)
+}
+
+// ConnectModules requests connection for the named modules on this link,
+// filtering by registered modules. Existing modules are left untouched.
+func (l *Link) ConnectModules(modules []string, registered map[string]Module) {
+	if l.State.Modules == nil {
+		l.State.Modules = map[string]*ConnectionState{}
+	}
+	for _, name := range modules {
+		if _, ok := registered[name]; !ok {
+			continue
+		}
+		mod := l.State.Modules[name]
+		if mod == nil {
+			l.State.Modules[name] = &ConnectionState{IntentConnect: true}
+		} else if mod.Status != Connected {
+			mod.IntentConnect = true
+		}
+	}
 }
 
 // SetModules proposes the given modules on this link, filtering by supported.
