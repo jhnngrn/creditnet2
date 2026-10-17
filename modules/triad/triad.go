@@ -517,12 +517,14 @@ func (h *Triad) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []
 	}
 
 	// Settle full amount.
-	if p := h.trustlines[peer]; p != nil {
-		if side == IN {
-			p.AddBalance(cl.Amount, ts)
-		} else {
-			p.AddBalance(-cl.Amount, ts)
-		}
+	p := h.trustlines[peer]
+	if p == nil {
+		return false, nil, fmt.Errorf("cleanup: trustline not connected")
+	}
+	if side == IN {
+		p.AddBalance(cl.Amount, ts)
+	} else {
+		p.AddBalance(-cl.Amount, ts)
 	}
 	h.node.UnrefModule(peer, h.name)
 	cl.Side[side] = ClearingSide{}
