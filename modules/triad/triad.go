@@ -630,13 +630,17 @@ func (h *Triad) buildMsg(id string, cl *Clearing, side int) (string, json.RawMes
 			Next:       cl.Side[IN].Peer, // receiver should forward back to my InPeer
 		}), ts
 	case "finalize":
-		pre := cl.Preimage
-		if cl.Seed != nil {
-			pre = chainHash(cl.Seed, cl.Step-1)
+		var preHex string
+		if !cl.Final {
+			pre := cl.Preimage
+			if cl.Seed != nil {
+				pre = chainHash(cl.Seed, cl.Step-1)
+			}
+			preHex = hex.EncodeToString(pre)
 		}
 		return "finalize", creditnet.Enc(finalizeMsg{
 			ClearingID: id,
-			Preimage:   hex.EncodeToString(pre),
+			Preimage:   preHex,
 			Final:      cl.Final,
 		}), ts
 	case "cancel":
