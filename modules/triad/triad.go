@@ -54,8 +54,9 @@ type Triad struct {
 	nodeID     string
 	node       *mimesis.Node
 	schedule   mimesis.ScheduleFunc
-	trustlines map[string]*creditnet.Trustline
-	bandwidth  creditnet.BandwidthFunc
+	trustlines     map[string]*creditnet.Trustline
+	bandwidth      creditnet.BandwidthFunc
+	pendingBalance creditnet.PendingBalanceFunc
 }
 
 // NewTriad matches the mimesis.ModuleFactory signature.
@@ -67,8 +68,9 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 		nodeID:     nodeID,
 		node:       node,
 		schedule:   schedule,
-		trustlines: tl.Trustlines,
-		bandwidth:  tl.Bandwidth,
+		trustlines:     tl.Trustlines,
+		bandwidth:      tl.Bandwidth,
+		pendingBalance: tl.PendingBalance,
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {
@@ -131,15 +133,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 	}
 
 	// New commit — verify connectivity, bandwidth, and debt direction.
-	p := h.trustlines[peer]
-	if p == nil {
-		return false, nil, nil
-	}
-	if m.Next == "" || !h.isConnected(m.Next) {
-		return false, nil, nil
-	}
-	nPeer := h.trustlines[m.Next]
-	if nPeer == nil {
+	if !h.isConnected(peer) || m.Next == "" || !h.isConnected(m.Next) {
 		return false, nil, nil
 	}
 	if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Next) >= MaxNovPerLink {
@@ -151,9 +145,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		return false, nil, nil
 	}
 	// At least one side must have debt to settle.
-	debtIn := bwIn - p.CreditLimit
-	debtOut := bwOut - nPeer.CreditLimitIn
-	if debtIn <= 0 && debtOut <= 0 {
+	if h.pendingBalance(peer, IN) <= 0 && h.pendingBalance(m.Next, OUT) <= 0 {
 		return false, nil, nil
 	}
 
@@ -366,11 +358,7 @@ func (h *Triad) tryNovate() []string {
 	var kicks []string
 	peers := h.connectedPeers()
 	for _, debtor := range peers {
-		dPeer := h.trustlines[debtor]
-		if dPeer == nil {
-			continue
-		}
-		avlD := h.bandwidth(debtor, OUT) - dPeer.CreditLimitIn
+		avlD := h.pendingBalance(debtor, OUT)
 		if avlD <= 0 || h.novLinkCount(debtor) >= MaxNovPerLink {
 			continue
 		}
@@ -378,11 +366,7 @@ func (h *Triad) tryNovate() []string {
 			if creditor == debtor {
 				continue
 			}
-			cPeer := h.trustlines[creditor]
-			if cPeer == nil {
-				continue
-			}
-			avlC := h.bandwidth(creditor, IN) - cPeer.CreditLimit
+			avlC := h.pendingBalance(creditor, IN)
 			if avlC <= 0 || h.novLinkCount(creditor) >= MaxNovPerLink {
 				continue
 			}

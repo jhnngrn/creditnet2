@@ -78,26 +78,44 @@ func (h *Node) GetTrustline(peer string) *Trustline {
 	return p
 }
 
-// Bandwidth returns available capacity for a peer on a given side.
-func (h *Node) Bandwidth(peer string, side int) int64 {
+// PendingBalance returns effective balance minus reservations.
+// Positive means debt exists: peer owes us (OUT) or we owe them (IN).
+func (h *Node) PendingBalance(peer string, side int) int64 {
 	p := h.GetTrustline(peer)
 	if p == nil {
 		return 0
 	}
 	eff := p.EffectiveBalance(time.Now().Unix())
-	var limit int64
+	var debt int64
 	if side == OUT {
-		limit = p.CreditLimitIn + eff
+		debt = eff
 	} else {
-		limit = p.CreditLimit - eff
+		debt = -eff
 	}
 	for _, r := range h.reservers {
-		limit -= r.Reserved(peer, side)
+		debt -= r.Reserved(peer, side)
 	}
-	if limit < 0 {
+	return debt
+}
+
+// Bandwidth returns available capacity for a peer on a given side.
+// bw = CreditLimit + PendingBalance, floored at 0.
+func (h *Node) Bandwidth(peer string, side int) int64 {
+	p := h.GetTrustline(peer)
+	if p == nil {
 		return 0
 	}
-	return limit
+	var limit int64
+	if side == OUT {
+		limit = p.CreditLimitIn
+	} else {
+		limit = p.CreditLimit
+	}
+	total := limit + h.PendingBalance(peer, side)
+	if total < 0 {
+		return 0
+	}
+	return total
 }
 
 

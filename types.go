@@ -31,6 +31,10 @@ const (
 // BandwidthFunc returns available capacity for a peer on a given side.
 type BandwidthFunc func(peer string, side int) int64
 
+// PendingBalanceFunc returns effective balance minus reservations.
+// Positive means debt exists: peer owes us (OUT) or we owe them (IN).
+type PendingBalanceFunc func(peer string, side int) int64
+
 // Reserver reports capacity reserved by a module on a given peer/side.
 // Modules that hold temporary reservations (e.g. in-flight clearings)
 // implement this so the bandwidth computation can subtract them.
