@@ -97,19 +97,6 @@ func (h *Node) Bandwidth(peer string) (in, out int64) {
 	return
 }
 
-// refModule increments this module's ref count on the peer's link.
-func (h *Node) refModule(peer string) {
-	if lk := h.links.Get(peer); lk != nil {
-		lk.RefModule(h.name)
-	}
-}
-
-// unrefModule decrements this module's ref count on the peer's link.
-func (h *Node) unrefModule(peer string) {
-	if lk := h.links.Get(peer); lk != nil {
-		lk.UnrefModule(h.name)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // link.Module — HandleRequest
@@ -129,14 +116,14 @@ func (h *Node) HandleRequest(peerID, method string, payload json.RawMessage, ts 
 		}
 		peer.Connected = true
 		peer.IntentClose = false
-		h.refModule(peerID)
+		h.links.RefModule(peerID, h.name)
 		return true, nil, nil
 	case "close":
 		peer := h.Trustlines[peerID]
 		if peer == nil {
 			return true, nil, nil // already gone
 		}
-		h.unrefModule(peerID)
+		h.links.UnrefModule(peerID, h.name)
 		delete(h.Trustlines, peerID)
 		return true, nil, nil
 	case "set_credit_limit":
@@ -225,13 +212,13 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 	case "connect":
 		if ok {
 			peer.Connected = true
-			h.refModule(peerID)
+			h.links.RefModule(peerID, h.name)
 		}
 		// If rejected, leave trustline — NextTx will retry.
 		return nil
 	case "close":
 		if ok {
-			h.unrefModule(peerID)
+			h.links.UnrefModule(peerID, h.name)
 			peer.Connected = false
 			// IntentClose stays true → tombstone
 		} else {
