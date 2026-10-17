@@ -210,8 +210,6 @@ All endpoints accept JSON `{method, payload}`.
 **POST /api/account** — requires bearer token. Methods are namespace-routed (`namespace.method`):
 
 - `trustline.add_peer` (`{peer, modules?}`) — create link + peer with `IntentConnect`, initiates `link.connect` → `link.module` → `trustline.connect`. Optional `modules` list (e.g. `["loops"]`) proposes those modules on the link. Returns error if the link exists and is closing (`IntentClose`).
-- `trustline.accept_peer` (`{peer, modules?}`) — accept incoming link + module + peer (sets `IntentConnect` at all three layers). Optional `modules` list proposes those modules on the link.
-- `trustline.reject_peer` (`{peer}`) — reject incoming link (sends `link.close`)
 - `trustline.remove_peer` (`{peer}`) — sets `IntentClose` on peer. Trustline close handshake runs; after close, the trustline becomes a tombstone (`!Connected && IntentClose`), preventing reconnection.
 - `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
 - `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
@@ -219,11 +217,8 @@ All endpoints accept JSON `{method, payload}`.
 - `trustline.status` — peers with credit data, link state, incoming invites
 - `triad.status` — active novation count
 - `loops.status` — active path and clearing count
-- `link.set_modules` (`{peer, modules}`) — propose modules on an existing link. Modules not yet connected get `IntentConnect`; non-desired pending modules are removed. Trustline is never removed.
-- `link.accept_module` (`{peer, module}`) — accept an incoming module proposal
-- `link.reject_module` (`{peer, module}`) — reject an incoming module proposal
-- `link.set_invite_mode` (`{mode}`) — set invite mode: `"closed"`, `"invite"` (default), or `"open"`
-- `link.status` — raw link state and invite mode
+
+Link lifecycle (accept/reject peers, module negotiation, invite mode) is handled by mimesis directly.
 
 **POST /p2p/tx** — bilateral sync (`link.*`, `trustline.*`, `triad.*`, `loops.*`)
 
