@@ -51,11 +51,10 @@ type Clearing struct {
 	Side   [2]ClearingSide `json:"side"`
 
 	// Hash chain
-	Preimage  []byte `json:"preimage,omitempty"`   // finalize preimage to forward
-	CancelPre []byte `json:"cancel_pre,omitempty"` // cancel preimage to forward
-	Final     bool   `json:"final,omitempty"`       // last chunk in chain
-	Seed      []byte `json:"seed,omitempty"`        // initiator only
-	Step      int    `json:"step,omitempty"`         // initiator only, counts down
+	Preimage []byte `json:"preimage,omitempty"` // preimage to forward (intermediary only)
+	Final    bool   `json:"final,omitempty"`    // last chunk in chain
+	Seed     []byte `json:"seed,omitempty"`     // initiator only
+	Step     int    `json:"step,omitempty"`      // initiator only, counts down
 }
 
 type commitMsg struct {
@@ -294,12 +293,6 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 				Seed:  cl.Seed,
 				Step:  nextStep,
 			}
-			if nextStep >= 1 {
-				nextCl.Preimage = chainHash(cl.Seed, nextStep-1)
-			}
-			if nextStep >= 2 {
-				nextCl.CancelPre = chainHash(cl.Seed, nextStep-2)
-			}
 			h.Clearings[nextID] = nextCl
 			h.node.RefModule(peer, h.name)
 			h.node.RefModule(cl.Side[OUT].Peer, h.name)
@@ -406,7 +399,7 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 	cl.Side[IN] = ClearingSide{}
 	if cl.Side[OUT].Peer != "" {
 		creditnet.Enqueue(&cl.Side[OUT].Queue, "cancel")
-		cl.CancelPre = pre
+		cl.Preimage = pre
 		return true, []string{cl.Side[OUT].Peer}, nil
 	}
 	h.removeClearing(m.ClearingID)
@@ -614,15 +607,23 @@ func (h *Triad) buildMsg(id string, cl *Clearing, side int) (string, json.RawMes
 			Next:       cl.Side[IN].Peer, // receiver should forward back to my InPeer
 		}), ts
 	case "finalize":
+		pre := cl.Preimage
+		if cl.Seed != nil {
+			pre = chainHash(cl.Seed, cl.Step-1)
+		}
 		return "finalize", creditnet.Enc(finalizeMsg{
 			ClearingID: id,
-			Preimage:   hex.EncodeToString(cl.Preimage),
+			Preimage:   hex.EncodeToString(pre),
 			Final:      cl.Final,
 		}), ts
 	case "cancel":
+		pre := cl.Preimage
+		if cl.Seed != nil {
+			pre = chainHash(cl.Seed, cl.Step-2)
+		}
 		return "cancel", creditnet.Enc(cancelMsg{
 			ClearingID: id,
-			Preimage:   hex.EncodeToString(cl.CancelPre),
+			Preimage:   hex.EncodeToString(pre),
 		}), ts
 	case "rollback":
 		return "rollback", creditnet.Enc(map[string]string{"clearing_id": id}), ts
@@ -705,12 +706,6 @@ func (h *Triad) tryNovate() []string {
 				Seed:  seed,
 				Step:  step,
 				Final: step <= 2,
-			}
-			if step >= 1 {
-				cl.Preimage = chainHash(seed, step-1)
-			}
-			if step >= 2 {
-				cl.CancelPre = chainHash(seed, step-2)
 			}
 
 			h.addClearing(clID, cl)
