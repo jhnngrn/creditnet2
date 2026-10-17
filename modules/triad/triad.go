@@ -404,10 +404,10 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 	}
 	cl := h.Clearings[m.ClearingID]
 	if cl == nil {
-		return false, nil, nil
+		return false, nil, fmt.Errorf("cancel: unknown clearing %s", m.ClearingID)
 	}
 	if cl.Side[IN].Peer != peer {
-		return false, nil, nil
+		return false, nil, fmt.Errorf("cancel: wrong peer")
 	}
 
 	pre, _ := hex.DecodeString(m.Preimage)
@@ -418,9 +418,7 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 	// Settle ticked portion on IN side.
 	ticked := tickedAmount(cl.Amount, cl.Side[IN].Time, ts)
 	if ticked > 0 {
-		if p := h.trustlines[peer]; p != nil {
-			p.AddBalance(ticked, ts)
-		}
+		h.trustlines[peer].AddBalance(ticked, ts)
 	}
 
 	h.node.UnrefModule(peer, h.name)
