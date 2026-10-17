@@ -325,12 +325,21 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 // ---------------------------------------------------------------------------
 
 func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
+	var bestID string
+	var bestNov *Novation
+	var bestTime int64
 	for id, nov := range h.Novations {
 		if !nov.Queue.Empty() && nov.pendingPeer() == peer {
-			return h.buildMsg(id, nov)
+			t := nov.Queue.HeadTime()
+			if bestNov == nil || (t > 0 && (bestTime == 0 || t < bestTime)) {
+				bestID, bestNov, bestTime = id, nov, t
+			}
 		}
 	}
-	return "", nil, 0
+	if bestNov == nil {
+		return "", nil, 0
+	}
+	return h.buildMsg(bestID, bestNov)
 }
 
 func (h *Triad) buildMsg(id string, nov *Novation) (string, json.RawMessage, int64) {
