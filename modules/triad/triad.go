@@ -211,6 +211,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 			{Peer: outPeer, Queue: []string{"commit"}},
 		},
 	})
+	h.node.RefModule(peer, h.name) // IN: peer sent us commit
 	return true, []string{outPeer}, nil
 }
 
@@ -233,7 +234,8 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 		creditnet.Enqueue(&cl.Side[IN].Queue, "rollback")
 		return []string{cl.Side[IN].Peer}
 	}
-	// OUT side committed — schedule cleanup for both sides.
+	// OUT side committed.
+	h.node.RefModule(cl.Side[OUT].Peer, h.name) // OUT: peer accepted commit
 	cl.Side[OUT].Time = ts
 	for s := 0; s < 2; s++ {
 		if cl.Side[s].Peer != "" && cl.Side[s].Time > 0 {
@@ -306,8 +308,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 				Step:  nextStep,
 			}
 			h.Clearings[nextID] = nextCl
-			h.node.RefModule(peer, h.name)
-			h.node.RefModule(cl.Side[OUT].Peer, h.name)
+			h.node.RefModule(peer, h.name) // IN: peer sent us finalize
 			creditnet.Enqueue(&nextCl.Side[OUT].Queue, "finalize")
 			kicks = append(kicks, cl.Side[OUT].Peer)
 		} else if cl.Seed == nil && !forwardFinal {
@@ -371,6 +372,7 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if cl.Seed != nil && !cl.Final {
 		nextID := hex.EncodeToString(chainHash(cl.Seed, cl.Step-1))
 		if nextCl := h.Clearings[nextID]; nextCl != nil {
+			h.node.RefModule(nextCl.Side[OUT].Peer, h.name) // OUT: peer accepted finalize
 			nextCl.Side[OUT].Time = ts
 			h.scheduleCleanup(nextID, OUT, ts)
 			if nextCl.Step >= 2 {
@@ -814,11 +816,6 @@ func (h *Triad) isConnected(peer string) bool {
 
 func (h *Triad) addClearing(id string, cl *Clearing) {
 	h.Clearings[id] = cl
-	for s := 0; s < 2; s++ {
-		if cl.Side[s].Peer != "" {
-			h.node.RefModule(cl.Side[s].Peer, h.name)
-		}
-	}
 }
 
 func (h *Triad) removeClearing(id string) {
