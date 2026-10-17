@@ -112,10 +112,12 @@ The `*Node` received by the module factory:
 
 Methods available on a `*Link`:
 
+- `lk.Closing() bool` — true if the link is closing
 - `lk.RefModule(name)` — hold a ref on this module (keeps the link open)
 - `lk.UnrefModule(name)` — release the ref (sets IntentClose when all refs reach 0)
 - `lk.ModuleEnabled(name) bool` — true if module is bilaterally connected
-- `lk.SetModules(modules, registered)` — propose modules on this link
+- `lk.ConnectModules(modules, registered)` — request connection for modules (additive)
+- `lk.SetModules(modules, registered)` — propose modules on this link (closes non-desired)
 
 ### Account commands (link.*)
 
