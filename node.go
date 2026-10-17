@@ -193,12 +193,11 @@ func (h *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (bool
 	if peer == nil || !peer.Connected {
 		return false, fmt.Errorf("peer not connected")
 	}
-	peer.MaterializeDemurrage(ts)
-	newBalance := peer.Balance + p.Amount
-	if newBalance > peer.CreditLimit {
+	eff := peer.EffectiveBalance(ts)
+	if eff+p.Amount > peer.CreditLimit {
 		return false, nil
 	}
-	peer.Balance = newBalance
+	peer.AddBalance(p.Amount, ts)
 	return true, nil
 }
 
