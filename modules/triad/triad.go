@@ -31,32 +31,44 @@ const (
 	TickRate       = 1000 // units per second
 	ChunkSize      = int64(1000000)
 	Nchunks        = 1024
+
+	sideIN  = 0
+	sideOUT = 1
 )
 
+// ClearingSide holds per-side state for a clearing (IN or OUT).
+type ClearingSide struct {
+	Peer string `json:"peer,omitempty"`
+	Time int64  `json:"time,omitempty"`
+}
+
 // Clearing tracks a single in-flight chunk in a three-party clearing.
-// No role field — each node just has InPeer (where commit/finalize arrives)
-// and OutPeer (where it forwards). Seed != nil identifies the initiator.
+// Side[sideIN] is where commit/finalize arrives, Side[sideOUT] is where
+// it forwards. Seed != nil identifies the initiator.
 type Clearing struct {
-	Amount  int64    `json:"amount"`
-	InPeer  string   `json:"in_peer,omitempty"`
-	OutPeer string   `json:"out_peer,omitempty"`
-	Queue   []string `json:"queue,omitempty"`
-	InTime  int64    `json:"in_time,omitempty"`  // when IN side committed
-	OutTime int64    `json:"out_time,omitempty"` // when OUT side committed
+	Amount int64          `json:"amount"`
+	Side   [2]ClearingSide `json:"side"`
+	Queue  []string       `json:"queue,omitempty"`
 
 	// Hash chain
 	Preimage  []byte `json:"preimage,omitempty"`   // finalize preimage to forward
 	CancelPre []byte `json:"cancel_pre,omitempty"` // cancel preimage to forward
 	Final     bool   `json:"final,omitempty"`       // last chunk in chain
-	Seed      []byte `json:"seed,omitempty"`         // initiator only
-	Step      int    `json:"step,omitempty"`          // initiator only, counts down
+	Seed      []byte `json:"seed,omitempty"`        // initiator only
+	Step      int    `json:"step,omitempty"`         // initiator only, counts down
+
+	CleanupSide int `json:"cleanup_side,omitempty"` // which side cleanup targets
 }
 
 func (c *Clearing) pendingPeer() string {
-	if creditnet.QueueHead(c.Queue) == "rollback" {
-		return c.InPeer
+	head := creditnet.QueueHead(c.Queue)
+	if head == "rollback" {
+		return c.Side[sideIN].Peer
 	}
-	return c.OutPeer
+	if head == "cleanup" {
+		return c.Side[c.CleanupSide].Peer
+	}
+	return c.Side[sideOUT].Peer
 }
 
 type commitMsg struct {
@@ -108,9 +120,13 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 		h.Clearings = map[string]*Clearing{}
 	}
 	h.scheduleNovate()
-	// Re-schedule tick timeouts for persisted clearings.
-	for id := range h.Clearings {
-		h.scheduleTimeout(id)
+	// Re-schedule cleanup timers for persisted clearings.
+	for id, cl := range h.Clearings {
+		for s := 0; s < 2; s++ {
+			if cl.Side[s].Peer != "" && cl.Side[s].Time > 0 {
+				h.scheduleCleanup(id, s, cl.Side[s].Time)
+			}
+		}
 	}
 	return h
 }
@@ -121,10 +137,10 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 
 func (h *Triad) Reserved(peer string) (in, out int64) {
 	for _, cl := range h.Clearings {
-		if cl.InPeer == peer {
+		if cl.Side[sideIN].Peer == peer {
 			in += cl.Amount
 		}
-		if cl.OutPeer == peer {
+		if cl.Side[sideOUT].Peer == peer {
 			out += cl.Amount
 		}
 	}
@@ -145,6 +161,8 @@ func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts i
 		return h.reqCancel(peer, payload, ts)
 	case "rollback":
 		return h.reqRollback(peer, payload)
+	case "cleanup":
+		return h.reqCleanup(peer, payload, ts)
 	}
 	return false, nil, mimesis.ErrBadMethod
 }
@@ -167,18 +185,18 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 
 	// Loop closure: initiator receives commit back.
 	if cl := h.Clearings[m.ClearingID]; cl != nil {
-		if cl.Seed == nil || cl.InPeer != "" {
+		if cl.Seed == nil || cl.Side[sideIN].Peer != "" {
 			return false, nil, nil
 		}
 		bwIn, _ := h.bandwidth(peer)
 		if bwIn < m.Amount {
 			return false, nil, nil
 		}
-		cl.InPeer = peer
-		cl.InTime = ts
+		cl.Side[sideIN].Peer = peer
+		cl.Side[sideIN].Time = ts
 		h.node.RefModule(peer, h.name)
 		creditnet.Enqueue(&cl.Queue, "finalize")
-		return true, []string{cl.OutPeer}, nil
+		return true, []string{cl.Side[sideOUT].Peer}, nil
 	}
 
 	// First hop: Next tells us who to forward to.
@@ -197,10 +215,11 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 
 	h.addClearing(m.ClearingID, &Clearing{
 		Amount: m.Amount,
-		InPeer: peer,
-		OutPeer: outPeer,
-		Queue:  []string{"commit"},
-		InTime: ts,
+		Side: [2]ClearingSide{
+			{Peer: peer, Time: ts},
+			{Peer: outPeer},
+		},
+		Queue: []string{"commit"},
 	})
 	return true, []string{outPeer}, nil
 }
@@ -222,11 +241,15 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 			return nil
 		}
 		creditnet.Enqueue(&cl.Queue, "rollback")
-		return []string{cl.InPeer}
+		return []string{cl.Side[sideIN].Peer}
 	}
-	// OUT side committed.
-	cl.OutTime = ts
-	h.scheduleTimeout(m.ClearingID)
+	// OUT side committed — schedule cleanup for both sides.
+	cl.Side[sideOUT].Time = ts
+	for s := 0; s < 2; s++ {
+		if cl.Side[s].Peer != "" && cl.Side[s].Time > 0 {
+			h.scheduleCleanup(m.ClearingID, s, cl.Side[s].Time)
+		}
+	}
 	return nil
 }
 
@@ -247,7 +270,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	if cl == nil {
 		return false, nil, fmt.Errorf("finalize: unknown clearing %s", m.ClearingID)
 	}
-	if cl.InPeer != peer {
+	if cl.Side[sideIN].Peer != peer {
 		return false, nil, fmt.Errorf("finalize: wrong peer")
 	}
 
@@ -272,19 +295,21 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	var kicks []string
 	if !m.Final {
 		nextID := hex.EncodeToString(pre)
-		if cl.Seed != nil && cl.OutPeer != "" {
+		if cl.Seed != nil && cl.Side[sideOUT].Peer != "" {
 			// Initiator: create next chunk clearing.
 			nextStep := cl.Step - 1
 			avlIn, _ := h.bandwidth(peer)
-			_, avlOut := h.bandwidth(cl.OutPeer)
+			_, avlOut := h.bandwidth(cl.Side[sideOUT].Peer)
 			isFinal := nextStep <= 2 || avlIn < 2*cl.Amount || avlOut < 2*cl.Amount
 			nextCl := &Clearing{
-				Amount:  cl.Amount,
-				InPeer:  peer,
-				OutPeer: cl.OutPeer,
-				Final:   isFinal,
-				Seed:    cl.Seed,
-				Step:    nextStep,
+				Amount: cl.Amount,
+				Side: [2]ClearingSide{
+					{Peer: peer},
+					{Peer: cl.Side[sideOUT].Peer},
+				},
+				Final: isFinal,
+				Seed:  cl.Seed,
+				Step:  nextStep,
 			}
 			if nextStep >= 1 {
 				nextCl.Preimage = chainHash(cl.Seed, nextStep-1)
@@ -294,12 +319,9 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			}
 			h.Clearings[nextID] = nextCl
 			h.node.RefModule(peer, h.name)
-			h.node.RefModule(cl.OutPeer, h.name)
-			if nextCl.CancelPre != nil {
-				h.scheduleTimeout(nextID)
-			}
+			h.node.RefModule(cl.Side[sideOUT].Peer, h.name)
 			creditnet.Enqueue(&nextCl.Queue, "finalize")
-			kicks = append(kicks, cl.OutPeer)
+			kicks = append(kicks, cl.Side[sideOUT].Peer)
 		} else if cl.Seed == nil && !forwardFinal {
 			// Non-initiator: create next chunk with IN side only.
 			nextCl := h.Clearings[nextID]
@@ -307,8 +329,8 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 				nextCl = &Clearing{Amount: cl.Amount}
 				h.Clearings[nextID] = nextCl
 			}
-			if nextCl.InPeer == "" {
-				nextCl.InPeer = peer
+			if nextCl.Side[sideIN].Peer == "" {
+				nextCl.Side[sideIN].Peer = peer
 				h.node.RefModule(peer, h.name)
 			}
 		}
@@ -316,14 +338,14 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 
 	// Forward finalize to OUT.
 	h.node.UnrefModule(peer, h.name)
-	cl.InPeer = ""
-	if cl.OutPeer != "" && len(cl.Queue) == 0 {
+	cl.Side[sideIN] = ClearingSide{}
+	if cl.Side[sideOUT].Peer != "" && len(cl.Queue) == 0 {
 		creditnet.Enqueue(&cl.Queue, "finalize")
 		cl.Preimage = pre
 		cl.Final = forwardFinal
-		kicks = append(kicks, cl.OutPeer)
+		kicks = append(kicks, cl.Side[sideOUT].Peer)
 	}
-	if cl.InPeer == "" && cl.OutPeer == "" {
+	if cl.Side[sideIN].Peer == "" && cl.Side[sideOUT].Peer == "" {
 		h.removeClearing(m.ClearingID)
 	}
 	return true, kicks, nil
@@ -351,15 +373,15 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 			nextCl = &Clearing{Amount: cl.Amount}
 			h.Clearings[nextID] = nextCl
 		}
-		if nextCl.OutPeer == "" {
-			nextCl.OutPeer = peer
+		if nextCl.Side[sideOUT].Peer == "" {
+			nextCl.Side[sideOUT].Peer = peer
 			h.node.RefModule(peer, h.name)
 		}
 	}
 
-	h.node.UnrefModule(cl.OutPeer, h.name)
-	cl.OutPeer = ""
-	if cl.InPeer == "" {
+	h.node.UnrefModule(cl.Side[sideOUT].Peer, h.name)
+	cl.Side[sideOUT] = ClearingSide{}
+	if cl.Side[sideIN].Peer == "" {
 		h.removeClearing(m.ClearingID)
 	}
 }
@@ -380,7 +402,7 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 	if cl == nil {
 		return false, nil, nil
 	}
-	if cl.InPeer != peer {
+	if cl.Side[sideIN].Peer != peer {
 		return false, nil, nil
 	}
 
@@ -390,7 +412,7 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 	}
 
 	// Settle ticked portion on IN side.
-	ticked := tickedAmount(cl.Amount, cl.InTime, ts)
+	ticked := tickedAmount(cl.Amount, cl.Side[sideIN].Time, ts)
 	if ticked > 0 {
 		if p := h.trustlines[peer]; p != nil {
 			p.AddBalance(ticked, ts)
@@ -398,12 +420,12 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 	}
 
 	h.node.UnrefModule(peer, h.name)
-	cl.InPeer = ""
+	cl.Side[sideIN] = ClearingSide{}
 	var kicks []string
-	if cl.OutPeer != "" {
+	if cl.Side[sideOUT].Peer != "" {
 		creditnet.Enqueue(&cl.Queue, "cancel")
 		cl.CancelPre = pre
-		kicks = []string{cl.OutPeer}
+		kicks = []string{cl.Side[sideOUT].Peer}
 	} else {
 		h.removeClearing(m.ClearingID)
 	}
@@ -421,15 +443,15 @@ func (h *Triad) respCancel(peer string, raw json.RawMessage, ts int64) {
 	}
 	creditnet.Dequeue(&cl.Queue)
 	// Settle ticked portion on OUT side.
-	ticked := tickedAmount(cl.Amount, cl.OutTime, ts)
+	ticked := tickedAmount(cl.Amount, cl.Side[sideOUT].Time, ts)
 	if ticked > 0 {
 		if p := h.trustlines[peer]; p != nil {
 			p.AddBalance(-ticked, ts)
 		}
 	}
-	h.node.UnrefModule(cl.OutPeer, h.name)
-	cl.OutPeer = ""
-	if cl.InPeer == "" {
+	h.node.UnrefModule(cl.Side[sideOUT].Peer, h.name)
+	cl.Side[sideOUT] = ClearingSide{}
+	if cl.Side[sideIN].Peer == "" {
 		h.removeClearing(m.ClearingID)
 	}
 }
@@ -449,7 +471,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 	if cl == nil {
 		return false, nil, fmt.Errorf("unknown clearing %s", m.ClearingID)
 	}
-	if cl.OutPeer != peer {
+	if cl.Side[sideOUT].Peer != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
 	if cl.Seed != nil {
@@ -458,7 +480,92 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 		return true, nil, nil
 	}
 	creditnet.Enqueue(&cl.Queue, "rollback")
-	return true, []string{cl.InPeer}, nil
+	return true, []string{cl.Side[sideIN].Peer}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup — bilateral settlement after full tick
+// ---------------------------------------------------------------------------
+
+func (h *Triad) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+	var m struct {
+		ClearingID string `json:"clearing_id"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return false, nil, fmt.Errorf("bad payload")
+	}
+	cl := h.Clearings[m.ClearingID]
+	if cl == nil {
+		return false, nil, fmt.Errorf("cleanup: unknown clearing %s", m.ClearingID)
+	}
+
+	// Find which side this peer is on.
+	var side int
+	if cl.Side[sideIN].Peer == peer {
+		side = sideIN
+	} else if cl.Side[sideOUT].Peer == peer {
+		side = sideOUT
+	} else {
+		return false, nil, fmt.Errorf("cleanup: wrong peer")
+	}
+
+	// Verify tick has expired on this side.
+	if tickedAmount(cl.Amount, cl.Side[side].Time, ts) < cl.Amount {
+		return false, nil, nil // tick not expired yet
+	}
+
+	// Settle full amount.
+	if p := h.trustlines[peer]; p != nil {
+		if side == sideIN {
+			p.AddBalance(cl.Amount, ts)
+		} else {
+			p.AddBalance(-cl.Amount, ts)
+		}
+	}
+	h.node.UnrefModule(peer, h.name)
+	cl.Side[side] = ClearingSide{}
+	if cl.Side[sideIN].Peer == "" && cl.Side[sideOUT].Peer == "" {
+		delete(h.Clearings, m.ClearingID)
+	}
+	return true, nil, nil
+}
+
+func (h *Triad) respCleanup(peer string, raw json.RawMessage, ts int64) {
+	var m struct {
+		ClearingID string `json:"clearing_id"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	cl := h.Clearings[m.ClearingID]
+	if cl == nil {
+		return
+	}
+	creditnet.Dequeue(&cl.Queue)
+
+	// Find which side the sender is on.
+	var side int
+	if cl.Side[sideOUT].Peer == peer {
+		side = sideOUT
+	} else if cl.Side[sideIN].Peer == peer {
+		side = sideIN
+	} else {
+		return
+	}
+
+	// Our side settles (mirror of reqCleanup).
+	if p := h.trustlines[peer]; p != nil {
+		if side == sideOUT {
+			p.AddBalance(-cl.Amount, ts)
+		} else {
+			p.AddBalance(cl.Amount, ts)
+		}
+	}
+	h.node.UnrefModule(peer, h.name)
+	cl.Side[side] = ClearingSide{}
+	if cl.Side[sideIN].Peer == "" && cl.Side[sideOUT].Peer == "" {
+		delete(h.Clearings, m.ClearingID)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +582,8 @@ func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok 
 		h.respCancel(peer, payload, ts)
 	case "rollback":
 		h.respRollback(payload)
+	case "cleanup":
+		h.respCleanup(peer, payload, ts)
 	}
 	return nil
 }
@@ -508,7 +617,7 @@ func (h *Triad) buildMsg(id string, cl *Clearing) (string, json.RawMessage, int6
 		return "commit", creditnet.Enc(commitMsg{
 			ClearingID: id,
 			Amount:     cl.Amount,
-			Next:       cl.InPeer, // receiver should forward back to my InPeer
+			Next:       cl.Side[sideIN].Peer, // receiver should forward back to my InPeer
 		}), 0
 	case "finalize":
 		return "finalize", creditnet.Enc(finalizeMsg{
@@ -523,6 +632,8 @@ func (h *Triad) buildMsg(id string, cl *Clearing) (string, json.RawMessage, int6
 		}), 0
 	case "rollback":
 		return "rollback", creditnet.Enc(map[string]string{"clearing_id": id}), 0
+	case "cleanup":
+		return "cleanup", creditnet.Enc(map[string]string{"clearing_id": id}), 0
 	}
 	return "", nil, 0
 }
@@ -592,13 +703,15 @@ func (h *Triad) tryNovate() []string {
 			clID := hex.EncodeToString(chainHash(seed, step))
 
 			cl := &Clearing{
-				Amount:  ChunkSize,
-				InPeer:  creditor,
-				OutPeer: debtor,
-				Queue:   []string{"commit"},
-				Seed:    seed,
-				Step:    step,
-				Final:   step <= 2,
+				Amount: ChunkSize,
+				Side: [2]ClearingSide{
+					{Peer: creditor},
+					{Peer: debtor},
+				},
+				Queue: []string{"commit"},
+				Seed:  seed,
+				Step:  step,
+				Final: step <= 2,
 			}
 			if step >= 1 {
 				cl.Preimage = chainHash(seed, step-1)
@@ -615,22 +728,13 @@ func (h *Triad) tryNovate() []string {
 	return kicks
 }
 
-// scheduleTimeout schedules cleanup after full tick duration.
-// At timeout the entire amount has settled by time — just clean up.
-func (h *Triad) scheduleTimeout(id string) {
+// scheduleCleanup schedules bilateral cleanup for one side after its tick expires.
+func (h *Triad) scheduleCleanup(id string, side int, commitTime int64) {
 	cl := h.Clearings[id]
-	if cl == nil {
+	if cl == nil || commitTime == 0 {
 		return
 	}
-	// Use the later timestamp (both sides committed).
-	t := cl.OutTime
-	if cl.InTime > t {
-		t = cl.InTime
-	}
-	if t == 0 {
-		return
-	}
-	elapsed := time.Now().Unix() - t
+	elapsed := time.Now().Unix() - commitTime
 	remaining := cl.Amount/int64(TickRate) - elapsed
 	if remaining < 0 {
 		remaining = 0
@@ -640,22 +744,13 @@ func (h *Triad) scheduleTimeout(id string) {
 		if cl == nil {
 			return nil
 		}
-		// Full amount ticked — settle and clean up.
-		now := time.Now().Unix()
-		if cl.InPeer != "" {
-			if p := h.trustlines[cl.InPeer]; p != nil {
-				p.AddBalance(cl.Amount, now)
-			}
-			h.node.UnrefModule(cl.InPeer, h.name)
+		peer := cl.Side[side].Peer
+		if peer == "" {
+			return nil
 		}
-		if cl.OutPeer != "" {
-			if p := h.trustlines[cl.OutPeer]; p != nil {
-				p.AddBalance(-cl.Amount, now)
-			}
-			h.node.UnrefModule(cl.OutPeer, h.name)
-		}
-		delete(h.Clearings, id)
-		return nil
+		cl.CleanupSide = side
+		creditnet.Enqueue(&cl.Queue, "cleanup")
+		return []string{peer}
 	})
 }
 
@@ -670,21 +765,19 @@ func (h *Triad) isConnected(peer string) bool {
 
 func (h *Triad) addClearing(id string, cl *Clearing) {
 	h.Clearings[id] = cl
-	if cl.InPeer != "" {
-		h.node.RefModule(cl.InPeer, h.name)
-	}
-	if cl.OutPeer != "" {
-		h.node.RefModule(cl.OutPeer, h.name)
+	for s := 0; s < 2; s++ {
+		if cl.Side[s].Peer != "" {
+			h.node.RefModule(cl.Side[s].Peer, h.name)
+		}
 	}
 }
 
 func (h *Triad) removeClearing(id string) {
 	if cl := h.Clearings[id]; cl != nil {
-		if cl.InPeer != "" {
-			h.node.UnrefModule(cl.InPeer, h.name)
-		}
-		if cl.OutPeer != "" {
-			h.node.UnrefModule(cl.OutPeer, h.name)
+		for s := 0; s < 2; s++ {
+			if cl.Side[s].Peer != "" {
+				h.node.UnrefModule(cl.Side[s].Peer, h.name)
+			}
 		}
 	}
 	delete(h.Clearings, id)
@@ -703,8 +796,10 @@ func (h *Triad) connectedPeers() []string {
 func (h *Triad) linkCount(peer string) int {
 	c := 0
 	for _, cl := range h.Clearings {
-		if cl.InPeer == peer || cl.OutPeer == peer {
-			c++
+		for s := 0; s < 2; s++ {
+			if cl.Side[s].Peer == peer {
+				c++
+			}
 		}
 	}
 	return c
