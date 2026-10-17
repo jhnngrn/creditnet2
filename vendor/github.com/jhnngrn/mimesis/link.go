@@ -149,8 +149,18 @@ func (l *Link) UnrefModule(name string) {
 // Closing returns true if this link is closing (IntentClose is set).
 func (l *Link) Closing() bool { return l.State.IntentClose }
 
-// ModuleEnabled returns true if the named module is bilaterally active on this link.
+// ModuleEnabled returns true if the named module is bilaterally active
+// and not closing on this link. Use this to decide whether to start new
+// work on the module. Mimesis dispatch uses moduleConnected instead,
+// so a closing module can still finish its in-flight messages.
 func (l *Link) ModuleEnabled(name string) bool {
+	c := l.State.Modules[name]
+	return c != nil && c.Status == Connected && !c.IntentClose
+}
+
+// moduleConnected returns true if the module is bilaterally connected,
+// regardless of IntentClose. Used internally for dispatch and NextTx.
+func (l *Link) moduleConnected(name string) bool {
 	c := l.State.Modules[name]
 	return c != nil && c.Status == Connected
 }
@@ -416,7 +426,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 		return false, nil, fmt.Errorf("no link to %s", peer)
 	}
 	mod := n.moduleMap[ns]
-	if mod == nil || !lk.ModuleEnabled(ns) {
+	if mod == nil || !lk.moduleConnected(ns) {
 		return false, nil, fmt.Errorf("unknown method %q", fullMethod)
 	}
 	return mod.HandleRequest(peer, method, payload, ts)
@@ -503,7 +513,7 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 	}
 	var best *queuedMsg
 	for name, mod := range n.moduleMap {
-		if !lk.ModuleEnabled(name) {
+		if !lk.moduleConnected(name) {
 			continue
 		}
 		method, payload, queuedAt := mod.NextTx(peer)
