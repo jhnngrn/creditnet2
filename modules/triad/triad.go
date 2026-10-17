@@ -28,7 +28,7 @@ import (
 const (
 	MaxPerLink     = 3
 	NovateInterval = 5 * time.Minute
-	CancelTimeout  = 5 * time.Minute
+	TickRate       = 1000 // units per second
 	ChunkSize      = int64(1000000)
 	Nchunks        = 1024
 )
@@ -107,11 +107,9 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 		h.Clearings = map[string]*Clearing{}
 	}
 	h.scheduleNovate()
-	// Re-schedule cancel timers for persisted clearings.
-	for id, cl := range h.Clearings {
-		if cl.Seed != nil && cl.CancelPre != nil {
-			h.scheduleCancel(id)
-		}
+	// Re-schedule tick timeouts for persisted clearings.
+	for id := range h.Clearings {
+		h.scheduleTimeout(id)
 	}
 	return h
 }
@@ -225,10 +223,8 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
 		creditnet.Enqueue(&cl.Queue, "rollback")
 		return []string{cl.InPeer}
 	}
-	// Initiator: commit accepted, schedule cancel timeout.
-	if cl.Seed != nil && cl.CancelPre != nil {
-		h.scheduleCancel(m.ClearingID)
-	}
+	// Commit accepted — schedule tick timeout.
+	h.scheduleTimeout(m.ClearingID)
 	return nil
 }
 
@@ -298,7 +294,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			h.node.RefModule(peer, h.name)
 			h.node.RefModule(cl.OutPeer, h.name)
 			if nextCl.CancelPre != nil {
-				h.scheduleCancel(nextID)
+				h.scheduleTimeout(nextID)
 			}
 			creditnet.Enqueue(&nextCl.Queue, "finalize")
 			kicks = append(kicks, cl.OutPeer)
@@ -391,6 +387,14 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 		return false, nil, fmt.Errorf("bad preimage")
 	}
 
+	// Settle ticked portion on IN side.
+	ticked := tickedAmount(cl.Amount, cl.Timestamp, ts)
+	if ticked > 0 {
+		if p := h.trustlines[peer]; p != nil {
+			p.AddBalance(ticked, ts)
+		}
+	}
+
 	h.node.UnrefModule(peer, h.name)
 	cl.InPeer = ""
 	var kicks []string
@@ -414,6 +418,13 @@ func (h *Triad) respCancel(peer string, raw json.RawMessage, ts int64) {
 		return
 	}
 	creditnet.Dequeue(&cl.Queue)
+	// Settle ticked portion on OUT side.
+	ticked := tickedAmount(cl.Amount, cl.Timestamp, ts)
+	if ticked > 0 {
+		if p := h.trustlines[peer]; p != nil {
+			p.AddBalance(-ticked, ts)
+		}
+	}
 	h.node.UnrefModule(cl.OutPeer, h.name)
 	cl.OutPeer = ""
 	if cl.InPeer == "" {
@@ -602,22 +613,56 @@ func (h *Triad) tryNovate() []string {
 	return kicks
 }
 
-// scheduleCancel schedules a cancel timeout for an initiator clearing.
-func (h *Triad) scheduleCancel(id string) {
-	h.schedule(CancelTimeout, func() []string {
+// scheduleTimeout schedules tick-based finalize-on-timeout.
+// For initiator: send cancel if finalize loop hasn't completed.
+// For non-initiator: finalize the full amount (cleanup).
+func (h *Triad) scheduleTimeout(id string) {
+	cl := h.Clearings[id]
+	if cl == nil || cl.Timestamp == 0 {
+		return
+	}
+	elapsed := time.Now().Unix() - cl.Timestamp
+	remaining := cl.Amount/int64(TickRate) - elapsed
+	if remaining < 0 {
+		remaining = 0
+	}
+	h.schedule(time.Duration(remaining+1)*time.Second, func() []string {
 		cl := h.Clearings[id]
-		if cl == nil || cl.Seed == nil || cl.CancelPre == nil {
+		if cl == nil {
 			return nil
 		}
-		if cl.InPeer != "" {
-			return nil // loop completed, finalize in progress
+		if cl.Seed != nil {
+			// Initiator: cancel if finalize loop hasn't completed.
+			if cl.InPeer != "" || cl.OutPeer == "" || cl.CancelPre == nil {
+				return nil
+			}
+			creditnet.Enqueue(&cl.Queue, "cancel")
+			return []string{cl.OutPeer}
 		}
-		if cl.OutPeer == "" {
-			return nil
-		}
-		creditnet.Enqueue(&cl.Queue, "cancel")
-		return []string{cl.OutPeer}
+		// Non-initiator: finalize full amount (cleanup).
+		return h.timeoutFinalize(id, cl)
 	})
+}
+
+// timeoutFinalize settles the full chunk amount at timeout for non-initiators.
+func (h *Triad) timeoutFinalize(id string, cl *Clearing) []string {
+	var kicks []string
+	if cl.InPeer != "" {
+		if p := h.trustlines[cl.InPeer]; p != nil {
+			p.AddBalance(cl.Amount, time.Now().Unix())
+		}
+		h.node.UnrefModule(cl.InPeer, h.name)
+		cl.InPeer = ""
+	}
+	if cl.OutPeer != "" {
+		if p := h.trustlines[cl.OutPeer]; p != nil {
+			p.AddBalance(-cl.Amount, time.Now().Unix())
+		}
+		h.node.UnrefModule(cl.OutPeer, h.name)
+		cl.OutPeer = ""
+	}
+	h.removeClearing(id)
+	return kicks
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +714,22 @@ func (h *Triad) linkCount(peer string) int {
 		}
 	}
 	return c
+}
+
+// tickedAmount returns how much of amount has settled based on elapsed time.
+func tickedAmount(amount, commitTime, now int64) int64 {
+	if commitTime == 0 {
+		return 0
+	}
+	elapsed := now - commitTime
+	if elapsed < 0 {
+		return 0
+	}
+	ticked := (elapsed + 1) * int64(TickRate)
+	if ticked > amount {
+		ticked = amount
+	}
+	return ticked
 }
 
 // ---------------------------------------------------------------------------
