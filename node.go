@@ -117,9 +117,11 @@ func (h *Node) HandleRequest(peerID, method string, payload json.RawMessage, ts 
 		if peer.IntentClose && !peer.Connected {
 			return false, nil, nil // tombstone — rejected
 		}
+		if !peer.Connected {
+			h.links.RefModule(peerID, h.name)
+		}
 		peer.Connected = true
 		peer.IntentClose = false
-		h.links.RefModule(peerID, h.name)
 		return true, nil, nil
 	case "close":
 		peer := h.Trustlines[peerID]
@@ -213,7 +215,7 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 	}
 	switch method {
 	case "connect":
-		if ok {
+		if ok && !peer.Connected {
 			peer.Connected = true
 			h.links.RefModule(peerID, h.name)
 		}
