@@ -350,9 +350,11 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 		return
 	}
 	creditnet.Dequeue(&cl.Side[OUT].Queue)
-	if p := h.trustlines[peer]; p != nil {
-		p.AddBalance(-cl.Amount, ts)
+	p := h.trustlines[peer]
+	if p == nil {
+		log.Fatalf("triad: respFinalize: trustline nil for peer %s", peer)
 	}
+	p.AddBalance(-cl.Amount, ts)
 
 	// Non-initiator continuation: set up OUT side of next chunk.
 	if cl.Seed == nil && cl.Preimage != nil && !cl.Final {
@@ -442,12 +444,14 @@ func (h *Triad) respCancel(peer string, raw json.RawMessage, ts int64) {
 		return
 	}
 	creditnet.Dequeue(&cl.Side[OUT].Queue)
+	p := h.trustlines[peer]
+	if p == nil {
+		log.Fatalf("triad: respCancel: trustline nil for peer %s", peer)
+	}
 	// Settle ticked portion on OUT side.
 	ticked := tickedAmount(cl.Amount, cl.Side[OUT].Time, ts)
 	if ticked > 0 {
-		if p := h.trustlines[peer]; p != nil {
-			p.AddBalance(-ticked, ts)
-		}
+		p.AddBalance(-ticked, ts)
 	}
 	h.node.UnrefModule(cl.Side[OUT].Peer, h.name)
 	cl.Side[OUT] = ClearingSide{}
@@ -570,12 +574,14 @@ func (h *Triad) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 	}
 
 	// Our side settles (mirror of reqCleanup).
-	if p := h.trustlines[peer]; p != nil {
-		if side == OUT {
-			p.AddBalance(-cl.Amount, ts)
-		} else {
-			p.AddBalance(cl.Amount, ts)
-		}
+	p := h.trustlines[peer]
+	if p == nil {
+		log.Fatalf("triad: respCleanup: trustline nil for peer %s", peer)
+	}
+	if side == OUT {
+		p.AddBalance(-cl.Amount, ts)
+	} else {
+		p.AddBalance(cl.Amount, ts)
 	}
 	h.node.UnrefModule(peer, h.name)
 	cl.Side[side] = ClearingSide{}
