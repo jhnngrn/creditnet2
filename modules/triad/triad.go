@@ -221,11 +221,11 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 func (h *Triad) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 	var m commitMsg
 	if json.Unmarshal(raw, &m) != nil {
-		return nil
+		log.Fatalf("triad: respCommit: unmarshal failed")
 	}
 	cl := h.Clearings[m.ClearingID]
 	if cl == nil {
-		return nil
+		log.Fatalf("triad: respCommit: unknown clearing %s", m.ClearingID)
 	}
 	creditnet.Dequeue(&cl.Side[OUT].Queue)
 	if !ok {
@@ -346,11 +346,11 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	var m finalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
-		return
+		log.Fatalf("triad: respFinalize: unmarshal failed")
 	}
 	cl := h.Clearings[m.ClearingID]
 	if cl == nil {
-		return
+		log.Fatalf("triad: respFinalize: unknown clearing %s", m.ClearingID)
 	}
 	creditnet.Dequeue(&cl.Side[OUT].Queue)
 	p := h.trustlines[peer]
@@ -438,11 +438,11 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 func (h *Triad) respCancel(peer string, raw json.RawMessage, ts int64) {
 	var m cancelMsg
 	if json.Unmarshal(raw, &m) != nil {
-		return
+		log.Fatalf("triad: respCancel: unmarshal failed")
 	}
 	cl := h.Clearings[m.ClearingID]
 	if cl == nil {
-		return
+		log.Fatalf("triad: respCancel: unknown clearing %s", m.ClearingID)
 	}
 	creditnet.Dequeue(&cl.Side[OUT].Queue)
 	p := h.trustlines[peer]
@@ -542,11 +542,11 @@ func (h *Triad) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 		ClearingID string `json:"clearing_id"`
 	}
 	if json.Unmarshal(raw, &m) != nil {
-		return
+		log.Fatalf("triad: respCleanup: unmarshal failed")
 	}
 	cl := h.Clearings[m.ClearingID]
 	if cl == nil {
-		return
+		log.Fatalf("triad: respCleanup: unknown clearing %s", m.ClearingID)
 	}
 
 	// Find which side we sent cleanup to.
@@ -556,7 +556,7 @@ func (h *Triad) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 	} else if cl.Side[IN].Peer == peer {
 		side = IN
 	} else {
-		return
+		log.Fatalf("triad: respCleanup: peer %s not on any side of %s", peer, m.ClearingID)
 	}
 	creditnet.Dequeue(&cl.Side[side].Queue)
 
@@ -618,7 +618,7 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 		ClearingID string `json:"clearing_id"`
 	}
 	if json.Unmarshal(raw, &m) != nil {
-		return
+		log.Fatalf("triad: respRollback: unmarshal failed")
 	}
 	h.removeClearing(m.ClearingID)
 }
