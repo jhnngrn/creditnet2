@@ -110,7 +110,8 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 	// Re-schedule cleanup timers for persisted clearings.
 	for id, cl := range h.Clearings {
 		for s := 0; s < 2; s++ {
-			if cl.Side[s].Peer != "" && cl.Side[s].Time > 0 {
+			if cl.Side[s].Peer != "" && cl.Side[s].Time > 0 &&
+				!creditnet.QueueHas(cl.Side[s].Queue, "cleanup") {
 				h.scheduleCleanup(id, s, cl.Side[s].Time)
 			}
 		}
