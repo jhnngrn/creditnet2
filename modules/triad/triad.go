@@ -615,9 +615,8 @@ func (h *Triad) tryNovate() []string {
 	return kicks
 }
 
-// scheduleTimeout schedules tick-based finalize-on-timeout.
-// For initiator: send cancel if finalize loop hasn't completed.
-// For non-initiator: finalize the full amount (cleanup).
+// scheduleTimeout schedules cleanup after full tick duration.
+// At timeout the entire amount has settled by time — just clean up.
 func (h *Triad) scheduleTimeout(id string) {
 	cl := h.Clearings[id]
 	if cl == nil {
@@ -641,38 +640,23 @@ func (h *Triad) scheduleTimeout(id string) {
 		if cl == nil {
 			return nil
 		}
-		if cl.Seed != nil {
-			// Initiator: cancel if finalize loop hasn't completed.
-			if cl.InPeer != "" || cl.OutPeer == "" || cl.CancelPre == nil {
-				return nil
+		// Full amount ticked — settle and clean up.
+		now := time.Now().Unix()
+		if cl.InPeer != "" {
+			if p := h.trustlines[cl.InPeer]; p != nil {
+				p.AddBalance(cl.Amount, now)
 			}
-			creditnet.Enqueue(&cl.Queue, "cancel")
-			return []string{cl.OutPeer}
+			h.node.UnrefModule(cl.InPeer, h.name)
 		}
-		// Non-initiator: finalize full amount (cleanup).
-		return h.timeoutFinalize(id, cl)
+		if cl.OutPeer != "" {
+			if p := h.trustlines[cl.OutPeer]; p != nil {
+				p.AddBalance(-cl.Amount, now)
+			}
+			h.node.UnrefModule(cl.OutPeer, h.name)
+		}
+		delete(h.Clearings, id)
+		return nil
 	})
-}
-
-// timeoutFinalize settles the full chunk amount at timeout for non-initiators.
-func (h *Triad) timeoutFinalize(id string, cl *Clearing) []string {
-	var kicks []string
-	if cl.InPeer != "" {
-		if p := h.trustlines[cl.InPeer]; p != nil {
-			p.AddBalance(cl.Amount, time.Now().Unix())
-		}
-		h.node.UnrefModule(cl.InPeer, h.name)
-		cl.InPeer = ""
-	}
-	if cl.OutPeer != "" {
-		if p := h.trustlines[cl.OutPeer]; p != nil {
-			p.AddBalance(-cl.Amount, time.Now().Unix())
-		}
-		h.node.UnrefModule(cl.OutPeer, h.name)
-		cl.OutPeer = ""
-	}
-	h.removeClearing(id)
-	return kicks
 }
 
 // ---------------------------------------------------------------------------
