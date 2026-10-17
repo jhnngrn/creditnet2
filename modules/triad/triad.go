@@ -308,9 +308,6 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			h.node.RefModule(peer, h.name)
 			h.node.RefModule(cl.Side[OUT].Peer, h.name)
 			creditnet.Enqueue(&nextCl.Side[OUT].Queue, "finalize")
-			if nextStep >= 2 {
-				h.scheduleCancel(nextID)
-			}
 			kicks = append(kicks, cl.Side[OUT].Peer)
 		} else if cl.Seed == nil && !forwardFinal {
 			// Non-initiator: create next chunk with IN side only.
@@ -366,6 +363,18 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 		if nextCl.Side[OUT].Peer == "" {
 			nextCl.Side[OUT].Peer = peer
 			h.node.RefModule(peer, h.name)
+		}
+	}
+
+	// Initiator continuation: set OUT Time now that peer accepted.
+	if cl.Seed != nil && !cl.Final {
+		nextID := hex.EncodeToString(chainHash(cl.Seed, cl.Step-1))
+		if nextCl := h.Clearings[nextID]; nextCl != nil {
+			nextCl.Side[OUT].Time = ts
+			h.scheduleCleanup(nextID, OUT, ts)
+			if nextCl.Step >= 2 {
+				h.scheduleCancel(nextID)
+			}
 		}
 	}
 
