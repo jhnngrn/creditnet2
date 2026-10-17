@@ -37,10 +37,11 @@ const (
 // No role field — each node just has InPeer (where commit/finalize arrives)
 // and OutPeer (where it forwards). Seed != nil identifies the initiator.
 type Clearing struct {
-	Amount  int64    `json:"amount"`
-	InPeer  string   `json:"in_peer,omitempty"`
-	OutPeer string   `json:"out_peer,omitempty"`
-	Queue   []string `json:"queue,omitempty"`
+	Amount   int64    `json:"amount"`
+	InPeer   string   `json:"in_peer,omitempty"`
+	OutPeer  string   `json:"out_peer,omitempty"`
+	Queue    []string `json:"queue,omitempty"`
+	CommitTS int64    `json:"commit_ts,omitempty"` // when committed (unix ms)
 
 	// Hash chain
 	Preimage  []byte `json:"preimage,omitempty"`   // finalize preimage to forward
@@ -138,7 +139,7 @@ func (h *Triad) Reserved(peer string) (in, out int64) {
 func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	switch method {
 	case "commit":
-		return h.reqCommit(peer, payload)
+		return h.reqCommit(peer, payload, ts)
 	case "finalize":
 		return h.reqFinalize(peer, payload, ts)
 	case "cancel":
@@ -153,7 +154,7 @@ func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts i
 // Commit
 // ---------------------------------------------------------------------------
 
-func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, error) {
+func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	if h.trustlines[peer] == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
@@ -175,6 +176,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 			return false, nil, nil
 		}
 		cl.InPeer = peer
+		cl.CommitTS = ts
 		h.node.RefModule(peer, h.name)
 		creditnet.Enqueue(&cl.Queue, "finalize")
 		return true, []string{cl.OutPeer}, nil
