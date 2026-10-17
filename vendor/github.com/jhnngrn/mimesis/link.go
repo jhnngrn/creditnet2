@@ -393,14 +393,23 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			}
 			n.delete(peer)
 			return true, nil, nil
-		case "module":
+		}
+		return false, nil, fmt.Errorf("unknown link method %q", method)
+	}
+	if ns == "module" {
+		l := n.Get(peer)
+		if l == nil {
+			return false, nil, fmt.Errorf("no link to %s", peer)
+		}
+		switch method {
+		case "connect":
 			ok, err := l.reqModule(payload, n.moduleMap, n.InviteMode)
 			return ok, nil, err
-		case "module_close":
+		case "close":
 			ok, err := l.reqModuleClose(payload)
 			return ok, nil, err
 		}
-		return false, nil, fmt.Errorf("unknown link method %q", method)
+		return false, nil, fmt.Errorf("unknown module method %q", method)
 	}
 	lk := n.Get(peer)
 	if lk == nil {
@@ -435,9 +444,18 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 			} else {
 				l.State.IntentClose = false
 			}
-		case "module":
+		}
+		return nil
+	}
+	if ns == "module" {
+		l := n.Get(peer)
+		if l == nil {
+			return nil
+		}
+		switch method {
+		case "connect":
 			l.respModule(payload, ok)
-		case "module_close":
+		case "close":
 			l.respModuleClose(payload, ok)
 		}
 		return nil
@@ -450,7 +468,7 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 }
 
 // nextTx returns the next message to send on a peer link.
-// Link-level messages (connect/close/module) have absolute priority.
+// Link and module-level messages have absolute priority.
 // Among registered modules, the oldest QueuedAt wins.
 func (n *Node) nextTx(peer string) *queuedMsg {
 	// Link-level messages have absolute priority.
@@ -468,13 +486,13 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 		for name, mod := range lk.State.Modules {
 			if mod.IntentClose {
 				return &queuedMsg{
-					Method:  "link.module_close",
+					Method:  "module.close",
 					Payload: enc(map[string]string{"name": name}),
 				}
 			}
 			if mod.IntentConnect {
 				return &queuedMsg{
-					Method:  "link.module",
+					Method:  "module.connect",
 					Payload: enc(map[string]string{"name": name}),
 				}
 			}
@@ -700,7 +718,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		result = enc("ok")
 		kicks = []string{p.Peer}
 
-	case ns == "link" && method == "accept_module":
+	case ns == "module" && method == "accept":
 		var p struct {
 			Peer   string `json:"peer"`
 			Module string `json:"module"`
@@ -722,7 +740,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		result = enc("ok")
 		kicks = []string{p.Peer}
 
-	case ns == "link" && method == "reject_module":
+	case ns == "module" && method == "reject":
 		var p struct {
 			Peer   string `json:"peer"`
 			Module string `json:"module"`
@@ -749,6 +767,10 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 	case ns == "link":
 		n.mu.Unlock()
 		return nil, fmt.Errorf("unknown link method %q", method)
+
+	case ns == "module":
+		n.mu.Unlock()
+		return nil, fmt.Errorf("unknown module method %q", method)
 
 	default:
 		mod := n.moduleMap[ns]
