@@ -17,7 +17,7 @@ import (
 type Trustline struct {
 	Connected        bool     `json:"connected"`
 	IntentClose      bool     `json:"intent_close,omitempty"` // !Connected && IntentClose = tombstone
-	Queue            []string `json:"queue,omitempty"`
+	Queue            Queue `json:"queue"`
 	CreditLimit      int64    `json:"credit_limit"`
 	CreditLimitIn    int64    `json:"credit_limit_in"`
 	Balance          int64    `json:"balance"`
@@ -245,7 +245,7 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 		peer.PendingPayment = nil
 	}
 	if h.Trustlines[peerID] != nil {
-		Dequeue(&peer.Queue)
+		peer.Queue.Dequeue()
 	}
 	return nil
 }
@@ -297,7 +297,7 @@ func (h *Node) NextTx(peerID string) (string, json.RawMessage, int64) {
 		return "connect", nil, 0
 	}
 	// Operations only when peer is connected.
-	method := QueueHead(peer.Queue)
+	method := peer.Queue.Head()
 	if method == "" {
 		return "", nil, 0
 	}
@@ -422,7 +422,7 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []strin
 		return nil, nil, fmt.Errorf("credit limit change already pending")
 	}
 	peer.PendingLimit = &p.Amount
-	Enqueue(&peer.Queue, "set_credit_limit")
+	peer.Queue.Enqueue("set_credit_limit", 0)
 	return Enc("ok"), []string{peerID}, nil
 }
 
@@ -449,7 +449,7 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, []string,
 		return nil, nil, fmt.Errorf("demurrage change already pending")
 	}
 	peer.PendingDemurrage = &p.Rate
-	Enqueue(&peer.Queue, "set_demurrage")
+	peer.Queue.Enqueue("set_demurrage", 0)
 	return Enc("ok"), []string{peerID}, nil
 }
 
@@ -480,7 +480,7 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 		return nil, nil, fmt.Errorf("insufficient credit")
 	}
 	peer.PendingPayment = &p.Amount
-	Enqueue(&peer.Queue, "payment")
+	peer.Queue.Enqueue("payment", 0)
 	return Enc("ok"), []string{peerID}, nil
 }
 

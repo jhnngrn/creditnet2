@@ -30,11 +30,11 @@ type Novation struct {
 	Role    string   `json:"role"` // "intermediary", "debtor", "creditor"
 	InPeer  string   `json:"in_peer,omitempty"`
 	OutPeer string   `json:"out_peer,omitempty"`
-	Queue   []string `json:"queue,omitempty"`
+	Queue creditnet.Queue `json:"queue"`
 }
 
 func (n *Novation) pendingPeer() string {
-	if creditnet.QueueHead(n.Queue) == "rollback" {
+	if n.Queue.Head() == "rollback" {
 		return n.InPeer
 	}
 	return n.OutPeer
@@ -152,7 +152,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		h.addNovation(m.NovationID, &Novation{
 			Amount: m.Amount, Role: "debtor",
 			InPeer: peer, OutPeer: m.Creditor,
-			Queue: []string{"commit"},
+			Queue: creditnet.Queue{Entries: []creditnet.QueueEntry{{"commit", 0}}},
 		})
 		return true, []string{m.Creditor}, nil
 
@@ -182,7 +182,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		h.addNovation(m.NovationID, &Novation{
 			Amount: m.Amount, Role: "creditor",
 			InPeer: peer, OutPeer: m.Intermediary,
-			Queue: []string{"commit"},
+			Queue: creditnet.Queue{Entries: []creditnet.QueueEntry{{"commit", 0}}},
 		})
 		return true, []string{m.Intermediary}, nil
 
@@ -195,7 +195,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		if nov.InPeer != peer {
 			return false, nil, nil
 		}
-		creditnet.Enqueue(&nov.Queue, "finalize")
+		nov.Queue.Enqueue("finalize", 0)
 		return true, []string{nov.OutPeer}, nil
 	}
 	return false, nil, nil
@@ -222,7 +222,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	nov.InPeer = ""
 	var kicks []string
 	if nov.OutPeer != "" {
-		creditnet.Enqueue(&nov.Queue, "finalize")
+		nov.Queue.Enqueue("finalize", 0)
 		kicks = []string{nov.OutPeer}
 	}
 	if nov.OutPeer == "" {
@@ -249,7 +249,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 		h.removeNovation(m.NovationID)
 		return true, nil, nil
 	}
-	creditnet.Enqueue(&nov.Queue, "rollback")
+	nov.Queue.Enqueue("rollback", 0)
 	return true, []string{nov.InPeer}, nil
 }
 
@@ -278,13 +278,13 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
 	if nov == nil {
 		return nil
 	}
-	creditnet.Dequeue(&nov.Queue)
+	nov.Queue.Dequeue()
 	if !ok {
 		if nov.Role == "intermediary" {
 			h.removeNovation(m.NovationID)
 			return nil
 		}
-		creditnet.Enqueue(&nov.Queue, "rollback")
+		nov.Queue.Enqueue("rollback", 0)
 		return []string{nov.InPeer}
 	}
 	return nil
@@ -299,7 +299,7 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if nov == nil {
 		return
 	}
-	creditnet.Dequeue(&nov.Queue)
+	nov.Queue.Dequeue()
 	if p := h.trustlines[peer]; p != nil {
 		p.AddBalance(-nov.Amount, ts)
 	}
@@ -326,7 +326,7 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 
 func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
 	for id, nov := range h.Novations {
-		if len(nov.Queue) > 0 && nov.pendingPeer() == peer {
+		if !nov.Queue.Empty() && nov.pendingPeer() == peer {
 			return h.buildMsg(id, nov)
 		}
 	}
@@ -334,7 +334,7 @@ func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
 }
 
 func (h *Triad) buildMsg(id string, nov *Novation) (string, json.RawMessage, int64) {
-	switch creditnet.QueueHead(nov.Queue) {
+	switch nov.Queue.Head() {
 	case "commit":
 		var d, i, c string
 		switch nov.Role {
@@ -345,11 +345,11 @@ func (h *Triad) buildMsg(id string, nov *Novation) (string, json.RawMessage, int
 		case "creditor":
 			d, i, c = nov.InPeer, nov.OutPeer, h.nodeID
 		}
-		return "commit", creditnet.Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}), 0
+		return "commit", creditnet.Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}), nov.Queue.HeadTime()
 	case "finalize":
-		return "finalize", creditnet.Enc(novFinalizeMsg{NovationID: id}), 0
+		return "finalize", creditnet.Enc(novFinalizeMsg{NovationID: id}), nov.Queue.HeadTime()
 	case "rollback":
-		return "rollback", creditnet.Enc(map[string]string{"novation_id": id}), 0
+		return "rollback", creditnet.Enc(map[string]string{"novation_id": id}), nov.Queue.HeadTime()
 	}
 	return "", nil, 0
 }
@@ -422,7 +422,7 @@ func (h *Triad) tryNovate() []string {
 				Role:    "intermediary",
 				InPeer:  creditor,
 				OutPeer: debtor,
-				Queue:   []string{"commit"},
+				Queue:   creditnet.Queue{Entries: []creditnet.QueueEntry{{"commit", 0}}},
 			})
 			kicks = append(kicks, debtor)
 			avlD -= amount
