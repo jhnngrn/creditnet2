@@ -14,17 +14,6 @@ var Boot = mimesis.Boot
 // RunAndWait initializes the server and blocks until interrupted.
 var RunAndWait = mimesis.RunAndWait
 
-// AppModuleFactory is the creditnet-specific module factory signature.
-// Unlike mimesis.ModuleFactory, it receives trustlines and bandwidth
-// from the Node module.
-type AppModuleFactory func(
-	nodeID string,
-	schedule mimesis.ScheduleFunc,
-	trustlines map[string]*Trustline,
-	bandwidth BandwidthFunc,
-	state json.RawMessage,
-) mimesis.Module
-
 // RegisterNode registers the trustline Node module on the server.
 // This must be called before any Register calls, because other modules
 // depend on the Node's trustlines and bandwidth.
@@ -34,19 +23,18 @@ func RegisterNode(srv *mimesis.Server) {
 	})
 }
 
-// Register registers a creditnet app module factory on the server.
-// The factory receives trustlines and bandwidth from the Node module,
-// which must be registered first via RegisterNode.
-func Register(srv *mimesis.Server, name string, factory AppModuleFactory) {
-	srv.Register(name, func(_ string, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-		mod := node.ModuleMap()["trustline"]
-		if mod == nil {
-			panic(fmt.Sprintf("creditnet.Register: trustline module not found for %s — call RegisterNode before Register", nodeID))
-		}
-		n := mod.(*Node)
-		m := factory(nodeID, schedule, n.Trustlines, n.Bandwidth, state)
+// Register registers a module factory on the server.
+// If the module implements Reserver, it is automatically registered
+// with the trustline Node.
+func Register(srv *mimesis.Server, name string, factory mimesis.ModuleFactory) {
+	srv.Register(name, func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+		m := factory(name, nodeID, node, schedule, state)
 		if r, ok := m.(Reserver); ok {
-			n.RegisterReserver(r)
+			mod := node.ModuleMap()["trustline"]
+			if mod == nil {
+				panic(fmt.Sprintf("creditnet.Register: trustline module not found for %s — call RegisterNode before Register", nodeID))
+			}
+			mod.(*Node).RegisterReserver(r)
 		}
 		return m
 	})

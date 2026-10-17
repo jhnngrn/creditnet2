@@ -123,21 +123,26 @@ type Loops struct {
 	Clearings map[string]*Clearing      `json:"clearings,omitempty"`
 	Probes    map[string][]*SearchProbe `json:"probes,omitempty"` // peer → outgoing search probes
 
+	name       string
 	nodeID     string
+	node       *mimesis.Node
 	schedule   mimesis.ScheduleFunc
 	trustlines map[string]*creditnet.Trustline
 	bandwidth  creditnet.BandwidthFunc
 }
 
-func NewLoops(nodeID string, schedule mimesis.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) mimesis.Module {
+func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Loops{
 		Paths:      map[string]*Path{},
 		Clearings:  map[string]*Clearing{},
 		Probes:     map[string][]*SearchProbe{},
+		name:       name,
 		nodeID:     nodeID,
+		node:       node,
 		schedule:   schedule,
-		trustlines: trustlines,
-		bandwidth:  bandwidth,
+		trustlines: tl.Trustlines,
+		bandwidth:  tl.Bandwidth,
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {

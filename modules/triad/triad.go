@@ -52,20 +52,25 @@ type novFinalizeMsg struct {
 // Triad implements the link Module interface and creditnet.Reserver for novation.
 type Triad struct {
 	Novations  map[string]*Novation `json:"novations,omitempty"`
+	name       string
 	nodeID     string
+	node       *mimesis.Node
 	schedule   mimesis.ScheduleFunc
 	trustlines map[string]*creditnet.Trustline
 	bandwidth  creditnet.BandwidthFunc
 }
 
-// NewTriad matches the ModuleFactory signature.
-func NewTriad(nodeID string, schedule mimesis.ScheduleFunc, trustlines map[string]*creditnet.Trustline, bandwidth creditnet.BandwidthFunc, state json.RawMessage) mimesis.Module {
+// NewTriad matches the mimesis.ModuleFactory signature.
+func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Triad{
 		Novations:  map[string]*Novation{},
+		name:       name,
 		nodeID:     nodeID,
+		node:       node,
 		schedule:   schedule,
-		trustlines: trustlines,
-		bandwidth:  bandwidth,
+		trustlines: tl.Trustlines,
+		bandwidth:  tl.Bandwidth,
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {
@@ -213,7 +218,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 		return false, nil, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(nov.Amount, ts)
-	h.unrefPeer(nov.InPeer)
+	h.node.UnrefModule(nov.InPeer, h.name)
 	nov.InPeer = ""
 	var kicks []string
 	if nov.OutPeer != "" {
@@ -298,7 +303,7 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if p := h.trustlines[peer]; p != nil {
 		p.AddBalance(-nov.Amount, ts)
 	}
-	h.unrefPeer(nov.OutPeer)
+	h.node.UnrefModule(nov.OutPeer, h.name)
 	nov.OutPeer = ""
 	if nov.InPeer == "" {
 		h.removeNovation(m.NovationID)
@@ -442,18 +447,29 @@ func (h *Triad) isConnected(peer string) bool {
 	return t != nil && t.Connected && !t.IntentClose
 }
 
-// addNovation stores a novation.
+// addNovation stores a novation and refs the involved peer.
 func (h *Triad) addNovation(id string, nov *Novation) {
 	h.Novations[id] = nov
+	if nov.InPeer != "" {
+		h.node.RefModule(nov.InPeer, h.name)
+	}
+	if nov.OutPeer != "" {
+		h.node.RefModule(nov.OutPeer, h.name)
+	}
 }
 
-// removeNovation deletes the novation.
+// removeNovation deletes the novation and unrefs the involved peers.
 func (h *Triad) removeNovation(id string) {
+	if nov := h.Novations[id]; nov != nil {
+		if nov.InPeer != "" {
+			h.node.UnrefModule(nov.InPeer, h.name)
+		}
+		if nov.OutPeer != "" {
+			h.node.UnrefModule(nov.OutPeer, h.name)
+		}
+	}
 	delete(h.Novations, id)
 }
-
-// unrefPeer is a no-op placeholder (trustline ref counting removed).
-func (h *Triad) unrefPeer(peer string) {}
 
 func (h *Triad) connectedPeers() []string {
 	out := make([]string, 0, len(h.trustlines))
