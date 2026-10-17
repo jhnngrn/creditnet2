@@ -110,8 +110,8 @@ type ClearingSide struct {
 }
 
 const (
-	sideIN  = 0
-	sideOUT = 1
+	sideIN  = creditnet.IN
+	sideOUT = creditnet.OUT
 )
 
 // ---------------------------------------------------------------------------
@@ -185,16 +185,14 @@ func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 // Reserver
 // ---------------------------------------------------------------------------
 
-func (h *Loops) Reserved(peer string) (in, out int64) {
+func (h *Loops) Reserved(peer string, side int) int64 {
+	var total int64
 	for _, cl := range h.Clearings {
-		if cl.Side[sideIN].Peer == peer {
-			in += cl.Amount + cl.Side[sideIN].Penalty
-		}
-		if cl.Side[sideOUT].Peer == peer {
-			out += cl.Amount + cl.Side[sideOUT].Penalty
+		if cl.Side[side].Peer == peer {
+			total += cl.Amount + cl.Side[side].Penalty
 		}
 	}
-	return
+	return total
 }
 
 
@@ -406,13 +404,11 @@ func (h *Loops) floodForward(searchID string, p *Path, dir uint8, exclude string
 			continue
 		}
 		if dir == 0 {
-			_, bwOut := h.bandwidth(peerID)
-			if bwOut > 0 {
+			if h.bandwidth(peerID, sideOUT) > 0 {
 				eligible = append(eligible, peerID)
 			}
 		} else {
-			bwIn, _ := h.bandwidth(peerID)
-			if bwIn > 0 {
+			if h.bandwidth(peerID, sideIN) > 0 {
 				eligible = append(eligible, peerID)
 			}
 		}
@@ -649,8 +645,7 @@ func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 			delete(h.Paths, m.ID)
 		}
 		inPen := m.Penalty * int64(hops+1)
-		bwIn, _ := h.bandwidth(peer)
-		if bwIn < m.Amount+inPen {
+		if h.bandwidth(peer, sideIN) < m.Amount+inPen {
 			return false, nil, nil
 		}
 		cl.Side[sideIN] = ClearingSide{Peer: peer, Time: ts, Penalty: inPen}
@@ -670,8 +665,7 @@ func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 	delete(h.Paths, m.ID)
 
 	inPen := m.Penalty * int64(hops+1)
-	bwIn, _ := h.bandwidth(peer)
-	if bwIn < m.Amount+inPen {
+	if h.bandwidth(peer, sideIN) < m.Amount+inPen {
 		return false, nil, nil
 	}
 
@@ -767,7 +761,7 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	// If not enough, skip continuation and forward final=true.
 	forwardFinal := m.Final
 	if cl.Seed == nil && !m.Final {
-		avl, _ := h.bandwidth(peer)
+		avl := h.bandwidth(peer, sideIN)
 		avl += cl.Amount + cl.Side[sideIN].Penalty
 		if avl < cl.Amount {
 			forwardFinal = true
@@ -782,8 +776,8 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			// In sync transport reqFinalize always arrives before respFinalize,
 			// so the initiator handles all continuation here.
 			nextStep := cl.Step - 1
-			avlIn, _ := h.bandwidth(peer)
-			_, avlOut := h.bandwidth(outPeer)
+			avlIn := h.bandwidth(peer, sideIN)
+			avlOut := h.bandwidth(outPeer, sideOUT)
 			isFinal := nextStep <= 2 || avlIn < 2*cl.Amount || avlOut < 2*cl.Amount
 			nextCl := &Clearing{
 				Amount:      cl.Amount,
@@ -1189,14 +1183,14 @@ func (h *Loops) sendSearches() []string {
 		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
 			continue
 		}
-		bwIn, bwOut := h.bandwidth(peerID)
+		bwOut := h.bandwidth(peerID, sideOUT)
 		if bwOut > 0 {
 			hasDebtor = true
 			if amount == 0 || bwOut < amount {
 				amount = bwOut
 			}
 		}
-		if bwIn > 0 {
+		if h.bandwidth(peerID, sideIN) > 0 {
 			hasCreditor = true
 		}
 	}
@@ -1228,8 +1222,8 @@ func (h *Loops) floodSearchInitiator(searchID string, p *Path) []string {
 		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
 			continue
 		}
-		_, bwOut := h.bandwidth(peerID)
-		bwIn, _ := h.bandwidth(peerID)
+		bwOut := h.bandwidth(peerID, sideOUT)
+		bwIn := h.bandwidth(peerID, sideIN)
 		if bwOut > 0 {
 			debtors = append(debtors, peerID)
 		}
@@ -1322,7 +1316,7 @@ func (h *Loops) startLoop(searchID string) []string {
 	if p == nil || p.Peer[0] == "" {
 		return nil
 	}
-	_, avl := h.bandwidth(p.Peer[0])
+	avl := h.bandwidth(p.Peer[0], sideOUT)
 	if avl <= 0 {
 		h.expirePath(searchID)
 		return nil

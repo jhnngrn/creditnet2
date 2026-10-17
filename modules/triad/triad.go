@@ -32,8 +32,8 @@ const (
 	ChunkSize      = int64(1000000)
 	Nchunks        = 1024
 
-	sideIN  = 0
-	sideOUT = 1
+	sideIN  = creditnet.IN
+	sideOUT = creditnet.OUT
 )
 
 // ClearingSide holds per-side state for a clearing (IN or OUT).
@@ -122,16 +122,14 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 // Reserver — reports capacity reserved by in-flight clearings
 // ---------------------------------------------------------------------------
 
-func (h *Triad) Reserved(peer string) (in, out int64) {
+func (h *Triad) Reserved(peer string, side int) int64 {
+	var total int64
 	for _, cl := range h.Clearings {
-		if cl.Side[sideIN].Peer == peer {
-			in += cl.Amount
-		}
-		if cl.Side[sideOUT].Peer == peer {
-			out += cl.Amount
+		if cl.Side[side].Peer == peer {
+			total += cl.Amount
 		}
 	}
-	return
+	return total
 }
 
 // ---------------------------------------------------------------------------
@@ -175,8 +173,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 		if cl.Seed == nil || cl.Side[sideIN].Peer != "" {
 			return false, nil, nil
 		}
-		bwIn, _ := h.bandwidth(peer)
-		if bwIn < m.Amount {
+		if h.bandwidth(peer, sideIN) < m.Amount {
 			return false, nil, nil
 		}
 		cl.Side[sideIN].Peer = peer
@@ -192,8 +189,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 		return false, nil, nil
 	}
 
-	bwIn, _ := h.bandwidth(peer)
-	if bwIn < m.Amount {
+	if h.bandwidth(peer, sideIN) < m.Amount {
 		return false, nil, nil
 	}
 	if h.linkCount(peer) >= MaxPerLink || h.linkCount(outPeer) >= MaxPerLink {
@@ -271,7 +267,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	// Continuation: create next chunk if not final.
 	forwardFinal := m.Final
 	if cl.Seed == nil && !m.Final {
-		avl, _ := h.bandwidth(peer)
+		avl := h.bandwidth(peer, sideIN)
 		avl += cl.Amount // account for about-to-be-freed reservation
 		if avl < cl.Amount {
 			forwardFinal = true
@@ -284,8 +280,8 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 		if cl.Seed != nil && cl.Side[sideOUT].Peer != "" {
 			// Initiator: create next chunk clearing.
 			nextStep := cl.Step - 1
-			avlIn, _ := h.bandwidth(peer)
-			_, avlOut := h.bandwidth(cl.Side[sideOUT].Peer)
+			avlIn := h.bandwidth(peer, sideIN)
+			avlOut := h.bandwidth(cl.Side[sideOUT].Peer, sideOUT)
 			isFinal := nextStep <= 2 || avlIn < 2*cl.Amount || avlOut < 2*cl.Amount
 			nextCl := &Clearing{
 				Amount: cl.Amount,
@@ -663,7 +659,7 @@ func (h *Triad) tryNovate() []string {
 		if dPeer == nil {
 			continue
 		}
-		_, dOut := h.bandwidth(debtor)
+		dOut := h.bandwidth(debtor, sideOUT)
 		avlD := dOut - dPeer.CreditLimitIn
 		if avlD < ChunkSize || h.linkCount(debtor) >= MaxPerLink {
 			continue
@@ -676,7 +672,7 @@ func (h *Triad) tryNovate() []string {
 			if cPeer == nil {
 				continue
 			}
-			cIn, _ := h.bandwidth(creditor)
+			cIn := h.bandwidth(creditor, sideIN)
 			avlC := cIn - cPeer.CreditLimit
 			if avlC < ChunkSize || h.linkCount(creditor) >= MaxPerLink {
 				continue

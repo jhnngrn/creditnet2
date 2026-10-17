@@ -16,18 +16,26 @@ var (
 var ParseIdentity = mimesis.ParseIdentity
 
 // ---------------------------------------------------------------------------
+// Side constants — used by bandwidth and Reserver
+// ---------------------------------------------------------------------------
+
+const (
+	IN  = 0
+	OUT = 1
+)
+
+// ---------------------------------------------------------------------------
 // Interfaces
 // ---------------------------------------------------------------------------
 
-// BandwidthFunc returns available (in, out) capacity for a peer,
-// accounting for effective balance, credit limits, and all reservations.
-type BandwidthFunc func(peer string) (in, out int64)
+// BandwidthFunc returns available capacity for a peer on a given side.
+type BandwidthFunc func(peer string, side int) int64
 
-// Reserver reports capacity reserved by a module on a given peer.
-// Modules that hold temporary reservations (e.g. in-flight ripple hops)
+// Reserver reports capacity reserved by a module on a given peer/side.
+// Modules that hold temporary reservations (e.g. in-flight clearings)
 // implement this so the bandwidth computation can subtract them.
 type Reserver interface {
-	Reserved(peer string) (in, out int64)
+	Reserved(peer string, side int) int64
 }
 
 // ---------------------------------------------------------------------------

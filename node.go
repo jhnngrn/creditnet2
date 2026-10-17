@@ -78,23 +78,26 @@ func (h *Node) GetTrustline(peer string) *Trustline {
 	return p
 }
 
-// Bandwidth returns available (in, out) capacity for a peer,
-// accounting for effective balance, credit limits, and all reservations.
-func (h *Node) Bandwidth(peer string) (in, out int64) {
+// Bandwidth returns available capacity for a peer on a given side.
+func (h *Node) Bandwidth(peer string, side int) int64 {
 	p := h.GetTrustline(peer)
 	if p == nil {
-		return 0, 0
+		return 0
 	}
 	eff := p.EffectiveBalance(time.Now().Unix())
-	var ri, ro int64
-	for _, r := range h.reservers {
-		i, o := r.Reserved(peer)
-		ri += i
-		ro += o
+	var limit int64
+	if side == OUT {
+		limit = p.CreditLimitIn + eff
+	} else {
+		limit = p.CreditLimit - eff
 	}
-	in = p.CreditLimit - eff - ri
-	out = p.CreditLimitIn + eff - ro
-	return
+	for _, r := range h.reservers {
+		limit -= r.Reserved(peer, side)
+	}
+	if limit < 0 {
+		return 0
+	}
+	return limit
 }
 
 
