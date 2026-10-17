@@ -207,13 +207,13 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 		return false, nil, nil
 	}
 
-	h.addClearing(m.ClearingID, &Clearing{
+	h.Clearings[m.ClearingID] = &Clearing{
 		Amount: m.Amount,
 		Side: [2]ClearingSide{
 			{Peer: peer, Time: ts},
 			{Peer: outPeer, Queue: []string{"commit"}},
 		},
-	})
+	}
 	h.node.RefModule(peer, h.name) // IN: peer sent us commit
 	return true, []string{outPeer}, nil
 }
@@ -763,7 +763,7 @@ func (h *Triad) tryNovate() []string {
 				Final: step <= 2,
 			}
 
-			h.addClearing(clID, cl)
+			h.Clearings[clID] = cl
 			kicks = append(kicks, debtor)
 			break // one triangle per creditor scan
 		}
@@ -821,10 +821,6 @@ func (h *Triad) scheduleCancel(id string) {
 func (h *Triad) isConnected(peer string) bool {
 	t := h.trustlines[peer]
 	return t != nil && t.Connected && !t.IntentClose
-}
-
-func (h *Triad) addClearing(id string, cl *Clearing) {
-	h.Clearings[id] = cl
 }
 
 func (h *Triad) removeClearing(id string) {
