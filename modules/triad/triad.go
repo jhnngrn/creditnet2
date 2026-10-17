@@ -29,6 +29,7 @@ const (
 	MaxPerLink     = 3
 	NovateInterval = 5 * time.Minute
 	CancelTimeout  = 5 * time.Minute
+	RetryDelay     = time.Minute
 	TickRate       = 1000 // units per second
 	ChunkSize      = int64(1000000)
 	Nchunks        = 1024
@@ -527,7 +528,7 @@ func (h *Triad) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []
 	return true, nil, nil
 }
 
-func (h *Triad) respCleanup(peer string, raw json.RawMessage, ts int64) {
+func (h *Triad) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64) {
 	var m struct {
 		ClearingID string `json:"clearing_id"`
 	}
@@ -549,6 +550,22 @@ func (h *Triad) respCleanup(peer string, raw json.RawMessage, ts int64) {
 		return
 	}
 	creditnet.Dequeue(&cl.Side[side].Queue)
+
+	if !ok {
+		// NACK — retry after a short delay.
+		h.schedule(RetryDelay, func() []string {
+			cl := h.Clearings[m.ClearingID]
+			if cl == nil {
+				return nil
+			}
+			if cl.Side[side].Peer != peer {
+				return nil
+			}
+			creditnet.Enqueue(&cl.Side[side].Queue, "cleanup")
+			return []string{peer}
+		})
+		return
+	}
 
 	// Our side settles (mirror of reqCleanup).
 	if p := h.trustlines[peer]; p != nil {
@@ -580,7 +597,7 @@ func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok 
 	case "rollback":
 		h.respRollback(payload)
 	case "cleanup":
-		h.respCleanup(peer, payload, ts)
+		h.respCleanup(peer, payload, ok, ts)
 	}
 	return nil
 }
