@@ -58,9 +58,9 @@ func (c *Clearing) pendingPeer() string {
 }
 
 type commitMsg struct {
-	ClearingID string   `json:"clearing_id"`
-	Amount     int64    `json:"amount"`
-	Parties    []string `json:"parties"` // three party IDs
+	ClearingID string `json:"clearing_id"`
+	Amount     int64  `json:"amount"`
+	Next       string `json:"next,omitempty"` // first hop only: who to forward to
 }
 
 type finalizeMsg struct {
@@ -180,9 +180,9 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		return true, []string{cl.OutPeer}, nil
 	}
 
-	// Find outPeer: the party that is neither self nor sender.
-	outPeer := thirdParty(m.Parties, h.nodeID, peer)
-	if outPeer == "" || !h.isConnected(outPeer) {
+	// First hop: Next tells us who to forward to.
+	outPeer := m.Next
+	if outPeer == "" || outPeer == h.nodeID || !h.isConnected(outPeer) {
 		return false, nil, nil
 	}
 
@@ -492,7 +492,7 @@ func (h *Triad) buildMsg(id string, cl *Clearing) (string, json.RawMessage, int6
 		return "commit", creditnet.Enc(commitMsg{
 			ClearingID: id,
 			Amount:     cl.Amount,
-			Parties:    []string{h.nodeID, cl.InPeer, cl.OutPeer},
+			Next:       cl.InPeer, // receiver should forward back to my InPeer
 		}), 0
 	case "finalize":
 		return "finalize", creditnet.Enc(finalizeMsg{
@@ -666,16 +666,6 @@ func (h *Triad) linkCount(peer string) int {
 		}
 	}
 	return c
-}
-
-// thirdParty returns the party in parties that is neither a nor b.
-func thirdParty(parties []string, a, b string) string {
-	for _, p := range parties {
-		if p != a && p != b {
-			return p
-		}
-	}
-	return ""
 }
 
 // ---------------------------------------------------------------------------
