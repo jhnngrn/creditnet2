@@ -335,8 +335,48 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	switch method {
 	case "status":
 		return creditnet.Enc(map[string]any{"novations": len(h.Novations)}), nil, nil
+	case "forceRollback":
+		return h.acctForceRollback(payload)
+	case "forceFinalize":
+		return h.acctForceFinalize(payload)
 	}
 	return nil, nil, mimesis.ErrBadMethod
+}
+
+func (h *Triad) acctForceRollback(raw json.RawMessage) (json.RawMessage, []string, error) {
+	var m struct {
+		NovationID string `json:"novation_id"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return nil, nil, fmt.Errorf("bad payload")
+	}
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
+		return nil, nil, fmt.Errorf("unknown novation %s", m.NovationID)
+	}
+	if nov.Side[IN].Peer == "" {
+		return nil, nil, fmt.Errorf("no IN peer to rollback to")
+	}
+	nov.Side[IN].Queue.Enqueue("rollback", 0)
+	return nil, []string{nov.Side[IN].Peer}, nil
+}
+
+func (h *Triad) acctForceFinalize(raw json.RawMessage) (json.RawMessage, []string, error) {
+	var m struct {
+		NovationID string `json:"novation_id"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return nil, nil, fmt.Errorf("bad payload")
+	}
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
+		return nil, nil, fmt.Errorf("unknown novation %s", m.NovationID)
+	}
+	if nov.Side[OUT].Peer == "" {
+		return nil, nil, fmt.Errorf("no OUT peer to finalize to")
+	}
+	nov.Side[OUT].Queue.Enqueue("finalize", 0)
+	return nil, []string{nov.Side[OUT].Peer}, nil
 }
 
 // ---------------------------------------------------------------------------
