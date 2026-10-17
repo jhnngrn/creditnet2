@@ -42,8 +42,8 @@ github.com/jhnngrn/mimesis   (external)
 creditnet.go           thin wrapper: Boot, RegisterNode, Register
 types.go               creditnet-specific types and re-exports
 node.go                Node: trustline module implementing mimesis.Module,
-                       holds trustlines and bandwidth, registers reservers
-trustline.go           trustline data and sync: credit limits, balances, payments
+                       holds trustlines and bandwidth, registers reservers,
+                       trustline sync: credit limits, balances, payments
 demurrage.go           demurrage computation (decay over time)
 queue.go               generic enqueue/dequeue helpers
 
