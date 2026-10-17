@@ -826,7 +826,7 @@ func (h *Triad) isConnected(peer string) bool {
 func (h *Triad) removeClearing(id string) {
 	if cl := h.Clearings[id]; cl != nil {
 		for s := 0; s < 2; s++ {
-			if cl.Side[s].Peer != "" {
+			if cl.Side[s].Peer != "" && cl.Side[s].Time != 0 {
 				h.node.UnrefModule(cl.Side[s].Peer, h.name)
 			}
 		}
