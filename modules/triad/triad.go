@@ -333,8 +333,6 @@ func (h *Triad) Status() json.RawMessage {
 
 func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
 	switch method {
-	case "status":
-		return creditnet.Enc(map[string]any{"novations": len(h.Novations)}), nil, nil
 	case "forceRollback":
 		return h.acctForceRollback(payload)
 	case "forceFinalize":
