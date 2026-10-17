@@ -28,6 +28,7 @@ import (
 const (
 	MaxPerLink     = 3
 	NovateInterval = 5 * time.Minute
+	CancelTimeout  = 5 * time.Minute
 	TickRate       = 1000 // units per second
 	ChunkSize      = int64(1000000)
 	Nchunks        = 1024
@@ -106,13 +107,19 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 		h.Clearings = map[string]*Clearing{}
 	}
 	h.scheduleNovate()
-	// Re-schedule cleanup timers for persisted clearings.
+	// Re-schedule timers for persisted clearings.
 	for id, cl := range h.Clearings {
 		for s := 0; s < 2; s++ {
 			if cl.Side[s].Peer != "" && cl.Side[s].Time > 0 &&
 				!creditnet.QueueHas(cl.Side[s].Queue, "cleanup") {
 				h.scheduleCleanup(id, s, cl.Side[s].Time)
 			}
+		}
+		if cl.Seed != nil && cl.Step >= 2 &&
+			cl.Side[OUT].Peer != "" && cl.Side[OUT].Time > 0 &&
+			cl.Side[IN].Peer == "" &&
+			!creditnet.QueueHas(cl.Side[OUT].Queue, "cancel") {
+			h.scheduleCancel(id)
 		}
 	}
 	return h
@@ -232,6 +239,10 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 			h.scheduleCleanup(m.ClearingID, s, cl.Side[s].Time)
 		}
 	}
+	// Initiator: cancel if no finalize arrives in time.
+	if cl.Seed != nil && cl.Step >= 2 {
+		h.scheduleCancel(m.ClearingID)
+	}
 	return nil
 }
 
@@ -297,6 +308,9 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			h.node.RefModule(peer, h.name)
 			h.node.RefModule(cl.Side[OUT].Peer, h.name)
 			creditnet.Enqueue(&nextCl.Side[OUT].Queue, "finalize")
+			if nextStep >= 2 {
+				h.scheduleCancel(nextID)
+			}
 			kicks = append(kicks, cl.Side[OUT].Peer)
 		} else if cl.Seed == nil && !forwardFinal {
 			// Non-initiator: create next chunk with IN side only.
@@ -738,6 +752,24 @@ func (h *Triad) scheduleCleanup(id string, side int, commitTime int64) {
 		}
 		creditnet.Enqueue(&cl.Side[side].Queue, "cleanup")
 		return []string{peer}
+	})
+}
+
+// scheduleCancel schedules a cancel if the initiator doesn't receive finalize in time.
+func (h *Triad) scheduleCancel(id string) {
+	h.schedule(CancelTimeout, func() []string {
+		cl := h.Clearings[id]
+		if cl == nil || cl.Seed == nil || cl.Step < 2 {
+			return nil
+		}
+		if cl.Side[IN].Peer != "" {
+			return nil // finalized — IN side completed
+		}
+		if cl.Side[OUT].Peer == "" {
+			return nil
+		}
+		creditnet.Enqueue(&cl.Side[OUT].Queue, "cancel")
+		return []string{cl.Side[OUT].Peer}
 	})
 }
 
