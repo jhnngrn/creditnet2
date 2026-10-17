@@ -37,11 +37,11 @@ const (
 // No role field — each node just has InPeer (where commit/finalize arrives)
 // and OutPeer (where it forwards). Seed != nil identifies the initiator.
 type Clearing struct {
-	Amount   int64    `json:"amount"`
-	InPeer   string   `json:"in_peer,omitempty"`
-	OutPeer  string   `json:"out_peer,omitempty"`
-	Queue    []string `json:"queue,omitempty"`
-	CommitTS int64    `json:"commit_ts,omitempty"` // when committed (unix ms)
+	Amount    int64    `json:"amount"`
+	InPeer    string   `json:"in_peer,omitempty"`
+	OutPeer   string   `json:"out_peer,omitempty"`
+	Queue     []string `json:"queue,omitempty"`
+	Timestamp int64    `json:"timestamp,omitempty"` // commit time, for tick + cleanup
 
 	// Hash chain
 	Preimage  []byte `json:"preimage,omitempty"`   // finalize preimage to forward
@@ -176,7 +176,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 			return false, nil, nil
 		}
 		cl.InPeer = peer
-		cl.CommitTS = ts
+		cl.Timestamp = ts
 		h.node.RefModule(peer, h.name)
 		creditnet.Enqueue(&cl.Queue, "finalize")
 		return true, []string{cl.OutPeer}, nil
@@ -197,10 +197,11 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 	}
 
 	h.addClearing(m.ClearingID, &Clearing{
-		Amount:  m.Amount,
-		InPeer:  peer,
-		OutPeer: outPeer,
-		Queue:   []string{"commit"},
+		Amount:    m.Amount,
+		InPeer:    peer,
+		OutPeer:   outPeer,
+		Queue:     []string{"commit"},
+		Timestamp: ts,
 	})
 	return true, []string{outPeer}, nil
 }
