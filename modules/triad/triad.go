@@ -803,9 +803,6 @@ func (h *Triad) scheduleCancel(id string) {
 		if cl == nil || cl.Seed == nil || cl.Step < 2 {
 			return nil
 		}
-		if cl.Side[IN].Time != 0 {
-			return nil // finalized — IN side completed
-		}
 		if cl.Side[OUT].Peer == "" {
 			return nil
 		}
