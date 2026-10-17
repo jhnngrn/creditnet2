@@ -193,7 +193,10 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 
 	// First hop: Next tells us who to forward to.
 	outPeer := m.Next
-	if outPeer == "" || outPeer == h.nodeID || !h.isConnected(outPeer) {
+	if outPeer == "" || outPeer == h.nodeID {
+		return false, nil, fmt.Errorf("commit: invalid next peer")
+	}
+	if !h.isConnected(outPeer) {
 		return false, nil, nil
 	}
 
