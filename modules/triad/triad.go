@@ -332,49 +332,31 @@ func (h *Triad) Status() json.RawMessage {
 }
 
 func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
+	var side int
+	var msg string
 	switch method {
 	case "forceRollback":
-		return h.acctForceRollback(payload)
+		side, msg = IN, "rollback"
 	case "forceFinalize":
-		return h.acctForceFinalize(payload)
+		side, msg = OUT, "finalize"
+	default:
+		return nil, nil, mimesis.ErrBadMethod
 	}
-	return nil, nil, mimesis.ErrBadMethod
-}
-
-func (h *Triad) acctForceRollback(raw json.RawMessage) (json.RawMessage, []string, error) {
 	var m struct {
 		NovationID string `json:"novation_id"`
 	}
-	if json.Unmarshal(raw, &m) != nil {
+	if json.Unmarshal(payload, &m) != nil {
 		return nil, nil, fmt.Errorf("bad payload")
 	}
 	nov := h.Novations[m.NovationID]
 	if nov == nil {
 		return nil, nil, fmt.Errorf("unknown novation %s", m.NovationID)
 	}
-	if nov.Side[IN].Peer == "" {
-		return nil, nil, fmt.Errorf("no IN peer to rollback to")
+	if nov.Side[side].Peer == "" {
+		return nil, nil, fmt.Errorf("no peer on %s side", method)
 	}
-	nov.Side[IN].Queue.Enqueue("rollback", 0)
-	return nil, []string{nov.Side[IN].Peer}, nil
-}
-
-func (h *Triad) acctForceFinalize(raw json.RawMessage) (json.RawMessage, []string, error) {
-	var m struct {
-		NovationID string `json:"novation_id"`
-	}
-	if json.Unmarshal(raw, &m) != nil {
-		return nil, nil, fmt.Errorf("bad payload")
-	}
-	nov := h.Novations[m.NovationID]
-	if nov == nil {
-		return nil, nil, fmt.Errorf("unknown novation %s", m.NovationID)
-	}
-	if nov.Side[OUT].Peer == "" {
-		return nil, nil, fmt.Errorf("no OUT peer to finalize to")
-	}
-	nov.Side[OUT].Queue.Enqueue("finalize", 0)
-	return nil, []string{nov.Side[OUT].Peer}, nil
+	nov.Side[side].Queue.Enqueue(msg, 0)
+	return nil, []string{nov.Side[side].Peer}, nil
 }
 
 // ---------------------------------------------------------------------------
