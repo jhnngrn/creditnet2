@@ -37,11 +37,12 @@ const (
 // No role field — each node just has InPeer (where commit/finalize arrives)
 // and OutPeer (where it forwards). Seed != nil identifies the initiator.
 type Clearing struct {
-	Amount    int64    `json:"amount"`
-	InPeer    string   `json:"in_peer,omitempty"`
-	OutPeer   string   `json:"out_peer,omitempty"`
-	Queue     []string `json:"queue,omitempty"`
-	Timestamp int64    `json:"timestamp,omitempty"` // commit time, for tick + cleanup
+	Amount  int64    `json:"amount"`
+	InPeer  string   `json:"in_peer,omitempty"`
+	OutPeer string   `json:"out_peer,omitempty"`
+	Queue   []string `json:"queue,omitempty"`
+	InTime  int64    `json:"in_time,omitempty"`  // when IN side committed
+	OutTime int64    `json:"out_time,omitempty"` // when OUT side committed
 
 	// Hash chain
 	Preimage  []byte `json:"preimage,omitempty"`   // finalize preimage to forward
@@ -174,7 +175,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 			return false, nil, nil
 		}
 		cl.InPeer = peer
-		cl.Timestamp = ts
+		cl.InTime = ts
 		h.node.RefModule(peer, h.name)
 		creditnet.Enqueue(&cl.Queue, "finalize")
 		return true, []string{cl.OutPeer}, nil
@@ -195,16 +196,16 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 	}
 
 	h.addClearing(m.ClearingID, &Clearing{
-		Amount:    m.Amount,
-		InPeer:    peer,
-		OutPeer:   outPeer,
-		Queue:     []string{"commit"},
-		Timestamp: ts,
+		Amount: m.Amount,
+		InPeer: peer,
+		OutPeer: outPeer,
+		Queue:  []string{"commit"},
+		InTime: ts,
 	})
 	return true, []string{outPeer}, nil
 }
 
-func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
+func (h *Triad) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 	var m commitMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return nil
@@ -223,7 +224,8 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
 		creditnet.Enqueue(&cl.Queue, "rollback")
 		return []string{cl.InPeer}
 	}
-	// Commit accepted — schedule tick timeout.
+	// OUT side committed.
+	cl.OutTime = ts
 	h.scheduleTimeout(m.ClearingID)
 	return nil
 }
@@ -388,7 +390,7 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 	}
 
 	// Settle ticked portion on IN side.
-	ticked := tickedAmount(cl.Amount, cl.Timestamp, ts)
+	ticked := tickedAmount(cl.Amount, cl.InTime, ts)
 	if ticked > 0 {
 		if p := h.trustlines[peer]; p != nil {
 			p.AddBalance(ticked, ts)
@@ -419,7 +421,7 @@ func (h *Triad) respCancel(peer string, raw json.RawMessage, ts int64) {
 	}
 	creditnet.Dequeue(&cl.Queue)
 	// Settle ticked portion on OUT side.
-	ticked := tickedAmount(cl.Amount, cl.Timestamp, ts)
+	ticked := tickedAmount(cl.Amount, cl.OutTime, ts)
 	if ticked > 0 {
 		if p := h.trustlines[peer]; p != nil {
 			p.AddBalance(-ticked, ts)
@@ -466,7 +468,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "commit":
-		return h.respCommit(payload, ok)
+		return h.respCommit(payload, ok, ts)
 	case "finalize":
 		h.respFinalize(peer, payload, ts)
 	case "cancel":
@@ -618,10 +620,18 @@ func (h *Triad) tryNovate() []string {
 // For non-initiator: finalize the full amount (cleanup).
 func (h *Triad) scheduleTimeout(id string) {
 	cl := h.Clearings[id]
-	if cl == nil || cl.Timestamp == 0 {
+	if cl == nil {
 		return
 	}
-	elapsed := time.Now().Unix() - cl.Timestamp
+	// Use the later timestamp (both sides committed).
+	t := cl.OutTime
+	if cl.InTime > t {
+		t = cl.InTime
+	}
+	if t == 0 {
+		return
+	}
+	elapsed := time.Now().Unix() - t
 	remaining := cl.Amount/int64(TickRate) - elapsed
 	if remaining < 0 {
 		remaining = 0
