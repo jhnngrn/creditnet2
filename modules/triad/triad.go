@@ -24,20 +24,17 @@ const (
 	OUT = creditnet.OUT
 )
 
-// Novation tracks a single three-party novation in progress.
-type Novation struct {
-	Amount  int64    `json:"amount"`
-	Role    string   `json:"role"` // "intermediary", "debtor", "creditor"
-	InPeer  string   `json:"in_peer,omitempty"`
-	OutPeer string   `json:"out_peer,omitempty"`
+// NovationSide holds per-side state (IN or OUT).
+type NovationSide struct {
+	Peer  string         `json:"peer,omitempty"`
 	Queue creditnet.Queue `json:"queue"`
 }
 
-func (n *Novation) pendingPeer() string {
-	if n.Queue.Head() == "rollback" {
-		return n.InPeer
-	}
-	return n.OutPeer
+// Novation tracks a single three-party novation in progress.
+type Novation struct {
+	Amount int64           `json:"amount"`
+	Role   string          `json:"role"` // "intermediary", "debtor", "creditor"
+	Side   [2]NovationSide `json:"side"`
 }
 
 type novCommitMsg struct {
@@ -94,10 +91,7 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 func (h *Triad) Reserved(peer string, side int) int64 {
 	var total int64
 	for _, nov := range h.Novations {
-		if side == IN && nov.InPeer == peer {
-			total += nov.Amount
-		}
-		if side == OUT && nov.OutPeer == peer {
+		if nov.Side[side].Peer == peer {
 			total += nov.Amount
 		}
 	}
@@ -149,11 +143,15 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Creditor) >= MaxNovPerLink {
 			return false, nil, nil
 		}
-		h.addNovation(m.NovationID, &Novation{
+		nov := &Novation{
 			Amount: m.Amount, Role: "debtor",
-			InPeer: peer, OutPeer: m.Creditor,
-			Queue: creditnet.Queue{Entries: []creditnet.QueueEntry{{"commit", 0}}},
-		})
+			Side: [2]NovationSide{
+				{Peer: peer},
+				{Peer: m.Creditor},
+			},
+		}
+		nov.Side[OUT].Queue.Enqueue("commit", 0)
+		h.addNovation(m.NovationID, nov)
 		return true, []string{m.Creditor}, nil
 
 	case m.Creditor:
@@ -179,11 +177,15 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Intermediary) >= MaxNovPerLink {
 			return false, nil, nil
 		}
-		h.addNovation(m.NovationID, &Novation{
+		nov := &Novation{
 			Amount: m.Amount, Role: "creditor",
-			InPeer: peer, OutPeer: m.Intermediary,
-			Queue: creditnet.Queue{Entries: []creditnet.QueueEntry{{"commit", 0}}},
-		})
+			Side: [2]NovationSide{
+				{Peer: peer},
+				{Peer: m.Intermediary},
+			},
+		}
+		nov.Side[OUT].Queue.Enqueue("commit", 0)
+		h.addNovation(m.NovationID, nov)
 		return true, []string{m.Intermediary}, nil
 
 	case m.Intermediary:
@@ -192,11 +194,11 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		if nov == nil || nov.Role != "intermediary" {
 			return false, nil, nil
 		}
-		if nov.InPeer != peer {
+		if nov.Side[IN].Peer != peer {
 			return false, nil, nil
 		}
-		nov.Queue.Enqueue("finalize", 0)
-		return true, []string{nov.OutPeer}, nil
+		nov.Side[OUT].Queue.Enqueue("finalize", 0)
+		return true, []string{nov.Side[OUT].Peer}, nil
 	}
 	return false, nil, nil
 }
@@ -214,18 +216,18 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	if nov == nil {
 		return false, nil, fmt.Errorf("novation %s not found", m.NovationID)
 	}
-	if nov.InPeer != peer {
+	if nov.Side[IN].Peer != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(nov.Amount, ts)
-	h.node.UnrefModule(nov.InPeer, h.name)
-	nov.InPeer = ""
+	h.node.UnrefModule(nov.Side[IN].Peer, h.name)
+	nov.Side[IN] = NovationSide{}
 	var kicks []string
-	if nov.OutPeer != "" {
-		nov.Queue.Enqueue("finalize", 0)
-		kicks = []string{nov.OutPeer}
+	if nov.Side[OUT].Peer != "" {
+		nov.Side[OUT].Queue.Enqueue("finalize", 0)
+		kicks = []string{nov.Side[OUT].Peer}
 	}
-	if nov.OutPeer == "" {
+	if nov.Side[OUT].Peer == "" {
 		h.removeNovation(m.NovationID)
 	}
 	return true, kicks, nil
@@ -242,15 +244,15 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 	if nov == nil {
 		return false, nil, fmt.Errorf("unknown novation %s", m.NovationID)
 	}
-	if nov.OutPeer != peer {
+	if nov.Side[OUT].Peer != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
 	if nov.Role == "intermediary" {
 		h.removeNovation(m.NovationID)
 		return true, nil, nil
 	}
-	nov.Queue.Enqueue("rollback", 0)
-	return true, []string{nov.InPeer}, nil
+	nov.Side[IN].Queue.Enqueue("rollback", 0)
+	return true, []string{nov.Side[IN].Peer}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -278,14 +280,14 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
 	if nov == nil {
 		return nil
 	}
-	nov.Queue.Dequeue()
+	nov.Side[OUT].Queue.Dequeue()
 	if !ok {
 		if nov.Role == "intermediary" {
 			h.removeNovation(m.NovationID)
 			return nil
 		}
-		nov.Queue.Enqueue("rollback", 0)
-		return []string{nov.InPeer}
+		nov.Side[IN].Queue.Enqueue("rollback", 0)
+		return []string{nov.Side[IN].Peer}
 	}
 	return nil
 }
@@ -299,13 +301,13 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if nov == nil {
 		return
 	}
-	nov.Queue.Dequeue()
+	nov.Side[OUT].Queue.Dequeue()
 	if p := h.trustlines[peer]; p != nil {
 		p.AddBalance(-nov.Amount, ts)
 	}
-	h.node.UnrefModule(nov.OutPeer, h.name)
-	nov.OutPeer = ""
-	if nov.InPeer == "" {
+	h.node.UnrefModule(nov.Side[OUT].Peer, h.name)
+	nov.Side[OUT] = NovationSide{}
+	if nov.Side[IN].Peer == "" {
 		h.removeNovation(m.NovationID)
 	}
 }
@@ -327,38 +329,42 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
 	var bestID string
 	var bestNov *Novation
+	var bestSide int
 	var bestTime int64
 	for id, nov := range h.Novations {
-		if !nov.Queue.Empty() && nov.pendingPeer() == peer {
-			t := nov.Queue.HeadTime()
-			if bestNov == nil || (t > 0 && (bestTime == 0 || t < bestTime)) {
-				bestID, bestNov, bestTime = id, nov, t
+		for s := 0; s < 2; s++ {
+			if nov.Side[s].Peer == peer && !nov.Side[s].Queue.Empty() {
+				t := nov.Side[s].Queue.HeadTime()
+				if bestNov == nil || (t > 0 && (bestTime == 0 || t < bestTime)) {
+					bestID, bestNov, bestSide, bestTime = id, nov, s, t
+				}
 			}
 		}
 	}
 	if bestNov == nil {
 		return "", nil, 0
 	}
-	return h.buildMsg(bestID, bestNov)
+	return h.buildMsg(bestID, bestNov, bestSide)
 }
 
-func (h *Triad) buildMsg(id string, nov *Novation) (string, json.RawMessage, int64) {
-	switch nov.Queue.Head() {
+func (h *Triad) buildMsg(id string, nov *Novation, side int) (string, json.RawMessage, int64) {
+	ts := nov.Side[side].Queue.HeadTime()
+	switch nov.Side[side].Queue.Head() {
 	case "commit":
 		var d, i, c string
 		switch nov.Role {
 		case "intermediary":
-			d, i, c = nov.OutPeer, h.nodeID, nov.InPeer
+			d, i, c = nov.Side[OUT].Peer, h.nodeID, nov.Side[IN].Peer
 		case "debtor":
-			d, i, c = h.nodeID, nov.InPeer, nov.OutPeer
+			d, i, c = h.nodeID, nov.Side[IN].Peer, nov.Side[OUT].Peer
 		case "creditor":
-			d, i, c = nov.InPeer, nov.OutPeer, h.nodeID
+			d, i, c = nov.Side[IN].Peer, nov.Side[OUT].Peer, h.nodeID
 		}
-		return "commit", creditnet.Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}), nov.Queue.HeadTime()
+		return "commit", creditnet.Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}), ts
 	case "finalize":
-		return "finalize", creditnet.Enc(novFinalizeMsg{NovationID: id}), nov.Queue.HeadTime()
+		return "finalize", creditnet.Enc(novFinalizeMsg{NovationID: id}), ts
 	case "rollback":
-		return "rollback", creditnet.Enc(map[string]string{"novation_id": id}), nov.Queue.HeadTime()
+		return "rollback", creditnet.Enc(map[string]string{"novation_id": id}), ts
 	}
 	return "", nil, 0
 }
@@ -426,13 +432,16 @@ func (h *Triad) tryNovate() []string {
 				continue
 			}
 			novID := randomNovationID()
-			h.addNovation(novID, &Novation{
-				Amount:  amount,
-				Role:    "intermediary",
-				InPeer:  creditor,
-				OutPeer: debtor,
-				Queue:   creditnet.Queue{Entries: []creditnet.QueueEntry{{"commit", 0}}},
-			})
+			nov := &Novation{
+				Amount: amount,
+				Role:   "intermediary",
+				Side: [2]NovationSide{
+					{Peer: creditor},
+					{Peer: debtor},
+				},
+			}
+			nov.Side[OUT].Queue.Enqueue("commit", 0)
+			h.addNovation(novID, nov)
 			kicks = append(kicks, debtor)
 			avlD -= amount
 			if avlD <= 0 {
@@ -455,22 +464,20 @@ func (h *Triad) isConnected(peer string) bool {
 // addNovation stores a novation and refs the involved peers.
 func (h *Triad) addNovation(id string, nov *Novation) {
 	h.Novations[id] = nov
-	if nov.InPeer != "" {
-		h.node.RefModule(nov.InPeer, h.name)
-	}
-	if nov.OutPeer != "" {
-		h.node.RefModule(nov.OutPeer, h.name)
+	for s := 0; s < 2; s++ {
+		if nov.Side[s].Peer != "" {
+			h.node.RefModule(nov.Side[s].Peer, h.name)
+		}
 	}
 }
 
 // removeNovation deletes the novation and unrefs the involved peers.
 func (h *Triad) removeNovation(id string) {
 	if nov := h.Novations[id]; nov != nil {
-		if nov.InPeer != "" {
-			h.node.UnrefModule(nov.InPeer, h.name)
-		}
-		if nov.OutPeer != "" {
-			h.node.UnrefModule(nov.OutPeer, h.name)
+		for s := 0; s < 2; s++ {
+			if nov.Side[s].Peer != "" {
+				h.node.UnrefModule(nov.Side[s].Peer, h.name)
+			}
 		}
 	}
 	delete(h.Novations, id)
@@ -489,8 +496,10 @@ func (h *Triad) connectedPeers() []string {
 func (h *Triad) novLinkCount(peer string) int {
 	c := 0
 	for _, n := range h.Novations {
-		if n.InPeer == peer || n.OutPeer == peer {
-			c++
+		for s := 0; s < 2; s++ {
+			if n.Side[s].Peer == peer {
+				c++
+			}
 		}
 	}
 	return c
