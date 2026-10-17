@@ -26,43 +26,41 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	MaxPerLink      = 3
-	NovateInterval  = 5 * time.Minute
-	CancelTimeout   = 5 * time.Minute
-	ChunkSize       = int64(1000000)
-	Nchunks         = 1024
+	MaxPerLink     = 3
+	NovateInterval = 5 * time.Minute
+	CancelTimeout  = 5 * time.Minute
+	ChunkSize      = int64(1000000)
+	Nchunks        = 1024
 )
 
 // Clearing tracks a single in-flight chunk in a three-party clearing.
+// No role field — each node just has InPeer (where commit/finalize arrives)
+// and OutPeer (where it forwards). Seed != nil identifies the initiator.
 type Clearing struct {
-	Amount    int64  `json:"amount"`
-	Role      string `json:"role"` // "intermediary", "debtor", "creditor"
-	InPeer    string `json:"in_peer,omitempty"`
-	OutPeer   string `json:"out_peer,omitempty"`
-	Queue     []string `json:"queue,omitempty"`
+	Amount  int64    `json:"amount"`
+	InPeer  string   `json:"in_peer,omitempty"`
+	OutPeer string   `json:"out_peer,omitempty"`
+	Queue   []string `json:"queue,omitempty"`
 
 	// Hash chain
-	Preimage  []byte `json:"preimage,omitempty"`    // finalize preimage to forward
-	CancelPre []byte `json:"cancel_pre,omitempty"`  // cancel preimage to forward
-	Final     bool   `json:"final,omitempty"`        // last chunk in chain
-	Seed      []byte `json:"seed,omitempty"`          // initiator only
-	Step      int    `json:"step,omitempty"`           // initiator only, counts down
+	Preimage  []byte `json:"preimage,omitempty"`   // finalize preimage to forward
+	CancelPre []byte `json:"cancel_pre,omitempty"` // cancel preimage to forward
+	Final     bool   `json:"final,omitempty"`       // last chunk in chain
+	Seed      []byte `json:"seed,omitempty"`         // initiator only
+	Step      int    `json:"step,omitempty"`          // initiator only, counts down
 }
 
 func (c *Clearing) pendingPeer() string {
-	head := creditnet.QueueHead(c.Queue)
-	if head == "rollback" {
+	if creditnet.QueueHead(c.Queue) == "rollback" {
 		return c.InPeer
 	}
 	return c.OutPeer
 }
 
 type commitMsg struct {
-	ClearingID   string `json:"clearing_id"`
-	Debtor       string `json:"debtor"`
-	Intermediary string `json:"intermediary"`
-	Creditor     string `json:"creditor"`
-	Amount       int64  `json:"amount"`
+	ClearingID string   `json:"clearing_id"`
+	Amount     int64    `json:"amount"`
+	Parties    []string `json:"parties"` // three party IDs
 }
 
 type finalizeMsg struct {
@@ -156,8 +154,7 @@ func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts i
 // ---------------------------------------------------------------------------
 
 func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, error) {
-	p := h.trustlines[peer]
-	if p == nil {
+	if h.trustlines[peer] == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
 	var m commitMsg
@@ -168,73 +165,42 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		return false, nil, nil
 	}
 
-	switch h.nodeID {
-	case m.Debtor:
-		// Commit from intermediary — I am debtor, forwarding to creditor.
-		if peer != m.Intermediary {
-			return false, nil, nil
-		}
-		bwIn, _ := h.bandwidth(peer)
-		if bwIn-p.CreditLimit < m.Amount {
-			return false, nil, nil
-		}
-		if h.Clearings[m.ClearingID] != nil || !h.isConnected(m.Creditor) {
-			return false, nil, nil
-		}
-		if h.linkCount(peer) >= MaxPerLink || h.linkCount(m.Creditor) >= MaxPerLink {
-			return false, nil, nil
-		}
-		h.addClearing(m.ClearingID, &Clearing{
-			Amount: m.Amount, Role: "debtor",
-			InPeer: peer, OutPeer: m.Creditor,
-			Queue: []string{"commit"},
-		})
-		return true, []string{m.Creditor}, nil
-
-	case m.Creditor:
-		// Commit from debtor — I am creditor, forwarding to intermediary.
-		if peer != m.Debtor {
+	// Loop closure: initiator receives commit back.
+	if cl := h.Clearings[m.ClearingID]; cl != nil {
+		if cl.Seed == nil || cl.InPeer != "" {
 			return false, nil, nil
 		}
 		bwIn, _ := h.bandwidth(peer)
 		if bwIn < m.Amount {
 			return false, nil, nil
 		}
-		iPeer := h.trustlines[m.Intermediary]
-		if iPeer == nil {
-			return false, nil, nil
-		}
-		_, bwOut := h.bandwidth(m.Intermediary)
-		if bwOut-iPeer.CreditLimitIn < m.Amount {
-			return false, nil, nil
-		}
-		if h.Clearings[m.ClearingID] != nil {
-			return false, nil, nil
-		}
-		if h.linkCount(peer) >= MaxPerLink || h.linkCount(m.Intermediary) >= MaxPerLink {
-			return false, nil, nil
-		}
-		h.addClearing(m.ClearingID, &Clearing{
-			Amount: m.Amount, Role: "creditor",
-			InPeer: peer, OutPeer: m.Intermediary,
-			Queue: []string{"commit"},
-		})
-		return true, []string{m.Intermediary}, nil
-
-	case m.Intermediary:
-		// Commit confirmation from creditor — all three committed.
-		cl := h.Clearings[m.ClearingID]
-		if cl == nil || cl.Role != "intermediary" {
-			return false, nil, nil
-		}
-		if cl.InPeer != peer {
-			return false, nil, nil
-		}
-		// Start finalize.
+		cl.InPeer = peer
+		h.node.RefModule(peer, h.name)
 		creditnet.Enqueue(&cl.Queue, "finalize")
 		return true, []string{cl.OutPeer}, nil
 	}
-	return false, nil, nil
+
+	// Find outPeer: the party that is neither self nor sender.
+	outPeer := thirdParty(m.Parties, h.nodeID, peer)
+	if outPeer == "" || !h.isConnected(outPeer) {
+		return false, nil, nil
+	}
+
+	bwIn, _ := h.bandwidth(peer)
+	if bwIn < m.Amount {
+		return false, nil, nil
+	}
+	if h.linkCount(peer) >= MaxPerLink || h.linkCount(outPeer) >= MaxPerLink {
+		return false, nil, nil
+	}
+
+	h.addClearing(m.ClearingID, &Clearing{
+		Amount:  m.Amount,
+		InPeer:  peer,
+		OutPeer: outPeer,
+		Queue:   []string{"commit"},
+	})
+	return true, []string{outPeer}, nil
 }
 
 func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
@@ -248,14 +214,15 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
 	}
 	creditnet.Dequeue(&cl.Queue)
 	if !ok {
-		if cl.Role == "intermediary" {
+		if cl.Seed != nil {
+			// Initiator: commit rejected, remove.
 			h.removeClearing(m.ClearingID)
 			return nil
 		}
 		creditnet.Enqueue(&cl.Queue, "rollback")
 		return []string{cl.InPeer}
 	}
-	// Intermediary: commit accepted, schedule cancel timeout.
+	// Initiator: commit accepted, schedule cancel timeout.
 	if cl.Seed != nil && cl.CancelPre != nil {
 		h.scheduleCancel(m.ClearingID)
 	}
@@ -294,7 +261,6 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	// Continuation: create next chunk if not final.
 	forwardFinal := m.Final
 	if cl.Seed == nil && !m.Final {
-		// Intermediary/non-initiator: check bandwidth for another chunk.
 		avl, _ := h.bandwidth(peer)
 		avl += cl.Amount // account for about-to-be-freed reservation
 		if avl < cl.Amount {
@@ -313,7 +279,6 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			isFinal := nextStep <= 2 || avlIn < 2*cl.Amount || avlOut < 2*cl.Amount
 			nextCl := &Clearing{
 				Amount:  cl.Amount,
-				Role:    "intermediary",
 				InPeer:  peer,
 				OutPeer: cl.OutPeer,
 				Final:   isFinal,
@@ -338,10 +303,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			// Non-initiator: create next chunk with IN side only.
 			nextCl := h.Clearings[nextID]
 			if nextCl == nil {
-				nextCl = &Clearing{
-					Amount: cl.Amount,
-					Role:   cl.Role,
-				}
+				nextCl = &Clearing{Amount: cl.Amount}
 				h.Clearings[nextID] = nextCl
 			}
 			if nextCl.InPeer == "" {
@@ -385,10 +347,7 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 		nextID := hex.EncodeToString(cl.Preimage)
 		nextCl := h.Clearings[nextID]
 		if nextCl == nil {
-			nextCl = &Clearing{
-				Amount: cl.Amount,
-				Role:   cl.Role,
-			}
+			nextCl = &Clearing{Amount: cl.Amount}
 			h.Clearings[nextID] = nextCl
 		}
 		if nextCl.OutPeer == "" {
@@ -409,8 +368,7 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 // ---------------------------------------------------------------------------
 
 func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
-	p := h.trustlines[peer]
-	if p == nil {
+	if h.trustlines[peer] == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
 	var m cancelMsg
@@ -430,7 +388,6 @@ func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 		return false, nil, fmt.Errorf("bad preimage")
 	}
 
-	// Cancel IN side — no balance adjustment (commit reserved but not settled).
 	h.node.UnrefModule(peer, h.name)
 	cl.InPeer = ""
 	var kicks []string
@@ -454,7 +411,6 @@ func (h *Triad) respCancel(peer string, raw json.RawMessage, ts int64) {
 		return
 	}
 	creditnet.Dequeue(&cl.Queue)
-	// Cancel OUT side — no balance adjustment.
 	h.node.UnrefModule(cl.OutPeer, h.name)
 	cl.OutPeer = ""
 	if cl.InPeer == "" {
@@ -480,7 +436,8 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 	if cl.OutPeer != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
-	if cl.Role == "intermediary" {
+	if cl.Seed != nil {
+		// Initiator: rollback terminates here.
 		h.removeClearing(m.ClearingID)
 		return true, nil, nil
 	}
@@ -532,17 +489,10 @@ func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
 func (h *Triad) buildMsg(id string, cl *Clearing) (string, json.RawMessage, int64) {
 	switch creditnet.QueueHead(cl.Queue) {
 	case "commit":
-		var d, i, c string
-		switch cl.Role {
-		case "intermediary":
-			d, i, c = cl.OutPeer, h.nodeID, cl.InPeer
-		case "debtor":
-			d, i, c = h.nodeID, cl.InPeer, cl.OutPeer
-		case "creditor":
-			d, i, c = cl.InPeer, cl.OutPeer, h.nodeID
-		}
 		return "commit", creditnet.Enc(commitMsg{
-			ClearingID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: cl.Amount,
+			ClearingID: id,
+			Amount:     cl.Amount,
+			Parties:    []string{h.nodeID, cl.InPeer, cl.OutPeer},
 		}), 0
 	case "finalize":
 		return "finalize", creditnet.Enc(finalizeMsg{
@@ -627,7 +577,6 @@ func (h *Triad) tryNovate() []string {
 
 			cl := &Clearing{
 				Amount:  ChunkSize,
-				Role:    "intermediary",
 				InPeer:  creditor,
 				OutPeer: debtor,
 				Queue:   []string{"commit"},
@@ -717,6 +666,16 @@ func (h *Triad) linkCount(peer string) int {
 		}
 	}
 	return c
+}
+
+// thirdParty returns the party in parties that is neither a nor b.
+func thirdParty(parties []string, a, b string) string {
+	for _, p := range parties {
+		if p != a && p != b {
+			return p
+		}
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
