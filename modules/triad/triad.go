@@ -2,6 +2,7 @@ package triad
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,45 +14,71 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Triad — three-party novation to eliminate circular debt
+// Triad — single-hop clearing with chunked hash-chain settlement
+//
+// Hash chain: seed → h(seed,0) → h(seed,1) → ... → h(seed,N)
+// Chunk at step k:
+//   ID         = hex(chainHash(seed, k))
+//   finalizePre = chainHash(seed, k-1)   →  hashEq: h(pre) == ID
+//   cancelPre   = chainHash(seed, k-2)   →  doubleHashEq: h(h(pre)) == ID
+//
+// Finalize preimage revealed at finalize = next chunk's cancel preimage.
 // ---------------------------------------------------------------------------
 
 const (
-	MaxNovPerLink  = 3
-	NovateInterval = 5 * time.Minute
+	MaxPerLink      = 3
+	NovateInterval  = 5 * time.Minute
+	CancelTimeout   = 5 * time.Minute
+	ChunkSize       = int64(1000000)
+	Nchunks         = 1024
 )
 
-// Novation tracks a single three-party novation in progress.
-type Novation struct {
-	Amount  int64    `json:"amount"`
-	Role    string   `json:"role"` // "intermediary", "debtor", "creditor"
-	InPeer  string   `json:"in_peer,omitempty"`
-	OutPeer string   `json:"out_peer,omitempty"`
-	Queue   []string `json:"queue,omitempty"`
+// Clearing tracks a single in-flight chunk in a three-party clearing.
+type Clearing struct {
+	Amount    int64  `json:"amount"`
+	Role      string `json:"role"` // "intermediary", "debtor", "creditor"
+	InPeer    string `json:"in_peer,omitempty"`
+	OutPeer   string `json:"out_peer,omitempty"`
+	Queue     []string `json:"queue,omitempty"`
+
+	// Hash chain
+	Preimage  []byte `json:"preimage,omitempty"`    // finalize preimage to forward
+	CancelPre []byte `json:"cancel_pre,omitempty"`  // cancel preimage to forward
+	Final     bool   `json:"final,omitempty"`        // last chunk in chain
+	Seed      []byte `json:"seed,omitempty"`          // initiator only
+	Step      int    `json:"step,omitempty"`           // initiator only, counts down
 }
 
-func (n *Novation) pendingPeer() string {
-	if creditnet.QueueHead(n.Queue) == "rollback" {
-		return n.InPeer
+func (c *Clearing) pendingPeer() string {
+	head := creditnet.QueueHead(c.Queue)
+	if head == "rollback" {
+		return c.InPeer
 	}
-	return n.OutPeer
+	return c.OutPeer
 }
 
-type novCommitMsg struct {
-	NovationID   string `json:"novation_id"`
+type commitMsg struct {
+	ClearingID   string `json:"clearing_id"`
 	Debtor       string `json:"debtor"`
 	Intermediary string `json:"intermediary"`
 	Creditor     string `json:"creditor"`
 	Amount       int64  `json:"amount"`
 }
 
-type novFinalizeMsg struct {
-	NovationID string `json:"novation_id"`
+type finalizeMsg struct {
+	ClearingID string `json:"clearing_id"`
+	Preimage   string `json:"preimage"`
+	Final      bool   `json:"final,omitempty"`
 }
 
-// Triad implements the link Module interface and creditnet.Reserver for novation.
+type cancelMsg struct {
+	ClearingID string `json:"clearing_id"`
+	Preimage   string `json:"preimage"`
+}
+
+// Triad implements the mimesis Module interface for single-hop clearing.
 type Triad struct {
-	Novations  map[string]*Novation `json:"novations,omitempty"`
+	Clearings  map[string]*Clearing `json:"clearings,omitempty"`
 	name       string
 	nodeID     string
 	node       *mimesis.Node
@@ -64,7 +91,7 @@ type Triad struct {
 func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
 	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Triad{
-		Novations:  map[string]*Novation{},
+		Clearings:  map[string]*Clearing{},
 		name:       name,
 		nodeID:     nodeID,
 		node:       node,
@@ -77,29 +104,34 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 			log.Fatalf("triad %s: corrupt state: %v", nodeID, err)
 		}
 	}
-	if h.Novations == nil {
-		h.Novations = map[string]*Novation{}
+	if h.Clearings == nil {
+		h.Clearings = map[string]*Clearing{}
 	}
 	h.scheduleNovate()
+	// Re-schedule cancel timers for persisted clearings.
+	for id, cl := range h.Clearings {
+		if cl.Seed != nil && cl.CancelPre != nil {
+			h.scheduleCancel(id)
+		}
+	}
 	return h
 }
 
 // ---------------------------------------------------------------------------
-// Reserver — reports capacity reserved by in-flight novations
+// Reserver — reports capacity reserved by in-flight clearings
 // ---------------------------------------------------------------------------
 
 func (h *Triad) Reserved(peer string) (in, out int64) {
-	for _, nov := range h.Novations {
-		if nov.InPeer == peer {
-			in += nov.Amount
+	for _, cl := range h.Clearings {
+		if cl.InPeer == peer {
+			in += cl.Amount
 		}
-		if nov.OutPeer == peer {
-			out += nov.Amount
+		if cl.OutPeer == peer {
+			out += cl.Amount
 		}
 	}
 	return
 }
-
 
 // ---------------------------------------------------------------------------
 // Module — HandleRequest
@@ -111,18 +143,24 @@ func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts i
 		return h.reqCommit(peer, payload)
 	case "finalize":
 		return h.reqFinalize(peer, payload, ts)
+	case "cancel":
+		return h.reqCancel(peer, payload, ts)
 	case "rollback":
 		return h.reqRollback(peer, payload)
 	}
 	return false, nil, mimesis.ErrBadMethod
 }
 
+// ---------------------------------------------------------------------------
+// Commit
+// ---------------------------------------------------------------------------
+
 func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, error) {
 	p := h.trustlines[peer]
 	if p == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
-	var m novCommitMsg
+	var m commitMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
 	}
@@ -136,18 +174,17 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		if peer != m.Intermediary {
 			return false, nil, nil
 		}
-		// Check I owe intermediary enough: -eff - inReservations >= amount.
 		bwIn, _ := h.bandwidth(peer)
 		if bwIn-p.CreditLimit < m.Amount {
 			return false, nil, nil
 		}
-		if h.Novations[m.NovationID] != nil || !h.isConnected(m.Creditor) {
+		if h.Clearings[m.ClearingID] != nil || !h.isConnected(m.Creditor) {
 			return false, nil, nil
 		}
-		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Creditor) >= MaxNovPerLink {
+		if h.linkCount(peer) >= MaxPerLink || h.linkCount(m.Creditor) >= MaxPerLink {
 			return false, nil, nil
 		}
-		h.addNovation(m.NovationID, &Novation{
+		h.addClearing(m.ClearingID, &Clearing{
 			Amount: m.Amount, Role: "debtor",
 			InPeer: peer, OutPeer: m.Creditor,
 			Queue: []string{"commit"},
@@ -159,12 +196,10 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		if peer != m.Debtor {
 			return false, nil, nil
 		}
-		// Check incoming bandwidth from debtor (room for finalize balance increase).
 		bwIn, _ := h.bandwidth(peer)
 		if bwIn < m.Amount {
 			return false, nil, nil
 		}
-		// Check link to intermediary and outgoing debt to intermediary.
 		iPeer := h.trustlines[m.Intermediary]
 		if iPeer == nil {
 			return false, nil, nil
@@ -173,13 +208,13 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		if bwOut-iPeer.CreditLimitIn < m.Amount {
 			return false, nil, nil
 		}
-		if h.Novations[m.NovationID] != nil {
+		if h.Clearings[m.ClearingID] != nil {
 			return false, nil, nil
 		}
-		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Intermediary) >= MaxNovPerLink {
+		if h.linkCount(peer) >= MaxPerLink || h.linkCount(m.Intermediary) >= MaxPerLink {
 			return false, nil, nil
 		}
-		h.addNovation(m.NovationID, &Novation{
+		h.addClearing(m.ClearingID, &Clearing{
 			Amount: m.Amount, Role: "creditor",
 			InPeer: peer, OutPeer: m.Intermediary,
 			Queue: []string{"commit"},
@@ -187,70 +222,270 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		return true, []string{m.Intermediary}, nil
 
 	case m.Intermediary:
-		// Commit confirmation from creditor — all three committed, start finalize.
-		nov := h.Novations[m.NovationID]
-		if nov == nil || nov.Role != "intermediary" {
+		// Commit confirmation from creditor — all three committed.
+		cl := h.Clearings[m.ClearingID]
+		if cl == nil || cl.Role != "intermediary" {
 			return false, nil, nil
 		}
-		if nov.InPeer != peer {
+		if cl.InPeer != peer {
 			return false, nil, nil
 		}
-		creditnet.Enqueue(&nov.Queue, "finalize")
-		return true, []string{nov.OutPeer}, nil
+		// Start finalize.
+		creditnet.Enqueue(&cl.Queue, "finalize")
+		return true, []string{cl.OutPeer}, nil
 	}
 	return false, nil, nil
 }
+
+func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
+	var m commitMsg
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	cl := h.Clearings[m.ClearingID]
+	if cl == nil {
+		return nil
+	}
+	creditnet.Dequeue(&cl.Queue)
+	if !ok {
+		if cl.Role == "intermediary" {
+			h.removeClearing(m.ClearingID)
+			return nil
+		}
+		creditnet.Enqueue(&cl.Queue, "rollback")
+		return []string{cl.InPeer}
+	}
+	// Intermediary: commit accepted, schedule cancel timeout.
+	if cl.Seed != nil && cl.CancelPre != nil {
+		h.scheduleCancel(m.ClearingID)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Finalize
+// ---------------------------------------------------------------------------
 
 func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
 	p := h.trustlines[peer]
 	if p == nil {
 		return false, nil, fmt.Errorf("trustline not connected")
 	}
-	var m novFinalizeMsg
+	var m finalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
 	}
-	nov := h.Novations[m.NovationID]
-	if nov == nil {
-		return false, nil, fmt.Errorf("novation %s not found", m.NovationID)
+	cl := h.Clearings[m.ClearingID]
+	if cl == nil {
+		return false, nil, fmt.Errorf("finalize: unknown clearing %s", m.ClearingID)
 	}
-	if nov.InPeer != peer {
-		return false, nil, fmt.Errorf("wrong peer")
+	if cl.InPeer != peer {
+		return false, nil, fmt.Errorf("finalize: wrong peer")
 	}
-	p.AddBalance(nov.Amount, ts)
-	h.node.UnrefModule(nov.InPeer, h.name)
-	nov.InPeer = ""
+
+	pre, _ := hex.DecodeString(m.Preimage)
+	if len(pre) == 0 || !hashEq(pre, m.ClearingID) {
+		return false, nil, fmt.Errorf("bad preimage")
+	}
+
+	// Settle IN side.
+	p.AddBalance(cl.Amount, ts)
+
+	// Continuation: create next chunk if not final.
+	forwardFinal := m.Final
+	if cl.Seed == nil && !m.Final {
+		// Intermediary/non-initiator: check bandwidth for another chunk.
+		avl, _ := h.bandwidth(peer)
+		avl += cl.Amount // account for about-to-be-freed reservation
+		if avl < cl.Amount {
+			forwardFinal = true
+		}
+	}
+
 	var kicks []string
-	if nov.OutPeer != "" {
-		creditnet.Enqueue(&nov.Queue, "finalize")
-		kicks = []string{nov.OutPeer}
+	if !m.Final {
+		nextID := hex.EncodeToString(pre)
+		if cl.Seed != nil && cl.OutPeer != "" {
+			// Initiator: create next chunk clearing.
+			nextStep := cl.Step - 1
+			avlIn, _ := h.bandwidth(peer)
+			_, avlOut := h.bandwidth(cl.OutPeer)
+			isFinal := nextStep <= 2 || avlIn < 2*cl.Amount || avlOut < 2*cl.Amount
+			nextCl := &Clearing{
+				Amount:  cl.Amount,
+				Role:    "intermediary",
+				InPeer:  peer,
+				OutPeer: cl.OutPeer,
+				Final:   isFinal,
+				Seed:    cl.Seed,
+				Step:    nextStep,
+			}
+			if nextStep >= 1 {
+				nextCl.Preimage = chainHash(cl.Seed, nextStep-1)
+			}
+			if nextStep >= 2 {
+				nextCl.CancelPre = chainHash(cl.Seed, nextStep-2)
+			}
+			h.Clearings[nextID] = nextCl
+			h.node.RefModule(peer, h.name)
+			h.node.RefModule(cl.OutPeer, h.name)
+			if nextCl.CancelPre != nil {
+				h.scheduleCancel(nextID)
+			}
+			creditnet.Enqueue(&nextCl.Queue, "finalize")
+			kicks = append(kicks, cl.OutPeer)
+		} else if cl.Seed == nil && !forwardFinal {
+			// Non-initiator: create next chunk with IN side only.
+			nextCl := h.Clearings[nextID]
+			if nextCl == nil {
+				nextCl = &Clearing{
+					Amount: cl.Amount,
+					Role:   cl.Role,
+				}
+				h.Clearings[nextID] = nextCl
+			}
+			if nextCl.InPeer == "" {
+				nextCl.InPeer = peer
+				h.node.RefModule(peer, h.name)
+			}
+		}
 	}
-	if nov.OutPeer == "" {
-		h.removeNovation(m.NovationID)
+
+	// Forward finalize to OUT.
+	h.node.UnrefModule(peer, h.name)
+	cl.InPeer = ""
+	if cl.OutPeer != "" && len(cl.Queue) == 0 {
+		creditnet.Enqueue(&cl.Queue, "finalize")
+		cl.Preimage = pre
+		cl.Final = forwardFinal
+		kicks = append(kicks, cl.OutPeer)
+	}
+	if cl.InPeer == "" && cl.OutPeer == "" {
+		h.removeClearing(m.ClearingID)
 	}
 	return true, kicks, nil
 }
 
+func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
+	var m finalizeMsg
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	cl := h.Clearings[m.ClearingID]
+	if cl == nil {
+		return
+	}
+	creditnet.Dequeue(&cl.Queue)
+	if p := h.trustlines[peer]; p != nil {
+		p.AddBalance(-cl.Amount, ts)
+	}
+
+	// Non-initiator continuation: set up OUT side of next chunk.
+	if cl.Seed == nil && cl.Preimage != nil && !cl.Final {
+		nextID := hex.EncodeToString(cl.Preimage)
+		nextCl := h.Clearings[nextID]
+		if nextCl == nil {
+			nextCl = &Clearing{
+				Amount: cl.Amount,
+				Role:   cl.Role,
+			}
+			h.Clearings[nextID] = nextCl
+		}
+		if nextCl.OutPeer == "" {
+			nextCl.OutPeer = peer
+			h.node.RefModule(peer, h.name)
+		}
+	}
+
+	h.node.UnrefModule(cl.OutPeer, h.name)
+	cl.OutPeer = ""
+	if cl.InPeer == "" {
+		h.removeClearing(m.ClearingID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cancel
+// ---------------------------------------------------------------------------
+
+func (h *Triad) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+	p := h.trustlines[peer]
+	if p == nil {
+		return false, nil, fmt.Errorf("trustline not connected")
+	}
+	var m cancelMsg
+	if json.Unmarshal(raw, &m) != nil {
+		return false, nil, fmt.Errorf("bad payload")
+	}
+	cl := h.Clearings[m.ClearingID]
+	if cl == nil {
+		return false, nil, nil
+	}
+	if cl.InPeer != peer {
+		return false, nil, nil
+	}
+
+	pre, _ := hex.DecodeString(m.Preimage)
+	if len(pre) == 0 || !doubleHashEq(pre, m.ClearingID) {
+		return false, nil, fmt.Errorf("bad preimage")
+	}
+
+	// Cancel IN side — no balance adjustment (commit reserved but not settled).
+	h.node.UnrefModule(peer, h.name)
+	cl.InPeer = ""
+	var kicks []string
+	if cl.OutPeer != "" {
+		creditnet.Enqueue(&cl.Queue, "cancel")
+		cl.CancelPre = pre
+		kicks = []string{cl.OutPeer}
+	} else {
+		h.removeClearing(m.ClearingID)
+	}
+	return true, kicks, nil
+}
+
+func (h *Triad) respCancel(peer string, raw json.RawMessage, ts int64) {
+	var m cancelMsg
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	cl := h.Clearings[m.ClearingID]
+	if cl == nil {
+		return
+	}
+	creditnet.Dequeue(&cl.Queue)
+	// Cancel OUT side — no balance adjustment.
+	h.node.UnrefModule(cl.OutPeer, h.name)
+	cl.OutPeer = ""
+	if cl.InPeer == "" {
+		h.removeClearing(m.ClearingID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rollback
+// ---------------------------------------------------------------------------
+
 func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, error) {
 	var m struct {
-		NovationID string `json:"novation_id"`
+		ClearingID string `json:"clearing_id"`
 	}
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
 	}
-	nov := h.Novations[m.NovationID]
-	if nov == nil {
-		return false, nil, fmt.Errorf("unknown novation %s", m.NovationID)
+	cl := h.Clearings[m.ClearingID]
+	if cl == nil {
+		return false, nil, fmt.Errorf("unknown clearing %s", m.ClearingID)
 	}
-	if nov.OutPeer != peer {
+	if cl.OutPeer != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
-	if nov.Role == "intermediary" {
-		h.removeNovation(m.NovationID)
+	if cl.Role == "intermediary" {
+		h.removeClearing(m.ClearingID)
 		return true, nil, nil
 	}
-	creditnet.Enqueue(&nov.Queue, "rollback")
-	return true, []string{nov.InPeer}, nil
+	creditnet.Enqueue(&cl.Queue, "rollback")
+	return true, []string{cl.InPeer}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -263,61 +498,22 @@ func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok 
 		return h.respCommit(payload, ok)
 	case "finalize":
 		h.respFinalize(peer, payload, ts)
+	case "cancel":
+		h.respCancel(peer, payload, ts)
 	case "rollback":
 		h.respRollback(payload)
 	}
 	return nil
 }
 
-func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
-	var m novCommitMsg
-	if json.Unmarshal(raw, &m) != nil {
-		return nil
-	}
-	nov := h.Novations[m.NovationID]
-	if nov == nil {
-		return nil
-	}
-	creditnet.Dequeue(&nov.Queue)
-	if !ok {
-		if nov.Role == "intermediary" {
-			h.removeNovation(m.NovationID)
-			return nil
-		}
-		creditnet.Enqueue(&nov.Queue, "rollback")
-		return []string{nov.InPeer}
-	}
-	return nil
-}
-
-func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
-	var m novFinalizeMsg
-	if json.Unmarshal(raw, &m) != nil {
-		return
-	}
-	nov := h.Novations[m.NovationID]
-	if nov == nil {
-		return
-	}
-	creditnet.Dequeue(&nov.Queue)
-	if p := h.trustlines[peer]; p != nil {
-		p.AddBalance(-nov.Amount, ts)
-	}
-	h.node.UnrefModule(nov.OutPeer, h.name)
-	nov.OutPeer = ""
-	if nov.InPeer == "" {
-		h.removeNovation(m.NovationID)
-	}
-}
-
 func (h *Triad) respRollback(raw json.RawMessage) {
 	var m struct {
-		NovationID string `json:"novation_id"`
+		ClearingID string `json:"clearing_id"`
 	}
 	if json.Unmarshal(raw, &m) != nil {
 		return
 	}
-	h.removeNovation(m.NovationID)
+	h.removeClearing(m.ClearingID)
 }
 
 // ---------------------------------------------------------------------------
@@ -325,47 +521,58 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 // ---------------------------------------------------------------------------
 
 func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
-	for id, nov := range h.Novations {
-		if len(nov.Queue) > 0 && nov.pendingPeer() == peer {
-			return h.buildMsg(id, nov)
+	for id, cl := range h.Clearings {
+		if len(cl.Queue) > 0 && cl.pendingPeer() == peer {
+			return h.buildMsg(id, cl)
 		}
 	}
 	return "", nil, 0
 }
 
-func (h *Triad) buildMsg(id string, nov *Novation) (string, json.RawMessage, int64) {
-	switch creditnet.QueueHead(nov.Queue) {
+func (h *Triad) buildMsg(id string, cl *Clearing) (string, json.RawMessage, int64) {
+	switch creditnet.QueueHead(cl.Queue) {
 	case "commit":
 		var d, i, c string
-		switch nov.Role {
+		switch cl.Role {
 		case "intermediary":
-			d, i, c = nov.OutPeer, h.nodeID, nov.InPeer
+			d, i, c = cl.OutPeer, h.nodeID, cl.InPeer
 		case "debtor":
-			d, i, c = h.nodeID, nov.InPeer, nov.OutPeer
+			d, i, c = h.nodeID, cl.InPeer, cl.OutPeer
 		case "creditor":
-			d, i, c = nov.InPeer, nov.OutPeer, h.nodeID
+			d, i, c = cl.InPeer, cl.OutPeer, h.nodeID
 		}
-		return "commit", creditnet.Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}), 0
+		return "commit", creditnet.Enc(commitMsg{
+			ClearingID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: cl.Amount,
+		}), 0
 	case "finalize":
-		return "finalize", creditnet.Enc(novFinalizeMsg{NovationID: id}), 0
+		return "finalize", creditnet.Enc(finalizeMsg{
+			ClearingID: id,
+			Preimage:   hex.EncodeToString(cl.Preimage),
+			Final:      cl.Final,
+		}), 0
+	case "cancel":
+		return "cancel", creditnet.Enc(cancelMsg{
+			ClearingID: id,
+			Preimage:   hex.EncodeToString(cl.CancelPre),
+		}), 0
 	case "rollback":
-		return "rollback", creditnet.Enc(map[string]string{"novation_id": id}), 0
+		return "rollback", creditnet.Enc(map[string]string{"clearing_id": id}), 0
 	}
 	return "", nil, 0
 }
 
 // ---------------------------------------------------------------------------
-// Module — HandleAccount
+// Module — HandleAccount / Status
 // ---------------------------------------------------------------------------
 
 func (h *Triad) Status() json.RawMessage {
-	return creditnet.Enc(map[string]any{"novations": len(h.Novations)})
+	return creditnet.Enc(map[string]any{"clearings": len(h.Clearings)})
 }
 
 func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
 	switch method {
 	case "status":
-		return creditnet.Enc(map[string]any{"novations": len(h.Novations)}), nil, nil
+		return creditnet.Enc(map[string]any{"clearings": len(h.Clearings)}), nil, nil
 	}
 	return nil, nil, mimesis.ErrBadMethod
 }
@@ -384,7 +591,7 @@ func (h *Triad) novateAndReschedule() []string {
 	return kicks
 }
 
-// tryNovate scans for circular debt and initiates novations as intermediary.
+// tryNovate scans for triangles and initiates chunked clearing.
 func (h *Triad) tryNovate() []string {
 	var kicks []string
 	peers := h.connectedPeers()
@@ -393,10 +600,9 @@ func (h *Triad) tryNovate() []string {
 		if dPeer == nil {
 			continue
 		}
-		// avlD = eff(debtor) - outReservations: how much debtor owes us, unreserved.
 		_, dOut := h.bandwidth(debtor)
 		avlD := dOut - dPeer.CreditLimitIn
-		if avlD <= 0 || h.novLinkCount(debtor) >= MaxNovPerLink {
+		if avlD < ChunkSize || h.linkCount(debtor) >= MaxPerLink {
 			continue
 		}
 		for _, creditor := range peers {
@@ -407,35 +613,59 @@ func (h *Triad) tryNovate() []string {
 			if cPeer == nil {
 				continue
 			}
-			// avlC = -eff(creditor) - inReservations: how much we owe creditor, unreserved.
 			cIn, _ := h.bandwidth(creditor)
 			avlC := cIn - cPeer.CreditLimit
-			if avlC <= 0 || h.novLinkCount(creditor) >= MaxNovPerLink {
+			if avlC < ChunkSize || h.linkCount(creditor) >= MaxPerLink {
 				continue
 			}
-			amount := avlD
-			if avlC < amount {
-				amount = avlC
-			}
-			if amount <= 0 {
-				continue
-			}
-			novID := randomNovationID()
-			h.addNovation(novID, &Novation{
-				Amount:  amount,
+
+			// Generate hash chain and start first chunk.
+			seed := make([]byte, 32)
+			rand.Read(seed)
+			step := Nchunks
+			clID := hex.EncodeToString(chainHash(seed, step))
+
+			cl := &Clearing{
+				Amount:  ChunkSize,
 				Role:    "intermediary",
 				InPeer:  creditor,
 				OutPeer: debtor,
 				Queue:   []string{"commit"},
-			})
-			kicks = append(kicks, debtor)
-			avlD -= amount
-			if avlD <= 0 {
-				break
+				Seed:    seed,
+				Step:    step,
+				Final:   step <= 2,
 			}
+			if step >= 1 {
+				cl.Preimage = chainHash(seed, step-1)
+			}
+			if step >= 2 {
+				cl.CancelPre = chainHash(seed, step-2)
+			}
+
+			h.addClearing(clID, cl)
+			kicks = append(kicks, debtor)
+			break // one triangle per creditor scan
 		}
 	}
 	return kicks
+}
+
+// scheduleCancel schedules a cancel timeout for an initiator clearing.
+func (h *Triad) scheduleCancel(id string) {
+	h.schedule(CancelTimeout, func() []string {
+		cl := h.Clearings[id]
+		if cl == nil || cl.Seed == nil || cl.CancelPre == nil {
+			return nil
+		}
+		if cl.InPeer != "" {
+			return nil // loop completed, finalize in progress
+		}
+		if cl.OutPeer == "" {
+			return nil
+		}
+		creditnet.Enqueue(&cl.Queue, "cancel")
+		return []string{cl.OutPeer}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -447,28 +677,26 @@ func (h *Triad) isConnected(peer string) bool {
 	return t != nil && t.Connected && !t.IntentClose
 }
 
-// addNovation stores a novation and refs the involved peer.
-func (h *Triad) addNovation(id string, nov *Novation) {
-	h.Novations[id] = nov
-	if nov.InPeer != "" {
-		h.node.RefModule(nov.InPeer, h.name)
+func (h *Triad) addClearing(id string, cl *Clearing) {
+	h.Clearings[id] = cl
+	if cl.InPeer != "" {
+		h.node.RefModule(cl.InPeer, h.name)
 	}
-	if nov.OutPeer != "" {
-		h.node.RefModule(nov.OutPeer, h.name)
+	if cl.OutPeer != "" {
+		h.node.RefModule(cl.OutPeer, h.name)
 	}
 }
 
-// removeNovation deletes the novation and unrefs the involved peers.
-func (h *Triad) removeNovation(id string) {
-	if nov := h.Novations[id]; nov != nil {
-		if nov.InPeer != "" {
-			h.node.UnrefModule(nov.InPeer, h.name)
+func (h *Triad) removeClearing(id string) {
+	if cl := h.Clearings[id]; cl != nil {
+		if cl.InPeer != "" {
+			h.node.UnrefModule(cl.InPeer, h.name)
 		}
-		if nov.OutPeer != "" {
-			h.node.UnrefModule(nov.OutPeer, h.name)
+		if cl.OutPeer != "" {
+			h.node.UnrefModule(cl.OutPeer, h.name)
 		}
 	}
-	delete(h.Novations, id)
+	delete(h.Clearings, id)
 }
 
 func (h *Triad) connectedPeers() []string {
@@ -481,18 +709,37 @@ func (h *Triad) connectedPeers() []string {
 	return out
 }
 
-func (h *Triad) novLinkCount(peer string) int {
+func (h *Triad) linkCount(peer string) int {
 	c := 0
-	for _, n := range h.Novations {
-		if n.InPeer == peer || n.OutPeer == peer {
+	for _, cl := range h.Clearings {
+		if cl.InPeer == peer || cl.OutPeer == peer {
 			c++
 		}
 	}
 	return c
 }
 
-func randomNovationID() string {
-	nonce := make([]byte, 32)
-	rand.Read(nonce)
-	return hex.EncodeToString(nonce)
+// ---------------------------------------------------------------------------
+// Hash chain
+// ---------------------------------------------------------------------------
+
+func chainHash(data []byte, n int) []byte {
+	h := make([]byte, len(data))
+	copy(h, data)
+	for i := 0; i < n; i++ {
+		s := sha256.Sum256(h)
+		h = s[:]
+	}
+	return h
+}
+
+func hashEq(pre []byte, id string) bool {
+	h := sha256.Sum256(pre)
+	return hex.EncodeToString(h[:]) == id
+}
+
+func doubleHashEq(pre []byte, id string) bool {
+	h1 := sha256.Sum256(pre)
+	h2 := sha256.Sum256(h1[:])
+	return hex.EncodeToString(h2[:]) == id
 }
