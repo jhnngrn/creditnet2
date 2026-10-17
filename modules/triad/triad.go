@@ -806,6 +806,9 @@ func (h *Triad) scheduleCancel(id string) {
 		if cl.Side[OUT].Peer == "" {
 			return nil
 		}
+		if creditnet.QueueHas(cl.Side[OUT].Queue, "cancel") {
+			return nil
+		}
 		creditnet.Enqueue(&cl.Side[OUT].Queue, "cancel")
 		return []string{cl.Side[OUT].Peer}
 	})
