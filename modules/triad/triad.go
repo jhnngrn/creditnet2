@@ -178,7 +178,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 
 	// Loop closure: initiator receives commit back.
 	if cl := h.Clearings[m.ClearingID]; cl != nil {
-		if cl.Seed == nil || cl.Side[IN].Peer != "" {
+		if cl.Seed == nil || cl.Side[IN].Peer != peer || cl.Side[IN].Time != 0 {
 			return false, nil, fmt.Errorf("commit: invalid loop closure")
 		}
 		if h.bandwidth(peer, IN) < m.Amount {
