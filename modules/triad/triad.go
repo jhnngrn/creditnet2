@@ -173,13 +173,13 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 		return false, nil, fmt.Errorf("bad payload")
 	}
 	if m.Amount <= 0 {
-		return false, nil, nil
+		return false, nil, fmt.Errorf("commit: invalid amount %d", m.Amount)
 	}
 
 	// Loop closure: initiator receives commit back.
 	if cl := h.Clearings[m.ClearingID]; cl != nil {
 		if cl.Seed == nil || cl.Side[IN].Peer != "" {
-			return false, nil, nil
+			return false, nil, fmt.Errorf("commit: invalid loop closure")
 		}
 		if h.bandwidth(peer, IN) < m.Amount {
 			return false, nil, nil
