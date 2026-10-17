@@ -584,39 +584,50 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 // ---------------------------------------------------------------------------
 
 func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
+	var bestID string
+	var bestCl *Clearing
+	var bestSide int
+	var bestTime int64
 	for id, cl := range h.Clearings {
 		for s := 0; s < 2; s++ {
 			if cl.Side[s].Peer == peer && creditnet.QueueHead(cl.Side[s].Queue) != "" {
-				return h.buildMsg(id, cl, s)
+				t := cl.Side[s].Time
+				if bestCl == nil || (t > 0 && (bestTime == 0 || t < bestTime)) {
+					bestID, bestCl, bestSide, bestTime = id, cl, s, t
+				}
 			}
 		}
 	}
-	return "", nil, 0
+	if bestCl == nil {
+		return "", nil, 0
+	}
+	return h.buildMsg(bestID, bestCl, bestSide)
 }
 
 func (h *Triad) buildMsg(id string, cl *Clearing, side int) (string, json.RawMessage, int64) {
+	ts := cl.Side[side].Time
 	switch creditnet.QueueHead(cl.Side[side].Queue) {
 	case "commit":
 		return "commit", creditnet.Enc(commitMsg{
 			ClearingID: id,
 			Amount:     cl.Amount,
 			Next:       cl.Side[IN].Peer, // receiver should forward back to my InPeer
-		}), 0
+		}), ts
 	case "finalize":
 		return "finalize", creditnet.Enc(finalizeMsg{
 			ClearingID: id,
 			Preimage:   hex.EncodeToString(cl.Preimage),
 			Final:      cl.Final,
-		}), 0
+		}), ts
 	case "cancel":
 		return "cancel", creditnet.Enc(cancelMsg{
 			ClearingID: id,
 			Preimage:   hex.EncodeToString(cl.CancelPre),
-		}), 0
+		}), ts
 	case "rollback":
-		return "rollback", creditnet.Enc(map[string]string{"clearing_id": id}), 0
+		return "rollback", creditnet.Enc(map[string]string{"clearing_id": id}), ts
 	case "cleanup":
-		return "cleanup", creditnet.Enc(map[string]string{"clearing_id": id}), 0
+		return "cleanup", creditnet.Enc(map[string]string{"clearing_id": id}), ts
 	}
 	return "", nil, 0
 }
