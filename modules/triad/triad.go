@@ -130,7 +130,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		return true, []string{nov.Side[OUT].Peer}, nil
 	}
 
-	// New commit — verify both sides have bandwidth.
+	// New commit — verify connectivity, bandwidth, and debt direction.
 	p := h.trustlines[peer]
 	if p == nil {
 		return false, nil, nil
@@ -138,16 +138,22 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 	if m.Next == "" || !h.isConnected(m.Next) {
 		return false, nil, nil
 	}
-	if h.trustlines[m.Next] == nil {
+	nPeer := h.trustlines[m.Next]
+	if nPeer == nil {
 		return false, nil, nil
 	}
 	if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Next) >= MaxNovPerLink {
 		return false, nil, nil
 	}
-	if h.bandwidth(peer, IN) < m.Amount {
+	bwIn := h.bandwidth(peer, IN)
+	bwOut := h.bandwidth(m.Next, OUT)
+	if bwIn < m.Amount || bwOut < m.Amount {
 		return false, nil, nil
 	}
-	if h.bandwidth(m.Next, OUT) < m.Amount {
+	// At least one side must have debt to settle.
+	debtIn := bwIn - p.CreditLimit
+	debtOut := bwOut - nPeer.CreditLimitIn
+	if debtIn <= 0 && debtOut <= 0 {
 		return false, nil, nil
 	}
 
