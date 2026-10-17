@@ -488,6 +488,16 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 	return true, []string{cl.Side[IN].Peer}, nil
 }
 
+func (h *Triad) respRollback(raw json.RawMessage) {
+	var m struct {
+		ClearingID string `json:"clearing_id"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		log.Fatalf("triad: respRollback: unmarshal failed")
+	}
+	h.removeClearing(m.ClearingID)
+}
+
 // ---------------------------------------------------------------------------
 // Cleanup — bilateral settlement after full tick
 // ---------------------------------------------------------------------------
@@ -611,16 +621,6 @@ func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok 
 		h.respCleanup(peer, payload, ok, ts)
 	}
 	return nil
-}
-
-func (h *Triad) respRollback(raw json.RawMessage) {
-	var m struct {
-		ClearingID string `json:"clearing_id"`
-	}
-	if json.Unmarshal(raw, &m) != nil {
-		log.Fatalf("triad: respRollback: unmarshal failed")
-	}
-	h.removeClearing(m.ClearingID)
 }
 
 // ---------------------------------------------------------------------------
