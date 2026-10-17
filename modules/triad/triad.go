@@ -32,17 +32,15 @@ type NovationSide struct {
 
 // Novation tracks a single three-party novation in progress.
 type Novation struct {
-	Amount int64           `json:"amount"`
-	Role   string          `json:"role"` // "intermediary", "debtor", "creditor"
-	Side   [2]NovationSide `json:"side"`
+	Amount    int64           `json:"amount"`
+	Initiator bool            `json:"initiator,omitempty"`
+	Side      [2]NovationSide `json:"side"`
 }
 
 type novCommitMsg struct {
-	NovationID   string `json:"novation_id"`
-	Debtor       string `json:"debtor"`
-	Intermediary string `json:"intermediary"`
-	Creditor     string `json:"creditor"`
-	Amount       int64  `json:"amount"`
+	NovationID string `json:"novation_id"`
+	Amount     int64  `json:"amount"`
+	Next       string `json:"next,omitempty"`
 }
 
 type novFinalizeMsg struct {
@@ -115,10 +113,6 @@ func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts i
 }
 
 func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, error) {
-	p := h.trustlines[peer]
-	if p == nil {
-		return false, nil, fmt.Errorf("trustline not connected")
-	}
 	var m novCommitMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
@@ -127,80 +121,46 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		return false, nil, nil
 	}
 
-	switch h.nodeID {
-	case m.Debtor:
-		// Commit from intermediary — I am debtor, forwarding to creditor.
-		if peer != m.Intermediary {
-			return false, nil, nil
-		}
-		bwIn := h.bandwidth(peer, IN)
-		if bwIn-p.CreditLimit < m.Amount {
-			return false, nil, nil
-		}
-		if h.Novations[m.NovationID] != nil || !h.isConnected(m.Creditor) {
-			return false, nil, nil
-		}
-		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Creditor) >= MaxNovPerLink {
-			return false, nil, nil
-		}
-		nov := &Novation{
-			Amount: m.Amount, Role: "debtor",
-			Side: [2]NovationSide{
-				{Peer: peer},
-				{Peer: m.Creditor},
-			},
-		}
-		nov.Side[OUT].Queue.Enqueue("commit", 0)
-		h.addNovation(m.NovationID, nov)
-		return true, []string{m.Creditor}, nil
-
-	case m.Creditor:
-		// Commit from debtor — I am creditor, forwarding to intermediary.
-		if peer != m.Debtor {
-			return false, nil, nil
-		}
-		bwIn := h.bandwidth(peer, IN)
-		if bwIn < m.Amount {
-			return false, nil, nil
-		}
-		iPeer := h.trustlines[m.Intermediary]
-		if iPeer == nil {
-			return false, nil, nil
-		}
-		bwOut := h.bandwidth(m.Intermediary, OUT)
-		if bwOut-iPeer.CreditLimitIn < m.Amount {
-			return false, nil, nil
-		}
-		if h.Novations[m.NovationID] != nil {
-			return false, nil, nil
-		}
-		if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Intermediary) >= MaxNovPerLink {
-			return false, nil, nil
-		}
-		nov := &Novation{
-			Amount: m.Amount, Role: "creditor",
-			Side: [2]NovationSide{
-				{Peer: peer},
-				{Peer: m.Intermediary},
-			},
-		}
-		nov.Side[OUT].Queue.Enqueue("commit", 0)
-		h.addNovation(m.NovationID, nov)
-		return true, []string{m.Intermediary}, nil
-
-	case m.Intermediary:
-		// Commit confirmation from creditor — all three committed, start finalize.
-		nov := h.Novations[m.NovationID]
-		if nov == nil || nov.Role != "intermediary" {
-			return false, nil, nil
-		}
+	// Confirmation back to initiator — novation already exists.
+	if nov := h.Novations[m.NovationID]; nov != nil {
 		if nov.Side[IN].Peer != peer {
 			return false, nil, nil
 		}
 		nov.Side[OUT].Queue.Enqueue("finalize", 0)
 		return true, []string{nov.Side[OUT].Peer}, nil
 	}
-	return false, nil, nil
+
+	// New commit — verify both sides have bandwidth.
+	p := h.trustlines[peer]
+	if p == nil {
+		return false, nil, nil
+	}
+	if m.Next == "" || !h.isConnected(m.Next) {
+		return false, nil, nil
+	}
+	if h.trustlines[m.Next] == nil {
+		return false, nil, nil
+	}
+	if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Next) >= MaxNovPerLink {
+		return false, nil, nil
+	}
+	if h.bandwidth(peer, IN) < m.Amount {
+		return false, nil, nil
+	}
+	if h.bandwidth(m.Next, OUT) < m.Amount {
+		return false, nil, nil
+	}
+
+	nov := &Novation{
+		Amount: m.Amount,
+		Side: [2]NovationSide{
+			{Peer: peer},
+			{Peer: m.Next},
+		},
+	}
+	nov.Side[OUT].Queue.Enqueue("commit", 0)
+	h.addNovation(m.NovationID, nov)
+	return true, []string{m.Next}, nil
 }
 
 func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
@@ -247,7 +207,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 	if nov.Side[OUT].Peer != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
-	if nov.Role == "intermediary" {
+	if nov.Initiator {
 		h.removeNovation(m.NovationID)
 		return true, nil, nil
 	}
@@ -282,7 +242,7 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
 	}
 	nov.Side[OUT].Queue.Dequeue()
 	if !ok {
-		if nov.Role == "intermediary" {
+		if nov.Initiator {
 			h.removeNovation(m.NovationID)
 			return nil
 		}
@@ -349,18 +309,14 @@ func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
 
 func (h *Triad) buildMsg(id string, nov *Novation, side int) (string, json.RawMessage, int64) {
 	ts := nov.Side[side].Queue.HeadTime()
+	other := 1 - side
 	switch nov.Side[side].Queue.Head() {
 	case "commit":
-		var d, i, c string
-		switch nov.Role {
-		case "intermediary":
-			d, i, c = nov.Side[OUT].Peer, h.nodeID, nov.Side[IN].Peer
-		case "debtor":
-			d, i, c = h.nodeID, nov.Side[IN].Peer, nov.Side[OUT].Peer
-		case "creditor":
-			d, i, c = nov.Side[IN].Peer, nov.Side[OUT].Peer, h.nodeID
-		}
-		return "commit", creditnet.Enc(novCommitMsg{NovationID: id, Debtor: d, Intermediary: i, Creditor: c, Amount: nov.Amount}), ts
+		return "commit", creditnet.Enc(novCommitMsg{
+			NovationID: id,
+			Amount:     nov.Amount,
+			Next:       nov.Side[other].Peer,
+		}), ts
 	case "finalize":
 		return "finalize", creditnet.Enc(novFinalizeMsg{NovationID: id}), ts
 	case "rollback":
@@ -433,8 +389,8 @@ func (h *Triad) tryNovate() []string {
 			}
 			novID := randomNovationID()
 			nov := &Novation{
-				Amount: amount,
-				Role:   "intermediary",
+				Amount:    amount,
+				Initiator: true,
 				Side: [2]NovationSide{
 					{Peer: creditor},
 					{Peer: debtor},
