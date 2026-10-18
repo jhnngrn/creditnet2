@@ -49,14 +49,12 @@ const (
 	Connected ConnectionStatus = "connected" // bilaterally established
 )
 
-// ConnectionState is the bilateral connection state: what IS (Status),
-// what to DO next (IntentConnect/IntentClose), and who holds it open (Refs).
-// Close is deferred while Refs > 0.
+// ConnectionState is the bilateral connection state: what IS (Status)
+// and what to DO next (IntentConnect/IntentClose).
 type ConnectionState struct {
 	Status        ConnectionStatus `json:"status,omitempty"`
 	IntentConnect bool             `json:"intent_connect,omitempty"`
 	IntentClose   bool             `json:"intent_close,omitempty"`
-	Refs          uint             `json:"refs,omitempty"`
 }
 
 
@@ -80,6 +78,7 @@ type Module interface {
 	HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error)
 	NextTx(peer string) (string, json.RawMessage, int64)
+	Busy(peer string) bool
 	Status() json.RawMessage
 }
 
@@ -116,38 +115,32 @@ type Link struct {
 	Sending        *peerSend     `json:"-"`
 }
 
-// refModule increments the named module's ref count on this link.
-// If the module goes from 0 to 1 refs, the link-level ref count is also incremented.
-func (l *Link) refModule(name string) {
-	mod := l.State.Modules[name]
-	if mod == nil {
-		return
+// anyBusy returns true if any registered module reports being busy with
+// the given peer. Used to defer link.close until all modules are idle.
+func (n *Node) anyBusy(peer string) bool {
+	for _, mod := range n.moduleMap {
+		if mod.Busy(peer) {
+			return true
+		}
 	}
-	if mod.Refs == 0 {
-		l.State.Refs++
-	}
-	mod.Refs++
+	return false
 }
 
-// unrefModule decrements the named module's ref count on this link.
-// If the module goes from 1 to 0 refs, the link-level ref count is also decremented.
-// When all link-level refs reach 0, IntentClose is set.
-func (l *Link) unrefModule(name string) {
-	mod := l.State.Modules[name]
-	if mod == nil || mod.Refs == 0 {
-		return
+// moduleBusy returns true if the named module reports being busy with
+// the given peer. Used to defer module.close until the module is idle.
+func (n *Node) moduleBusy(name, peer string) bool {
+	if mod := n.moduleMap[name]; mod != nil {
+		return mod.Busy(peer)
 	}
-	mod.Refs--
-	if mod.Refs == 0 && l.State.Refs > 0 {
-		l.State.Refs--
-	}
-	if l.State.Refs == 0 {
-		l.State.IntentClose = true
-	}
+	return false
 }
 
 // Closing returns true if this link is closing (IntentClose is set).
 func (l *Link) Closing() bool { return l.State.IntentClose }
+
+// Close marks this link for closing. The sync loop defers sending
+// link.close until no module reports Busy.
+func (l *Link) Close() { l.State.IntentClose = true }
 
 // moduleAvailable returns true if the named module is bilaterally connected
 // and neither the module nor the link is closing. Use this to decide whether
@@ -225,20 +218,6 @@ func (n *Node) registerModule(name string, m Module) {
 func (n *Node) ModuleMap() map[string]Module { return n.moduleMap }
 
 func (n *Node) Get(peer string) *Link { return n.Links[peer] }
-
-// RefModule increments the named module's ref count on the peer's link.
-func (n *Node) RefModule(peer, module string) {
-	if lk := n.Links[peer]; lk != nil {
-		lk.refModule(module)
-	}
-}
-
-// UnrefModule decrements the named module's ref count on the peer's link.
-func (n *Node) UnrefModule(peer, module string) {
-	if lk := n.Links[peer]; lk != nil {
-		lk.unrefModule(module)
-	}
-}
 
 // ModuleAvailable returns true if the named module on the peer's link is
 // bilaterally connected and neither the module nor the link is closing.
@@ -424,7 +403,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			}
 			return false, nil, nil
 		case "close":
-			if l.State.Refs > 0 {
+			if n.anyBusy(peer) {
 				return false, nil, errRefsHeld
 			}
 			n.delete(peer)
@@ -442,7 +421,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			ok, err := l.reqModule(payload, n.moduleMap, n.InviteMode)
 			return ok, nil, err
 		case "close":
-			ok, err := l.reqModuleClose(payload)
+			ok, err := l.reqModuleClose(peer, payload, n.moduleMap)
 			return ok, nil, err
 		}
 		return false, nil, fmt.Errorf("unknown module method %q", method)
@@ -512,7 +491,12 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 	if lk == nil {
 		return nil
 	}
-	if lk.State.IntentClose && lk.State.Refs == 0 {
+	// Cancel: both intents set before any message sent — they annihilate.
+	if lk.State.IntentClose && lk.State.IntentConnect {
+		lk.State.IntentClose = false
+		lk.State.IntentConnect = false
+	}
+	if lk.State.IntentClose && !n.anyBusy(peer) {
 		return &queuedMsg{Method: "link.close"}
 	}
 	if lk.State.IntentConnect {
@@ -520,7 +504,13 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 	}
 	if lk.State.Status == Connected {
 		for name, mod := range lk.State.Modules {
-			if mod.IntentClose {
+			// Cancel: both intents set before any message sent.
+			if mod.IntentClose && mod.IntentConnect {
+				mod.IntentClose = false
+				mod.IntentConnect = false
+				continue
+			}
+			if mod.IntentClose && !n.moduleBusy(name, peer) {
 				return &queuedMsg{
 					Method:  "module.close",
 					Payload: enc(map[string]string{"name": name}),
@@ -622,7 +612,7 @@ func (l *Link) respModule(payload json.RawMessage, ok bool) {
 	mod.IntentConnect = false
 }
 
-func (l *Link) reqModuleClose(payload json.RawMessage) (bool, error) {
+func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module) (bool, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
@@ -633,7 +623,7 @@ func (l *Link) reqModuleClose(payload json.RawMessage) (bool, error) {
 	if mod == nil {
 		return true, nil // already gone
 	}
-	if mod.Refs > 0 {
+	if m := modules[p.Name]; m != nil && m.Busy(peer) {
 		return false, errRefsHeld
 	}
 	delete(l.State.Modules, p.Name)
@@ -652,9 +642,6 @@ func (l *Link) respModuleClose(payload json.RawMessage, ok bool) {
 		return
 	}
 	if ok {
-		if mod.Refs > 0 && l.State.Refs > 0 {
-			l.State.Refs--
-		}
 		delete(l.State.Modules, p.Name)
 	} else {
 		mod.IntentClose = false
@@ -873,9 +860,9 @@ func (l *Link) ConnectModules(modules []string, registered map[string]Module) {
 	}
 }
 
-// SetModules proposes the given modules on this link, filtering by supported.
-// Modules not in the desired set and not yet connected are removed,
-// unless they hold refs.
+// setModules proposes the given modules on this link, filtering by supported.
+// Modules not in the desired set are marked IntentClose. The sync loop
+// defers sending module.close until the module reports !Busy.
 func (l *Link) setModules(modules []string, registered map[string]Module) {
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
@@ -892,13 +879,14 @@ func (l *Link) setModules(modules []string, registered map[string]Module) {
 			l.State.Modules[name] = &ConnectionState{IntentConnect: true}
 		} else if mod.Status != Connected {
 			mod.IntentConnect = true
+		} else if mod.IntentClose {
+			// Already connected but closing — set IntentConnect so
+			// nextTx can cancel both intents.
+			mod.IntentConnect = true
 		}
 	}
 	for name, mod := range l.State.Modules {
-		if mod.Refs > 0 {
-			continue
-		}
-		if !desired[name] && mod.Status != Connected {
+		if !desired[name] {
 			mod.IntentClose = true
 		}
 	}
