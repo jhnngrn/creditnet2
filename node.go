@@ -144,8 +144,12 @@ func (h *Node) HandleRequest(peerID, method string, payload json.RawMessage, ts 
 		if peer == nil {
 			return true, nil, nil // already gone
 		}
+		peer.Connected = false
+		peer.IntentClose = true
 		h.links.UnrefModule(peerID, h.name)
-		delete(h.Trustlines, peerID)
+		if lk := h.links.Get(peerID); lk != nil {
+			lk.State.IntentClose = true
+		}
 		return true, nil, nil
 	case "set_credit_limit":
 		ok, err := h.onSetCreditLimit(peerID, payload)
@@ -238,9 +242,8 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 		return nil
 	case "close":
 		if ok {
-			h.links.UnrefModule(peerID, h.name)
 			peer.Connected = false
-			// IntentClose stays true → tombstone
+			h.links.UnrefModule(peerID, h.name)
 		} else {
 			peer.IntentClose = false
 		}
@@ -355,8 +358,6 @@ func (h *Node) HandleAccount(method string, payload json.RawMessage) (json.RawMe
 		return h.setDemurrage(payload)
 	case "payment":
 		return h.payment(payload)
-	case "status":
-		return h.Status(), nil, nil
 	}
 	return nil, nil, ErrBadMethod
 }
@@ -414,6 +415,9 @@ func (h *Node) removePeer(payload json.RawMessage) (json.RawMessage, []string, e
 		return Enc("ok"), nil, nil
 	}
 	peer.IntentClose = true
+	if lk := h.links.Get(peerID); lk != nil {
+		lk.State.IntentClose = true
+	}
 	return Enc("ok"), []string{peerID}, nil
 }
 
