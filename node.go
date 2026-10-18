@@ -214,8 +214,7 @@ func (h *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (bool
 	if peer == nil || peer.State != "connected" {
 		return false, fmt.Errorf("peer not connected")
 	}
-	eff := peer.EffectiveBalance(ts)
-	if eff+p.Amount > peer.CreditLimit {
+	if p.Amount > h.Bandwidth(peerID, IN) {
 		return false, nil
 	}
 	peer.AddBalance(p.Amount, ts)
@@ -494,8 +493,7 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 	if p.Amount <= 0 {
 		return nil, nil, fmt.Errorf("amount must be positive")
 	}
-	available := peer.EffectiveBalance(time.Now().Unix()) + peer.CreditLimitIn
-	if p.Amount > available {
+	if p.Amount > h.Bandwidth(peerID, OUT) {
 		return nil, nil, fmt.Errorf("insufficient credit")
 	}
 	peer.PendingPayment = &p.Amount
