@@ -126,6 +126,15 @@ func (n *Node) anyBusy(peer string) bool {
 	return false
 }
 
+// moduleBusy returns true if the named module reports being busy with
+// the given peer. Used to defer module.close until the module is idle.
+func (n *Node) moduleBusy(name, peer string) bool {
+	if mod := n.moduleMap[name]; mod != nil {
+		return mod.Busy(peer)
+	}
+	return false
+}
+
 // Closing returns true if this link is closing (IntentClose is set).
 func (l *Link) Closing() bool { return l.State.IntentClose }
 
@@ -486,7 +495,7 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 	}
 	if lk.State.Status == Connected {
 		for name, mod := range lk.State.Modules {
-			if mod.IntentClose {
+			if mod.IntentClose && !n.moduleBusy(name, peer) {
 				return &queuedMsg{
 					Method:  "module.close",
 					Payload: enc(map[string]string{"name": name}),
@@ -836,9 +845,9 @@ func (l *Link) ConnectModules(modules []string, registered map[string]Module) {
 	}
 }
 
-// SetModules proposes the given modules on this link, filtering by supported.
-// Modules not in the desired set and not yet connected are removed,
-// unless they hold refs.
+// setModules proposes the given modules on this link, filtering by supported.
+// Modules not in the desired set are marked IntentClose. The sync loop
+// defers sending module.close until the module reports !Busy.
 func (l *Link) setModules(modules []string, registered map[string]Module) {
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
@@ -858,7 +867,7 @@ func (l *Link) setModules(modules []string, registered map[string]Module) {
 		}
 	}
 	for name, mod := range l.State.Modules {
-		if !desired[name] && mod.Status != Connected {
+		if !desired[name] {
 			mod.IntentClose = true
 		}
 	}
