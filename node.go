@@ -183,7 +183,7 @@ func (h *Node) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, e
 		Amount int64 `json:"amount"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return false, nil
+		return false, err
 	}
 	peer := h.Trustlines[peerID]
 	if peer == nil || h.links.Get(peerID) == nil {
@@ -201,7 +201,7 @@ func (h *Node) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) 
 		Rate int64 `json:"rate"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return false, nil
+		return false, err
 	}
 	peer := h.Trustlines[peerID]
 	if peer == nil || h.links.Get(peerID) == nil {
@@ -220,7 +220,7 @@ func (h *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (bool
 		Amount int64 `json:"amount"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return false, nil
+		return false, err
 	}
 	if p.Amount <= 0 {
 		return false, nil
