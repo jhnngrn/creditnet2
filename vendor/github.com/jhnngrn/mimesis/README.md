@@ -111,6 +111,8 @@ The `*Node` received by the module factory:
 - `node.UnrefModule(peer, module)` — release the ref (sets IntentClose when all refs reach 0)
 - `node.ModuleAvailable(peer, module) bool` — true if module is bilaterally connected and not closing
 
+Refs are bilateral — both sides must mirror the same ref/unref calls in their `HandleRequest` and `HandleResponse` handlers. For example, if `HandleRequest` for `"connect"` calls `RefModule`, then `HandleResponse` for `"connect"` must also call `RefModule` (when `ok`). Otherwise one side holds a ref while the other doesn't, causing one side to attempt `link.close` while the other returns `errRefsHeld`.
+
 ### Link
 
 Methods available on a `*Link`:
