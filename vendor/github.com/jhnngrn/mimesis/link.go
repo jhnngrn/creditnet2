@@ -632,6 +632,9 @@ func (l *Link) reqModuleClose(payload json.RawMessage) (bool, error) {
 	if mod == nil {
 		return true, nil // already gone
 	}
+	if mod.Refs > 0 {
+		return false, nil // refs held — refuse close
+	}
 	delete(l.State.Modules, p.Name)
 	return true, nil
 }
@@ -648,6 +651,9 @@ func (l *Link) respModuleClose(payload json.RawMessage, ok bool) {
 		return
 	}
 	if ok {
+		if mod.Refs > 0 && l.State.Refs > 0 {
+			l.State.Refs--
+		}
 		delete(l.State.Modules, p.Name)
 	} else {
 		mod.IntentClose = false
