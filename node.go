@@ -368,25 +368,20 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	if peer := h.Trustlines[peerID]; peer != nil && peer.State == "connected" {
+	if lk := h.links.Get(peerID); lk != nil {
 		return nil, nil, fmt.Errorf("peer %s already exists", peerID)
 	}
-	if lk := h.links.Get(peerID); lk != nil {
-		if lk.Closing() {
-			return nil, nil, fmt.Errorf("link to %s is closing", peerID)
-		}
-	} else {
-		// Create outgoing link.
-		if peerID == h.nodeID {
-			return nil, nil, fmt.Errorf("cannot link to self")
-		}
-		if _, err := h.links.Connect(peerID); err != nil {
-			return nil, nil, err
-		}
+	if peerID == h.nodeID {
+		return nil, nil, fmt.Errorf("cannot link to self")
 	}
-	// Request trustline + chosen modules on this link.
-	lk := h.links.Get(peerID)
-	lk.ConnectModules(append([]string{"trustline"}, p.Modules...), h.links.ModuleMap())
+	if _, err := h.links.Connect(peerID, "trustline"); err != nil {
+		return nil, nil, err
+	}
+	// Request chosen child modules on this link.
+	if len(p.Modules) > 0 {
+		lk := h.links.Get(peerID)
+		lk.ConnectModules(p.Modules, h.links.ModuleMap())
+	}
 	if h.Trustlines[peerID] == nil {
 		h.Trustlines[peerID] = &Trustline{}
 	}
@@ -406,16 +401,14 @@ func (h *Node) removePeer(payload json.RawMessage) (json.RawMessage, []string, e
 	if peer == nil {
 		return nil, nil, fmt.Errorf("no peer %s", peerID)
 	}
-	if peer.State != "connected" {
-		// Not connected yet — just remove locally.
-		delete(h.Trustlines, peerID)
-		return Enc("ok"), nil, nil
-	}
-	peer.Queue.Enqueue("close", 0)
 	if lk := h.links.Get(peerID); lk != nil {
+		// Link exists — close it (app.close fires when modules are done).
 		lk.Close()
+		return Enc("ok"), []string{peerID}, nil
 	}
-	return Enc("ok"), []string{peerID}, nil
+	// No link — app already closed, safe to remove trustline data.
+	delete(h.Trustlines, peerID)
+	return Enc("ok"), nil, nil
 }
 
 func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []string, error) {
