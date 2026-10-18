@@ -83,6 +83,20 @@ type Module interface {
 	Status() json.RawMessage
 }
 
+// App extends Module with lifecycle callbacks for the primary application.
+// An App does not participate in module negotiation — it is connected
+// when the link itself is connected. Its messages are dispatched without
+// a namespace prefix, and the link does not auto-close when module refs
+// reach zero (the App owns the link lifecycle).
+type App interface {
+	Module
+	// OnConnect is called when a link becomes connected.
+	// Return false to reject the connection.
+	OnConnect(peer string) bool
+	// OnClose is called when a link is closing (before deletion).
+	OnClose(peer string)
+}
+
 // queuedMsg is a message queued for sending on a link.
 // QueuedAt is a unix-second timestamp of when the message was queued.
 // When multiple modules return a candidate for the same peer, the
@@ -114,6 +128,7 @@ type Link struct {
 	CachedResponse *txResponse `json:"cached_response,omitempty"`
 	Timestamp      int64         `json:"ts"`
 	Sending        *peerSend     `json:"-"`
+	appManaged     bool          `json:"-"` // set when node has an App; suppresses auto-IntentClose
 }
 
 // refModule increments the named module's ref count on this link.
@@ -131,7 +146,7 @@ func (l *Link) refModule(name string) {
 
 // unrefModule decrements the named module's ref count on this link.
 // If the module goes from 1 to 0 refs, the link-level ref count is also decremented.
-// When all link-level refs reach 0, IntentClose is set.
+// When all link-level refs reach 0 and no App manages the link, IntentClose is set.
 func (l *Link) unrefModule(name string) {
 	mod := l.State.Modules[name]
 	if mod == nil || mod.Refs == 0 {
@@ -141,7 +156,7 @@ func (l *Link) unrefModule(name string) {
 	if mod.Refs == 0 && l.State.Refs > 0 {
 		l.State.Refs--
 	}
-	if l.State.Refs == 0 {
+	if l.State.Refs == 0 && !l.appManaged {
 		l.State.IntentClose = true
 	}
 }
@@ -197,6 +212,8 @@ type Node struct {
 	InviteMode inviteMode             `json:"invite_mode,omitempty"`
 	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
 	moduleMap  map[string]Module      `json:"-"`
+	app        App                    `json:"-"` // registered App, if any
+	appName    string                 `json:"-"` // name of the App module
 	// send delivers a sync message to a peer and returns the response body.
 	send   func(peer string, msg txRequest) ([]byte, error) `json:"-"`
 	// commit persists the current state. Called under the mutex.
@@ -217,8 +234,19 @@ func newNode(id string, links map[string]*Link, mode inviteMode, send func(strin
 }
 
 // RegisterModule adds a module to the link collection under the given name.
+// If the module implements App, it is registered as the node's application:
+// its messages are dispatched without namespace prefix, it receives
+// lifecycle callbacks, and the link does not auto-close on zero refs.
 func (n *Node) registerModule(name string, m Module) {
 	n.moduleMap[name] = m
+	if app, ok := m.(App); ok {
+		n.app = app
+		n.appName = name
+		// Mark all existing links as app-managed.
+		for _, lk := range n.Links {
+			lk.appManaged = true
+		}
+	}
 }
 
 // ModuleMap returns the registered modules for serialization.
@@ -269,6 +297,7 @@ func (n *Node) Connect(peer string) (*Link, error) {
 	}
 	lk := newLink(n.ID, peer)
 	lk.State.IntentConnect = true
+	lk.appManaged = n.app != nil
 	n.Links[peer] = lk
 	return lk, nil
 }
@@ -413,19 +442,28 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 		}
 		switch method {
 		case "connect":
+			accepted := false
 			if l.State.IntentConnect || l.State.Status == waiting {
+				accepted = true
+			} else if n.InviteMode == inviteModeOpen {
+				accepted = true
+			}
+			if accepted {
+				// Let App veto the connection.
+				if n.app != nil && !n.app.OnConnect(peer) {
+					return false, nil, nil
+				}
 				l.State.Status = Connected
 				l.State.IntentConnect = false
-				return true, nil, nil
-			}
-			if n.InviteMode == inviteModeOpen {
-				l.State.Status = Connected
 				return true, nil, nil
 			}
 			return false, nil, nil
 		case "close":
 			if l.State.Refs > 0 {
 				return false, nil, errRefsHeld
+			}
+			if n.app != nil {
+				n.app.OnClose(peer)
 			}
 			n.delete(peer)
 			return true, nil, nil
@@ -451,6 +489,13 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 	if lk == nil {
 		return false, nil, fmt.Errorf("no link to %s", peer)
 	}
+	// Unprefixed methods go to the App.
+	if ns == "" && n.app != nil {
+		if lk.State.Status != Connected {
+			return false, nil, fmt.Errorf("link not connected")
+		}
+		return n.app.HandleRequest(peer, method, payload, ts)
+	}
 	mod := n.moduleMap[ns]
 	if mod == nil || !lk.moduleConnected(ns) {
 		return false, nil, fmt.Errorf("unknown method %q", fullMethod)
@@ -469,6 +514,9 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 		switch method {
 		case "connect":
 			if ok {
+				if n.app != nil {
+					n.app.OnConnect(peer) // notify app (can't veto response)
+				}
 				l.State.Status = Connected
 			} else {
 				l.State.Status = waiting
@@ -476,6 +524,9 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 			l.State.IntentConnect = false
 		case "close":
 			if ok {
+				if n.app != nil {
+					n.app.OnClose(peer)
+				}
 				n.delete(peer)
 			} else {
 				l.State.IntentClose = false
@@ -495,6 +546,10 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 			l.respModuleClose(payload, ok)
 		}
 		return nil
+	}
+	// Unprefixed methods go to the App.
+	if ns == "" && n.app != nil {
+		return n.app.HandleResponse(peer, method, payload, ok, ts)
 	}
 	mod := n.moduleMap[ns]
 	if mod == nil {
@@ -538,7 +593,24 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 		return nil
 	}
 	var best *queuedMsg
+	// App messages are unprefixed and always available when link is connected.
+	if n.app != nil {
+		method, payload, queuedAt := n.app.NextTx(peer)
+		if method != "" {
+			msg := &queuedMsg{
+				Method:   method, // no namespace prefix
+				Payload:  payload,
+				QueuedAt: queuedAt,
+			}
+			if olderQueuedMsg(msg, best) {
+				best = msg
+			}
+		}
+	}
 	for name, mod := range n.moduleMap {
+		if name == n.appName {
+			continue // already handled above
+		}
 		if !lk.moduleConnected(name) {
 			continue
 		}
@@ -805,7 +877,12 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		return nil, fmt.Errorf("unknown module method %q", method)
 
 	default:
-		mod := n.moduleMap[ns]
+		var mod Module
+		if ns == "" && n.app != nil {
+			mod = n.app
+		} else {
+			mod = n.moduleMap[ns]
+		}
 		if mod == nil {
 			n.mu.Unlock()
 			return nil, fmt.Errorf("unknown method %q", fullMethod)
@@ -957,6 +1034,7 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 			return nil, errMaxLinks
 		}
 		lk = newLink(n.ID, env.From)
+		lk.appManaged = n.app != nil
 		n.Links[env.From] = lk
 		lk.State.Status = Incoming
 	}
