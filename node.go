@@ -124,6 +124,12 @@ func (h *Node) OnConnect(peer string) {
 	}
 }
 
+// OnClose is called by the framework when app.close completes bilaterally.
+// The link is about to be removed. Clean up the trustline data.
+func (h *Node) OnClose(peer string) {
+	delete(h.Trustlines, peer)
+}
+
 // Busy reports whether this module has active bilateral state with the peer.
 // Pending bilateral operations must complete before app.close can fire.
 func (h *Node) Busy(peer string) bool {
