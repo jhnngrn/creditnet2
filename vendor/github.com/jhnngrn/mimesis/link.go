@@ -232,7 +232,7 @@ type Node struct {
 	send   func(peer string, msg txRequest) ([]byte, error) `json:"-"`
 	// commit persists the current state. Called under the mutex.
 	commit func()        `json:"-"`
-	timers  []*time.Timer `json:"-"`
+	timers  map[*time.Timer]struct{} `json:"-"`
 	stopped bool          `json:"-"`
 }
 
@@ -244,7 +244,7 @@ func newNode(id string, links map[string]*Link, mode inviteMode, send func(strin
 	if mode == "" {
 		mode = inviteModeInvite
 	}
-	return &Node{ID: id, Links: links, InviteMode: mode, apps: map[string][]string{}, moduleMap: map[string]Module{}, send: send, commit: commit}
+	return &Node{ID: id, Links: links, InviteMode: mode, apps: map[string][]string{}, moduleMap: map[string]Module{}, send: send, commit: commit, timers: map[*time.Timer]struct{}{}}
 }
 
 // registerModule adds a module to the node under the given name.
@@ -1168,6 +1168,7 @@ func (n *Node) schedule(delay time.Duration, fn func() []string) {
 	var t *time.Timer
 	t = time.AfterFunc(delay, func() {
 		n.mu.Lock()
+		delete(n.timers, t)
 		if n.stopped {
 			n.mu.Unlock()
 			return
@@ -1181,7 +1182,7 @@ func (n *Node) schedule(delay time.Duration, fn func() []string) {
 	})
 	// No mutex lock here — called under mutex (callback) or during
 	// init (no concurrency). Locking would deadlock in the callback case.
-	n.timers = append(n.timers, t)
+	n.timers[t] = struct{}{}
 }
 
 // Stop cancels all scheduled and retry timers and marks the Node as
@@ -1191,7 +1192,7 @@ func (n *Node) schedule(delay time.Duration, fn func() []string) {
 func (n *Node) stop() {
 	n.mu.Lock()
 	n.stopped = true
-	for _, t := range n.timers {
+	for t := range n.timers {
 		t.Stop()
 	}
 	n.timers = nil
