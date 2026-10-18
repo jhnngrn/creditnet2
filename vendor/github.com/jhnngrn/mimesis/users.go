@@ -81,6 +81,7 @@ func (s *Server) createUser(username, password string, admin bool) error {
 	s.nmu.Lock()
 	s.nodes[username] = n
 	s.nmu.Unlock()
+	n.commit()
 	return nil
 }
 
@@ -152,7 +153,7 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		s.umu.Unlock()
 		apiOK(w, true)
 	case "change_password":
-		sess, _, err := s.authenticate(r)
+		sess, currentToken, err := s.authenticate(r)
 		if err != nil {
 			apiError(w, err.Error())
 			return
@@ -165,6 +166,12 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rec.Salt, rec.Hash = hashPassword(c.New)
+		// Invalidate all other sessions for this user.
+		for t, ss := range s.sessions {
+			if ss.user == sess.user && t != currentToken {
+				delete(s.sessions, t)
+			}
+		}
 		err = s.store.SaveUsers(s.users)
 		s.umu.Unlock()
 		if err != nil {
