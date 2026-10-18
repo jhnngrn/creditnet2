@@ -118,6 +118,16 @@ func (h *Node) Bandwidth(peer string, side int) int64 {
 }
 
 
+// OnConnect is called by the framework when app.connect completes bilaterally.
+func (h *Node) OnConnect(peer string) {
+	p := h.Trustlines[peer]
+	if p == nil {
+		p = &Trustline{}
+		h.Trustlines[peer] = p
+	}
+	p.State = "connected"
+}
+
 // Busy reports whether this module has active bilateral state with the peer.
 // A trustline is busy from connect handshake until close handshake completes.
 func (h *Node) Busy(peer string) bool {
