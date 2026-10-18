@@ -412,9 +412,6 @@ func (h *Node) removePeer(payload json.RawMessage) (json.RawMessage, []string, e
 		return Enc("ok"), nil, nil
 	}
 	peer.IntentClose = true
-	if lk := h.links.Get(peerID); lk != nil {
-		lk.State.IntentClose = true
-	}
 	return Enc("ok"), []string{peerID}, nil
 }
 
