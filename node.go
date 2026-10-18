@@ -234,8 +234,9 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 	case "connect":
 		if ok {
 			peer.State = "connected"
+		} else {
+			delete(h.Trustlines, peerID)
 		}
-		// If rejected, leave trustline — NextTx will retry.
 		return nil
 	case "close":
 		if ok {
