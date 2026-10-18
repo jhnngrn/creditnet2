@@ -119,7 +119,7 @@ recv link.connect  |  |  |                 |      |  RejectLink
 
 A new link starts with no status and `IntentConnect = true`. Status becomes `waiting` after a NACK, `connected` after mutual detection or ACK.
 
-Links use reference counting — modules that hold a link open call `Ref()` on the link's `ConnectionState` when they connect and `UnrefClose()` when they close. `UnrefClose` decrements refs and sets `IntentClose` automatically when refs reach 0. `NextTx` only sends `link.close` when `IntentClose && Refs == 0`. This ensures modules finish their close handshakes before the link itself closes, and the link closes automatically when the last module disconnects.
+Links use reference counting — modules that hold a link open call `node.RefModule(peer, module)` when they connect and `node.UnrefModule(peer, module)` when they close. `UnrefModule` decrements refs and sets `IntentClose` automatically when all refs reach 0. `NextTx` only sends `link.close` when `IntentClose && Refs == 0`. This ensures modules finish their close handshakes before the link itself closes, and the link closes automatically when the last module disconnects.
 
 ### Invite mode
 
