@@ -131,7 +131,6 @@ func (l *Link) refModule(name string) {
 
 // unrefModule decrements the named module's ref count on this link.
 // If the module goes from 1 to 0 refs, the link-level ref count is also decremented.
-// When all link-level refs reach 0, IntentClose is set.
 func (l *Link) unrefModule(name string) {
 	mod := l.State.Modules[name]
 	if mod == nil || mod.Refs == 0 {
@@ -140,9 +139,6 @@ func (l *Link) unrefModule(name string) {
 	mod.Refs--
 	if mod.Refs == 0 && l.State.Refs > 0 {
 		l.State.Refs--
-	}
-	if l.State.Refs == 0 {
-		l.State.IntentClose = true
 	}
 }
 

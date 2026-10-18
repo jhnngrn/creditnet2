@@ -137,7 +137,6 @@ func (h *Node) HandleRequest(peerID, method string, payload json.RawMessage, ts 
 		}
 		peer.Connected = true
 		peer.IntentClose = false
-		h.links.RefModule(peerID, h.name)
 		return true, nil, nil
 	case "close":
 		peer := h.Trustlines[peerID]
@@ -146,7 +145,6 @@ func (h *Node) HandleRequest(peerID, method string, payload json.RawMessage, ts 
 		}
 		peer.Connected = false
 		peer.IntentClose = true
-		h.links.UnrefModule(peerID, h.name)
 		if lk := h.links.Get(peerID); lk != nil {
 			lk.State.IntentClose = true
 		}
@@ -236,14 +234,12 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 	case "connect":
 		if ok {
 			peer.Connected = true
-			h.links.RefModule(peerID, h.name)
 		}
 		// If rejected, leave trustline — NextTx will retry.
 		return nil
 	case "close":
 		if ok {
 			peer.Connected = false
-			h.links.UnrefModule(peerID, h.name)
 		} else {
 			peer.IntentClose = false
 		}
