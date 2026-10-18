@@ -76,9 +76,12 @@ func (h *Node) RegisterReserver(r Reserver) {
 }
 
 // GetTrustline returns the trustline data for a connected peer, or nil.
+// The link must be bilaterally connected — waiting or incoming links
+// are excluded so that account operations cannot create pending state
+// on links that will never sync.
 func (h *Node) GetTrustline(peer string) *Trustline {
 	lk := h.links.Get(peer)
-	if lk == nil || lk.State.App != "trustline" {
+	if lk == nil || lk.State.App != "trustline" || lk.State.Status != mimesis.Connected {
 		return nil
 	}
 	return h.Trustlines[peer]
