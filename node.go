@@ -422,7 +422,7 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []strin
 		return nil, nil, fmt.Errorf("credit limit change already pending")
 	}
 	peer.PendingLimit = &p.Amount
-	peer.Queue.Enqueue("set_credit_limit", 0)
+	peer.Queue.Enqueue("set_credit_limit", time.Now().Unix())
 	return Enc("ok"), []string{peerID}, nil
 }
 
@@ -446,7 +446,7 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, []string,
 		return nil, nil, fmt.Errorf("demurrage change already pending")
 	}
 	peer.PendingDemurrage = &p.Rate
-	peer.Queue.Enqueue("set_demurrage", 0)
+	peer.Queue.Enqueue("set_demurrage", time.Now().Unix())
 	return Enc("ok"), []string{peerID}, nil
 }
 
@@ -473,7 +473,7 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 		return nil, nil, fmt.Errorf("insufficient credit")
 	}
 	peer.PendingPayment = &p.Amount
-	peer.Queue.Enqueue("payment", 0)
+	peer.Queue.Enqueue("payment", time.Now().Unix())
 	return Enc("ok"), []string{peerID}, nil
 }
 
