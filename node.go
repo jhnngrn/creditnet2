@@ -309,8 +309,6 @@ func (h *Node) NextTx(peerID string) (string, json.RawMessage, int64) {
 		return "", nil, 0
 	}
 	switch method {
-	case "close":
-		return "close", nil, 0
 	case "set_credit_limit":
 		if peer.PendingLimit == nil {
 			return "", nil, 0
@@ -388,18 +386,12 @@ func (h *Node) removePeer(payload json.RawMessage) (json.RawMessage, []string, e
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := h.Trustlines[peerID]
-	if peer == nil {
+	lk := h.links.Get(peerID)
+	if lk == nil {
 		return nil, nil, fmt.Errorf("no peer %s", peerID)
 	}
-	if lk := h.links.Get(peerID); lk != nil {
-		// Link exists — close it (app.close fires when modules are done).
-		lk.Close()
-		return Enc("ok"), []string{peerID}, nil
-	}
-	// No link — app already closed, safe to remove trustline data.
-	delete(h.Trustlines, peerID)
-	return Enc("ok"), nil, nil
+	lk.Close()
+	return Enc("ok"), []string{peerID}, nil
 }
 
 func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []string, error) {
