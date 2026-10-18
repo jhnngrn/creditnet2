@@ -178,7 +178,6 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 		return false, nil, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(nov.Amount, ts)
-	h.node.UnrefModule(nov.Side[IN].Peer, h.name)
 	nov.Side[IN] = NovationSide{}
 	var kicks []string
 	if nov.Side[OUT].Peer != "" {
@@ -263,7 +262,6 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if p := h.trustlines[peer]; p != nil {
 		p.AddBalance(-nov.Amount, ts)
 	}
-	h.node.UnrefModule(nov.Side[OUT].Peer, h.name)
 	nov.Side[OUT] = NovationSide{}
 	if nov.Side[IN].Peer == "" {
 		h.removeNovation(m.NovationID)
@@ -329,6 +327,18 @@ func (h *Triad) buildMsg(id string, nov *Novation, side int) (string, json.RawMe
 
 func (h *Triad) Status() json.RawMessage {
 	return creditnet.Enc(map[string]any{"novations": len(h.Novations)})
+}
+
+// Busy reports whether this module has active work with the given peer.
+func (h *Triad) Busy(peer string) bool {
+	for _, nov := range h.Novations {
+		for s := 0; s < 2; s++ {
+			if nov.Side[s].Peer == peer {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
@@ -427,25 +437,13 @@ func (h *Triad) isConnected(peer string) bool {
 	return t != nil && t.Connected && !t.IntentClose
 }
 
-// addNovation stores a novation and refs the involved peers.
+// addNovation stores a novation.
 func (h *Triad) addNovation(id string, nov *Novation) {
 	h.Novations[id] = nov
-	for s := 0; s < 2; s++ {
-		if nov.Side[s].Peer != "" {
-			h.node.RefModule(nov.Side[s].Peer, h.name)
-		}
-	}
 }
 
-// removeNovation deletes the novation and unrefs the involved peers.
+// removeNovation deletes the novation.
 func (h *Triad) removeNovation(id string) {
-	if nov := h.Novations[id]; nov != nil {
-		for s := 0; s < 2; s++ {
-			if nov.Side[s].Peer != "" {
-				h.node.UnrefModule(nov.Side[s].Peer, h.name)
-			}
-		}
-	}
 	delete(h.Novations, id)
 }
 
