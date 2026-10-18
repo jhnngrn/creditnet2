@@ -83,6 +83,15 @@ type Module interface {
 	Busy(peer string) bool
 }
 
+// App is a Module that owns the lifecycle of a link. It is notified
+// when the bilateral app.connect and app.close handshakes complete.
+// A module passed to DeclareApp must implement App.
+type App interface {
+	Module
+	OnConnect(peer string)
+	OnClose(peer string)
+}
+
 // queuedMsg is a message queued for sending on a link.
 // QueuedAt is a unix-second timestamp of when the message was queued.
 // When multiple modules return a candidate for the same peer, the
@@ -168,6 +177,9 @@ func (l *Link) moduleAvailable(name string) bool {
 // moduleConnected returns true if the module is bilaterally connected,
 // regardless of IntentClose. Used internally for dispatch and NextTx.
 func (l *Link) moduleConnected(name string) bool {
+	if name == l.State.App {
+		return l.State.Status == Connected
+	}
 	c := l.State.Modules[name]
 	return c != nil && c.Status == Connected
 }
@@ -439,17 +451,26 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				}
 				l.State.Status = Connected
 				l.State.IntentConnect = false
+				if app, ok := n.moduleMap[p.Name].(App); ok {
+					app.OnConnect(peer)
+				}
 				return true, nil, nil
 			}
 			if n.InviteMode == inviteModeOpen {
 				l.State.App = p.Name
 				l.State.Status = Connected
+				if app, ok := n.moduleMap[p.Name].(App); ok {
+					app.OnConnect(peer)
+				}
 				return true, nil, nil
 			}
 			return false, nil, nil
 		case "close":
 			if n.anyBusy(peer) {
 				return false, nil, errRefsHeld
+			}
+			if app, ok := n.moduleMap[l.State.App].(App); ok {
+				app.OnClose(peer)
 			}
 			n.delete(peer)
 			return true, nil, nil
@@ -494,12 +515,18 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 		case "connect":
 			if ok {
 				l.State.Status = Connected
+				if app, ok := n.moduleMap[l.State.App].(App); ok {
+					app.OnConnect(peer)
+				}
 			} else {
 				l.State.Status = waiting
 			}
 			l.State.IntentConnect = false
 		case "close":
 			if ok {
+				if app, ok := n.moduleMap[l.State.App].(App); ok {
+					app.OnClose(peer)
+				}
 				n.delete(peer)
 			} else {
 				l.State.IntentClose = false
