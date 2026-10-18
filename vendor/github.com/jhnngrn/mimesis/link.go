@@ -140,6 +140,9 @@ func (l *Link) unrefModule(name string) {
 	if mod.Refs == 0 && l.State.Refs > 0 {
 		l.State.Refs--
 	}
+	if l.State.Refs == 0 {
+		l.State.IntentClose = true
+	}
 }
 
 // Closing returns true if this link is closing (IntentClose is set).
