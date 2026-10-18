@@ -41,8 +41,9 @@ github.com/jhnngrn/mimesis   (external)
 
 creditnet.go           thin wrapper: Boot, RegisterNode, Register
 types.go               creditnet-specific types and re-exports
-node.go                Node: trustline module implementing mimesis.Module,
+node.go                Node: trustline app implementing mimesis.App,
                        holds trustlines and bandwidth, registers reservers,
+                       OnConnect/OnClose lifecycle, ClosedBalances archive,
                        trustline sync: credit limits, balances, payments
 demurrage.go           demurrage computation (decay over time)
 queue.go               generic enqueue/dequeue helpers
@@ -57,77 +58,33 @@ cmd/
   loops/               server with trustline + loops modules
 ```
 
-Node is the core module — it holds trustlines and bandwidth that other
-modules depend on. `RegisterNode` registers it first, then `Register`
-wraps app-specific factories so they receive trustlines and bandwidth
-from the Node via `links.ModuleMap()["trustline"]`. Different binaries
-under `cmd/` combine different sets of modules.
+Node is the app — it implements `mimesis.App` (with `OnConnect` and
+`OnClose` lifecycle hooks) and holds trustlines and bandwidth that other
+modules depend on. `RegisterNode` registers it first and declares it as
+the app with `DeclareApp`. Child modules (triad, loops) receive trustlines
+and bandwidth from the Node via `links.ModuleMap()["trustline"]`. Different
+binaries under `cmd/` combine different sets of child modules.
 
 ## Link layer
 
-The link layer provides bilateral connections between nodes.
+Link lifecycle (connect, close, module negotiation, invite mode) is
+handled entirely by mimesis. See the
+[mimesis README](https://github.com/jhnngrn/mimesis) for the link state
+machine, module negotiation, and invite modes.
 
-### Module negotiation
+creditnet's Node implements `mimesis.App`, so it receives lifecycle
+callbacks:
 
-Links start as bare connections. Modules are proposed explicitly — when application code sets `IntentConnect` on a module's `ConnectionState`, the node sends a `link.module` message to the peer. The peer ACKs if it supports the module. Both sides track each module as a `ConnectionState` (same type as the link itself: `ConnectionStatus` + `IntentConnect`/`IntentClose`). Once a module is bilaterally `connected`, the node dispatches sync messages for that module on the link.
+- **OnConnect(peer)** — called when `app.connect` completes bilaterally.
+  Creates an empty `Trustline` for the peer if one doesn't exist.
+- **OnClose(peer)** — called when `app.close` completes bilaterally,
+  just before the link is deleted. Archives non-zero balance to
+  `ClosedBalances` and deletes the trustline. This ensures reconnects
+  (especially with auto-invite) always start with a clean slate.
 
-This means application-level traffic (trustline operations, triad novations) only flows after both sides have agreed on the module. Adding a new module to the network is backward-compatible — nodes that don't know it simply NACK the proposal.
-
-### Connected gate
-
-The node's `nextTx` always checks for pending link-lifecycle messages first (connect/close/module work regardless of connection state). For modules, `nextTx` requires `link.State.Status == Connected` and the module bilaterally active before asking. This means application-level sync methods (credit limits, payments, etc.) are only sent on connected links with the module enabled, without each module needing to check connection state itself.
-
-### Link state machine
-
-```
-                   AddLink               incoming link.connect
-                      |                         |
-                      v                         v
-                +-----------+             +----------+
-                |  waiting  |             | incoming  |
-                +--+--+--+-+             +-+------+-+
-                   |  |  |                 |      |
-recv link.connect  |  |  |                 |      |  RejectLink
-(mutual) ----------+  |  | RemoveLink     |      |  or RemoveLink
-                       |  | (link.close)   |      |  (link.close)
-          resp OK -----+  +------+        |      +------+
-                       |          |        |             |
-                       |     resp OK       |        resp OK
-          resp NACK    |          |        |             |
-          (stays       |          v        |             v
-           waiting) <--+      (deleted)    |         (deleted)
-                       |                   |
-                       v                   | AcceptLink
-                 +----------+              | (sets IntentConnect,
-                 |connected |<-------------+ status stays incoming)
-                 +-----+----+
-                       |
-          RemoveLink   |
-          (link.close) |
-                       |
-                  resp OK
-                       |
-                       v
-                   (deleted)
-```
-
-**States** (ConnectionStatus):
-
-- **waiting** — sent `link.connect`, got NACKed. Peer has the invite (`incoming` on their side).
-- **incoming** — received `link.connect` from peer. Awaiting local decision (`AcceptLink` or `RejectLink`).
-- **connected** — bilaterally established. Modules are proposed explicitly by application code.
-
-A new link starts with no status and `IntentConnect = true`. Status becomes `waiting` after a NACK, `connected` after mutual detection or ACK.
-
-Links use reference counting — modules that hold a link open call `node.RefModule(peer, module)` when they connect and `node.UnrefModule(peer, module)` when they close. `UnrefModule` decrements refs and sets `IntentClose` automatically when all refs reach 0. `NextTx` only sends `link.close` when `IntentClose && Refs == 0`. This ensures modules finish their close handshakes before the link itself closes, and the link closes automatically when the last module disconnects.
-
-### Invite mode
-
-Three-state `InviteMode` controls how a node handles incoming connections from unknown peers:
-
-- **closed** — reject all incoming `link.connect` from unknown peers (before signature verification).
-- **invite** — accept the link as `incoming`, NACK it, and wait for manual `accept_peer` / `reject_peer`. This is the default.
-- **open** — auto-accept at every layer. `link.connect` → ACK (connected), `link.module` → ACK (module enabled), `trustline.connect` → ACK (peer connected). No manual step needed.
+Connected checks use link existence: `node.Get(peer)` returns non-nil
+and `link.State.App == "trustline"`. There is no separate connected
+state on the trustline itself.
 
 ## Trustline layer
 
@@ -135,37 +92,20 @@ Trustline handling is built into Node under the `"trustline"` namespace. It mana
 
 ### Trustline lifecycle
 
-Trustlines use two booleans: `Connected` (bilateral agreement) and `IntentClose` (local intent to disconnect). Module consent implies trustline consent — accepting the trustline module on a link is sufficient to establish trustlines on it.
+Trustlines are created and destroyed by the app lifecycle hooks:
 
-```
-  add_peer                        incoming link.connect
-  (creates link +                 (from peer)
-   empty Trustline)                     |
-       |                                v
-       v                          link incoming
-  link waiting                    (no trustline yet)
-       |                                |
-       |                          accept_peer
-  link.connect completes          (AcceptLink + module)
-  + module negotiation                  |
-  + trustline.connect sent        link connects
-       |                          + module negotiation
-       v                          + trustline.connect
-  trustline Connected                   |
-  bilaterally                           v
-       |                          trustline Connected
-  remove_peer
-  (sets IntentClose)
-       |
-  trustline.close sent
-  peer.Connected = false
-  (IntentClose stays true
-   → tombstone)
-```
+- **OnConnect** creates an empty `Trustline{}` when `app.connect` completes.
+- **OnClose** archives non-zero balance to `ClosedBalances` and deletes
+  the trustline when `app.close` completes.
 
-The initiator creates an empty `Trustline` in `add_peer`. After link and module connect, `trustline.connect` is sent and auto-accepted — the receiver creates the `Trustline` with `Connected = true`.
+There is no separate trustline state machine — link existence is the
+sole source of truth. If `node.Get(peer)` is non-nil and
+`link.State.App == "trustline"`, the peer is connected.
 
-Disconnection uses `trustline.close` — `remove_peer` sets `IntentClose` on the trustline. After the close handshake, `Connected` becomes false but `IntentClose` stays true, forming a tombstone: `!Connected && IntentClose` causes `trustline.connect` to be rejected, preventing reconnection. If the close is rejected by the peer, `IntentClose` is cleared.
+`app.close` is blocked by `Busy(peer)`, which returns true only if
+there are pending bilateral operations (`PendingLimit`, `PendingPayment`,
+or `PendingDemurrage`). This prevents closing mid-transaction without
+deadlocking.
 
 ### Sync protocol
 
@@ -189,10 +129,6 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches by namesp
 
 **trustline namespace:**
 
-`trustline.connect` — establish bilateral peer relationship. Auto-accepted if the trustline module is active. Sets `Connected = true` on both sides. Rejected if the trustline is tombstoned (`!Connected && IntentClose`).
-
-`trustline.close` — close a peer relationship. Both sides clear peer State, retaining data (balance, limits) for display until explicitly removed.
-
 `trustline.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
 
 `trustline.set_demurrage` — tell peer my demurrage rate. Materializes existing demurrage before applying. Pending until peer confirms.
@@ -209,8 +145,8 @@ All endpoints accept JSON `{method, payload}`.
 
 **POST /api/account** — requires bearer token. Methods are namespace-routed (`namespace.method`):
 
-- `trustline.add_peer` (`{peer, modules?}`) — create link + peer with `IntentConnect`, initiates `link.connect` → `link.module` → `trustline.connect`. Optional `modules` list (e.g. `["loops"]`) proposes those modules on the link. Returns error if the link exists and is closing (`IntentClose`).
-- `trustline.remove_peer` (`{peer}`) — sets `IntentClose` on peer. Trustline close handshake runs; after close, the trustline becomes a tombstone (`!Connected && IntentClose`), preventing reconnection.
+- `trustline.add_peer` (`{peer, modules?}`) — create link and initiate `app.connect`. Optional `modules` list (e.g. `["loops"]`) proposes child modules on the link. Trustline is created by `OnConnect` when the connect completes bilaterally.
+- `trustline.remove_peer` (`{peer}`) — initiate `app.close`. Blocked until no pending operations (`Busy` is false). On completion, `OnClose` archives non-zero balance and deletes the trustline.
 - `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
 - `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
 - `trustline.payment` (`{peer, amount}`) — send payment to peer
@@ -220,6 +156,6 @@ All endpoints accept JSON `{method, payload}`.
 
 Link lifecycle (accept/reject peers, module negotiation, invite mode) is handled by mimesis directly.
 
-**POST /p2p/tx** — bilateral sync (`link.*`, `trustline.*`, `triad.*`, `loops.*`)
+**POST /p2p/tx** — bilateral sync (`app.*`, `trustline.*`, `triad.*`, `loops.*`)
 
 **GET /p2p/key** — public key for signature verification
