@@ -1,5 +1,7 @@
 package creditnet
 
+import "time"
+
 // QueueEntry is a single queued method with the time it was queued.
 type QueueEntry struct {
 	Method string `json:"method"`
@@ -11,8 +13,8 @@ type Queue struct {
 	Entries []QueueEntry `json:"entries,omitempty"`
 }
 
-func (q *Queue) Enqueue(method string, ts int64) {
-	q.Entries = append(q.Entries, QueueEntry{method, ts})
+func (q *Queue) Enqueue(method string) {
+	q.Entries = append(q.Entries, QueueEntry{method, time.Now().Unix()})
 }
 
 func (q *Queue) Dequeue() {

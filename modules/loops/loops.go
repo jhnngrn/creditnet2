@@ -342,7 +342,7 @@ func (h *Loops) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []s
 		}
 		if p.Peer[0] != "" && p.Peer[1] != "" {
 			// Both sides connected — found!
-			p.Queue.Enqueue("found", 0)
+			p.Queue.Enqueue("found")
 			return true, []string{p.Peer[0]}, nil
 		}
 		return true, nil, nil
@@ -476,7 +476,7 @@ func (h *Loops) reqFound(peer string, raw json.RawMessage) (bool, []string, erro
 	}
 	// Intermediate — forward found toward initiator (Peer[0]).
 	if p.Peer[0] != "" {
-		p.Queue.Enqueue("found", 0)
+		p.Queue.Enqueue("found")
 		return true, []string{p.Peer[0]}, nil
 	}
 	return true, nil, nil
@@ -525,13 +525,13 @@ func (h *Loops) reqExpire(peer string, raw json.RawMessage, ts int64) (bool, []s
 	if p.Peer[0] == peer {
 		p.Peer[0] = ""
 		if p.Peer[1] != "" {
-			p.Queue.Enqueue("expire", 0)
+			p.Queue.Enqueue("expire")
 			kicks = []string{p.Peer[1]}
 		}
 	} else {
 		p.Peer[1] = ""
 		if p.Peer[0] != "" {
-			p.Queue.Enqueue("expire", 0)
+			p.Queue.Enqueue("expire")
 			kicks = []string{p.Peer[0]}
 		}
 	}
@@ -569,10 +569,10 @@ func (h *Loops) expirePath(id string) []string {
 	// Send cleanup — Peer[1] first if set, else Peer[0].
 	var kicks []string
 	if p.Peer[1] != "" {
-		p.Queue.Enqueue("expire", 0)
+		p.Queue.Enqueue("expire")
 		kicks = append(kicks, p.Peer[1])
 	} else if p.Peer[0] != "" {
-		p.Queue.Enqueue("expire", 0)
+		p.Queue.Enqueue("expire")
 		kicks = append(kicks, p.Peer[0])
 	}
 	if p.Peer[0] == "" && p.Peer[1] == "" {
@@ -649,7 +649,7 @@ func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 		}
 		cl.Side[IN] = ClearingSide{Peer: peer, Time: ts, Penalty: inPen}
 			h.scheduleCleanup(m.ID, IN)
-		cl.Side[OUT].Queue.Enqueue("finalize", 0)
+		cl.Side[OUT].Queue.Enqueue("finalize")
 		return true, []string{cl.Side[OUT].Peer}, nil
 	}
 
@@ -708,7 +708,7 @@ func (h *Loops) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 	// Rejected — rollback IN side.
 	cl.Side[OUT] = ClearingSide{}
 	if cl.Side[IN].Peer != "" {
-		cl.Side[IN].Queue.Enqueue("rollback", 0)
+		cl.Side[IN].Queue.Enqueue("rollback")
 		return []string{cl.Side[IN].Peer}
 	}
 	h.removeClearing(m.ID)
@@ -797,7 +797,7 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			if nextCl.CancelPre != nil {
 				h.scheduleCancel(nextID)
 			}
-			nextCl.Side[OUT].Queue.Enqueue("finalize", 0)
+			nextCl.Side[OUT].Queue.Enqueue("finalize")
 			kicks = append(kicks, outPeer)
 		} else if cl.Seed == nil && !forwardFinal {
 			// Intermediary: create with IN side only.
@@ -819,7 +819,7 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	// Forward finalize to OUT.
 	cl.Side[IN] = ClearingSide{}
 	if outPeer != "" && cl.Side[OUT].Queue.Empty() {
-		cl.Side[OUT].Queue.Enqueue("finalize", 0)
+		cl.Side[OUT].Queue.Enqueue("finalize")
 		cl.Preimage = pre
 		cl.Final = forwardFinal
 		kicks = []string{outPeer}
@@ -875,7 +875,7 @@ func (h *Loops) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64
 	}
 	cl.Side[OUT] = ClearingSide{}
 	if cl.Side[IN].Peer != "" {
-		cl.Side[IN].Queue.Enqueue("rollback", 0)
+		cl.Side[IN].Queue.Enqueue("rollback")
 	} else {
 		h.removeClearing(m.ID)
 	}
@@ -918,7 +918,7 @@ func (h *Loops) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 	cl.Side[IN] = ClearingSide{}
 	var kicks []string
 	if cl.Side[OUT].Peer != "" {
-		cl.Side[OUT].Queue.Enqueue("cancel", 0)
+		cl.Side[OUT].Queue.Enqueue("cancel")
 		cl.CancelPre = pre
 		kicks = []string{cl.Side[OUT].Peer}
 	} else {
@@ -975,7 +975,7 @@ func (h *Loops) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 
 	cl.Side[IN] = ClearingSide{}
 	if cl.Side[OUT].Peer != "" {
-		cl.Side[OUT].Queue.Enqueue("rollback", 0)
+		cl.Side[OUT].Queue.Enqueue("rollback")
 		return true, []string{cl.Side[OUT].Peer}, nil
 	}
 	h.removeClearing(m.ID)
@@ -1051,7 +1051,7 @@ func (h *Loops) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []
 	var kicks []string
 	other := 1 - side
 	if cl.Side[other].Queue.Empty() && cl.Side[other].Peer != "" {
-		cl.Side[other].Queue.Enqueue("cleanup", 0)
+		cl.Side[other].Queue.Enqueue("cleanup")
 		kicks = []string{cl.Side[other].Peer}
 	}
 	if cl.Side[0].Peer == "" && cl.Side[1].Peer == "" {
@@ -1103,7 +1103,7 @@ func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 			var kicks []string
 			for s := 0; s < 2; s++ {
 				if cl.Side[s].Peer == peer && cl.Side[s].Queue.Empty() {
-					cl.Side[s].Queue.Enqueue("cleanup", 0)
+					cl.Side[s].Queue.Enqueue("cleanup")
 					kicks = append(kicks, peer)
 				}
 			}
@@ -1338,7 +1338,7 @@ func (h *Loops) scheduleCancel(id string) {
 		if cl.Side[OUT].Peer == "" {
 			return nil
 		}
-		cl.Side[OUT].Queue.Enqueue("cancel", 0)
+		cl.Side[OUT].Queue.Enqueue("cancel")
 		return []string{cl.Side[OUT].Peer}
 	})
 }
@@ -1370,7 +1370,7 @@ func (h *Loops) scheduleCleanup(id string, side int) {
 		if peer == "" {
 			return nil
 		}
-		cl.Side[side].Queue.Enqueue("cleanup", 0)
+		cl.Side[side].Queue.Enqueue("cleanup")
 		return []string{peer}
 	})
 }
