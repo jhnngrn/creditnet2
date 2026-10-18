@@ -125,8 +125,13 @@ func (h *Node) OnConnect(peer string) {
 }
 
 // Busy reports whether this module has active bilateral state with the peer.
+// Pending bilateral operations must complete before app.close can fire.
 func (h *Node) Busy(peer string) bool {
-	return h.Trustlines[peer] != nil
+	p := h.Trustlines[peer]
+	if p == nil {
+		return false
+	}
+	return p.PendingLimit != nil || p.PendingPayment != nil || p.PendingDemurrage != nil
 }
 
 // ---------------------------------------------------------------------------
