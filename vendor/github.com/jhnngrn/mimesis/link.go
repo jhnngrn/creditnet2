@@ -633,7 +633,7 @@ func (l *Link) reqModuleClose(payload json.RawMessage) (bool, error) {
 		return true, nil // already gone
 	}
 	if mod.Refs > 0 {
-		return false, nil // refs held — refuse close
+		return false, errRefsHeld
 	}
 	delete(l.State.Modules, p.Name)
 	return true, nil
