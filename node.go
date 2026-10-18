@@ -69,7 +69,8 @@ func (h *Node) RegisterReserver(r Reserver) {
 
 // GetTrustline returns the trustline data for a connected peer, or nil.
 func (h *Node) GetTrustline(peer string) *Trustline {
-	if h.links.Get(peer) == nil {
+	lk := h.links.Get(peer)
+	if lk == nil || lk.State.App != "trustline" {
 		return nil
 	}
 	return h.Trustlines[peer]
@@ -383,11 +384,8 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []strin
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := h.Trustlines[peerID]
+	peer := h.GetTrustline(peerID)
 	if peer == nil {
-		return nil, nil, fmt.Errorf("no peer %s", peerID)
-	}
-	if h.links.Get(peerID) == nil {
 		return nil, nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if p.Amount < 0 {
@@ -410,11 +408,8 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, []string,
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := h.Trustlines[peerID]
+	peer := h.GetTrustline(peerID)
 	if peer == nil {
-		return nil, nil, fmt.Errorf("no peer %s", peerID)
-	}
-	if h.links.Get(peerID) == nil {
 		return nil, nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if p.Rate < 0 {
@@ -437,11 +432,8 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := h.Trustlines[peerID]
+	peer := h.GetTrustline(peerID)
 	if peer == nil {
-		return nil, nil, fmt.Errorf("no peer %s", peerID)
-	}
-	if h.links.Get(peerID) == nil {
 		return nil, nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
 	if peer.PendingPayment != nil {
