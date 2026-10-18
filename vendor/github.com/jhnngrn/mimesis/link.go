@@ -78,8 +78,8 @@ type Module interface {
 	HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error)
 	NextTx(peer string) (string, json.RawMessage, int64)
-	Busy(peer string) bool
 	Status() json.RawMessage
+	Busy(peer string) bool
 }
 
 // queuedMsg is a message queued for sending on a link.
