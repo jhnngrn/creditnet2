@@ -1311,7 +1311,7 @@ func (n *Node) setRetry(peer string, counter uint64) {
 		return
 	}
 	lk := n.Get(peer)
-	if lk == nil {
+	if lk == nil || lk.Counter != counter {
 		return
 	}
 	if lk.Sending != nil && lk.Sending.Timer != nil {
