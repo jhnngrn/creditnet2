@@ -138,6 +138,10 @@ func (n *Node) moduleBusy(name, peer string) bool {
 // Closing returns true if this link is closing (IntentClose is set).
 func (l *Link) Closing() bool { return l.State.IntentClose }
 
+// Close marks this link for closing. The sync loop defers sending
+// link.close until no module reports Busy.
+func (l *Link) Close() { l.State.IntentClose = true }
+
 // moduleAvailable returns true if the named module is bilaterally connected
 // and neither the module nor the link is closing. Use this to decide whether
 // to start new work. Mimesis dispatch uses moduleConnected instead,
@@ -487,6 +491,11 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 	if lk == nil {
 		return nil
 	}
+	// Cancel: both intents set before any message sent — they annihilate.
+	if lk.State.IntentClose && lk.State.IntentConnect {
+		lk.State.IntentClose = false
+		lk.State.IntentConnect = false
+	}
 	if lk.State.IntentClose && !n.anyBusy(peer) {
 		return &queuedMsg{Method: "link.close"}
 	}
@@ -495,6 +504,12 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 	}
 	if lk.State.Status == Connected {
 		for name, mod := range lk.State.Modules {
+			// Cancel: both intents set before any message sent.
+			if mod.IntentClose && mod.IntentConnect {
+				mod.IntentClose = false
+				mod.IntentConnect = false
+				continue
+			}
 			if mod.IntentClose && !n.moduleBusy(name, peer) {
 				return &queuedMsg{
 					Method:  "module.close",
@@ -863,6 +878,10 @@ func (l *Link) setModules(modules []string, registered map[string]Module) {
 		if mod == nil {
 			l.State.Modules[name] = &ConnectionState{IntentConnect: true}
 		} else if mod.Status != Connected {
+			mod.IntentConnect = true
+		} else if mod.IntentClose {
+			// Already connected but closing — set IntentConnect so
+			// nextTx can cancel both intents.
 			mod.IntentConnect = true
 		}
 	}
