@@ -119,13 +119,17 @@ Response piggybacking: when sending a new request, the peer includes its respons
 
 Sync methods are namespace-routed: `namespace.method`. Node dispatches by namespace prefix.
 
-**link namespace:**
+**app namespace:**
 
-`link.connect` — establish bilateral connection. Mutual add → instant `connected`. Incoming from unknown → `incoming` (NACKed, awaiting accept/reject). In `open` mode, auto-ACKed.
+`app.connect` — establish bilateral connection. Mutual add → instant `connected`. Incoming from unknown → `incoming` (NACKed, awaiting accept/reject). In `open` mode, auto-ACKed.
 
-`link.module` — bilateral module negotiation. Sent automatically after a link connects. Payload carries `{"name": "trustline"}`. Peer ACKs if it supports the module, enabling it on the link. In `open` mode, supported modules are auto-ACKed.
+`app.close` — close a connection. Modules clean up before close via ref counting. If the peer has no link, a synthetic ACK is returned.
 
-`link.close` — close a connection. Modules clean up before close via ref counting. If the peer has no link, a synthetic ACK is returned.
+**module namespace:**
+
+`module.connect` — bilateral module negotiation. Sent automatically after a link connects. Payload carries `{"name": "triad"}`. Peer ACKs if it supports the module, enabling it on the link. In `open` mode, supported modules are auto-ACKed.
+
+`module.close` — close a child module on a link. Deferred until the module reports not Busy.
 
 **trustline namespace:**
 
