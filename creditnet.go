@@ -14,13 +14,15 @@ var Boot = mimesis.Boot
 // RunAndWait initializes the server and blocks until interrupted.
 var RunAndWait = mimesis.RunAndWait
 
-// RegisterNode registers the trustline Node module on the server.
+// RegisterNode registers the trustline Node module as an app on the server.
 // This must be called before any Register calls, because other modules
 // depend on the Node's trustlines and bandwidth.
-func RegisterNode(srv *mimesis.Server) {
+// children lists the module names that run under the trustline app.
+func RegisterNode(srv *mimesis.Server, children []string) {
 	srv.Register("trustline", func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
 		return NewNode(name, nodeID, node, state)
 	})
+	srv.DeclareApp("trustline", children)
 }
 
 // Register registers a module factory on the server.

@@ -58,9 +58,10 @@ type ConnectionState struct {
 }
 
 
-// LinkState is a ConnectionState (for the link itself) plus per-module connections.
+// LinkState is a ConnectionState (for the link and its app) plus per-module connections.
 type LinkState struct {
 	ConnectionState
+	App     string                      `json:"app,omitempty"`
 	Modules map[string]*ConnectionState `json:"modules,omitempty"`
 }
 
@@ -128,9 +129,19 @@ func (n *Node) anyBusy(peer string) bool {
 
 // moduleBusy returns true if the named module reports being busy with
 // the given peer. Used to defer module.close until the module is idle.
+// If the module is an app, it also checks all its child modules.
 func (n *Node) moduleBusy(name, peer string) bool {
 	if mod := n.moduleMap[name]; mod != nil {
-		return mod.Busy(peer)
+		if mod.Busy(peer) {
+			return true
+		}
+	}
+	if children, ok := n.apps[name]; ok {
+		for _, child := range children {
+			if mod := n.moduleMap[child]; mod != nil && mod.Busy(peer) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -189,6 +200,7 @@ type Node struct {
 	Links      map[string]*Link       `json:"links"`
 	InviteMode inviteMode             `json:"invite_mode,omitempty"`
 	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
+	apps       map[string][]string    `json:"-"` // app name → supported module names
 	moduleMap  map[string]Module      `json:"-"`
 	// send delivers a sync message to a peer and returns the response body.
 	send   func(peer string, msg txRequest) ([]byte, error) `json:"-"`
@@ -206,12 +218,31 @@ func newNode(id string, links map[string]*Link, mode inviteMode, send func(strin
 	if mode == "" {
 		mode = inviteModeInvite
 	}
-	return &Node{ID: id, Links: links, InviteMode: mode, moduleMap: map[string]Module{}, send: send, commit: commit}
+	return &Node{ID: id, Links: links, InviteMode: mode, apps: map[string][]string{}, moduleMap: map[string]Module{}, send: send, commit: commit}
 }
 
-// RegisterModule adds a module to the link collection under the given name.
+// registerModule adds a module to the node under the given name.
 func (n *Node) registerModule(name string, m Module) {
 	n.moduleMap[name] = m
+}
+
+// isApp returns true if the named module is a registered app.
+func (n *Node) isApp(name string) bool {
+	_, ok := n.apps[name]
+	return ok
+}
+
+// appFor returns the app name that owns the given module, or "" if the
+// module is not owned by any app (or is itself an app).
+func (n *Node) appFor(module string) string {
+	for app, mods := range n.apps {
+		for _, m := range mods {
+			if m == module {
+				return app
+			}
+		}
+	}
+	return ""
 }
 
 // ModuleMap returns the registered modules for serialization.
@@ -231,13 +262,16 @@ func (n *Node) len() int              { return len(n.Links) }
 func (n *Node) full() bool            { return len(n.Links) >= maxLinks }
 func (n *Node) delete(peer string)    { delete(n.Links, peer) }
 
-// Connect creates a new outgoing link to peer and returns it.
+// Connect creates a new outgoing link to peer running the named app.
 // The link is created with IntentConnect set, so the sync loop
 // will initiate a connection. Returns errMaxLinks if at capacity.
-func (n *Node) Connect(peer string) (*Link, error) {
+func (n *Node) Connect(peer, app string) (*Link, error) {
 	_, _, err := ParseIdentity(peer)
 	if err != nil {
 		return nil, err
+	}
+	if !n.isApp(app) {
+		return nil, fmt.Errorf("unknown app %q", app)
 	}
 	peer = strings.ToLower(peer)
 	if n.Links[peer] != nil {
@@ -247,6 +281,7 @@ func (n *Node) Connect(peer string) (*Link, error) {
 		return nil, errMaxLinks
 	}
 	lk := newLink(n.ID, peer)
+	lk.State.App = app
 	lk.State.IntentConnect = true
 	n.Links[peer] = lk
 	return lk, nil
@@ -385,19 +420,29 @@ func olderQueuedMsg(a, b *queuedMsg) bool {
 // dispatched by name. Returns (ok, kicks, error).
 func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage, ts int64) (bool, []string, error) {
 	ns, method := splitMethod(fullMethod)
-	if ns == "link" {
+	if ns == "app" {
 		l := n.Get(peer)
 		if l == nil {
 			return false, nil, fmt.Errorf("no link to %s", peer)
 		}
 		switch method {
 		case "connect":
+			var p struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(payload, &p); err != nil || p.Name == "" {
+				return false, nil, fmt.Errorf("app.connect requires name")
+			}
 			if l.State.IntentConnect || l.State.Status == waiting {
+				if l.State.App == "" {
+					l.State.App = p.Name
+				}
 				l.State.Status = Connected
 				l.State.IntentConnect = false
 				return true, nil, nil
 			}
 			if n.InviteMode == inviteModeOpen {
+				l.State.App = p.Name
 				l.State.Status = Connected
 				return true, nil, nil
 			}
@@ -418,10 +463,10 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 		}
 		switch method {
 		case "connect":
-			ok, err := l.reqModule(payload, n.moduleMap, n.InviteMode)
+			ok, err := l.reqModule(payload, n.moduleMap, n.InviteMode, n.apps)
 			return ok, nil, err
 		case "close":
-			ok, err := l.reqModuleClose(peer, payload, n.moduleMap)
+			ok, err := l.reqModuleClose(peer, payload, n.moduleMap, n.apps)
 			return ok, nil, err
 		}
 		return false, nil, fmt.Errorf("unknown module method %q", method)
@@ -440,7 +485,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 // dispatchResponse dispatches a sync response by namespace.
 func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage, ok bool, ts int64) []string {
 	ns, method := splitMethod(fullMethod)
-	if ns == "link" {
+	if ns == "app" {
 		l := n.Get(peer)
 		if l == nil {
 			return nil
@@ -497,25 +542,30 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 		lk.State.IntentConnect = false
 	}
 	if lk.State.IntentClose && !n.anyBusy(peer) {
-		return &queuedMsg{Method: "link.close"}
+		return &queuedMsg{Method: "app.close"}
 	}
 	if lk.State.IntentConnect {
-		return &queuedMsg{Method: "link.connect"}
+		return &queuedMsg{Method: "app.connect", Payload: enc(map[string]string{"name": lk.State.App})}
 	}
 	if lk.State.Status == Connected {
-		for name, mod := range lk.State.Modules {
-			// Cancel: both intents set before any message sent.
+		// Cancel annihilating intents.
+		for _, mod := range lk.State.Modules {
 			if mod.IntentClose && mod.IntentConnect {
 				mod.IntentClose = false
 				mod.IntentConnect = false
-				continue
 			}
+		}
+		// Module close/connect — app lifecycle is at link level.
+		// Close modules first, then connect.
+		for name, mod := range lk.State.Modules {
 			if mod.IntentClose && !n.moduleBusy(name, peer) {
 				return &queuedMsg{
 					Method:  "module.close",
 					Payload: enc(map[string]string{"name": name}),
 				}
 			}
+		}
+		for name, mod := range lk.State.Modules {
 			if mod.IntentConnect {
 				return &queuedMsg{
 					Method:  "module.connect",
@@ -551,7 +601,7 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 // Module negotiation (internal)
 // ---------------------------------------------------------------------------
 
-func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inviteMode inviteMode) (bool, error) {
+func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inviteMode inviteMode, apps map[string][]string) (bool, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
@@ -560,6 +610,14 @@ func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inv
 	}
 	if _, ok := modules[p.Name]; !ok {
 		return false, nil // we don't speak this module
+	}
+	// Child modules require their parent app to be the link's app.
+	for app, children := range apps {
+		for _, child := range children {
+			if child == p.Name && l.State.App != app {
+				return false, nil
+			}
+		}
 	}
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
@@ -612,7 +670,7 @@ func (l *Link) respModule(payload json.RawMessage, ok bool) {
 	mod.IntentConnect = false
 }
 
-func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module) (bool, error) {
+func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module, apps map[string][]string) (bool, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
@@ -663,7 +721,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 	var err error
 
 	switch {
-	case ns == "link" && method == "set_invite_mode":
+	case ns == "app" && method == "set_invite_mode":
 		var p struct {
 			Mode inviteMode `json:"mode"`
 		}
@@ -680,7 +738,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		n.InviteMode = p.Mode
 		result = enc("ok")
 
-	case ns == "link" && method == "set_modules":
+	case ns == "app" && method == "set_modules":
 		var p struct {
 			Peer    string   `json:"peer"`
 			Modules []string `json:"modules"`
@@ -699,7 +757,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		result = enc("ok")
 		kicks = []string{p.Peer}
 
-	case ns == "link" && method == "accept":
+	case ns == "app" && method == "accept":
 		var p struct {
 			Peer string `json:"peer"`
 		}
@@ -721,7 +779,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		result = enc("ok")
 		kicks = []string{p.Peer}
 
-	case ns == "link" && method == "reject":
+	case ns == "app" && method == "reject":
 		var p struct {
 			Peer string `json:"peer"`
 		}
@@ -789,7 +847,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 	case ns == "" && method == "status":
 		result = n.status()
 
-	case ns == "link":
+	case ns == "app":
 		n.mu.Unlock()
 		return nil, fmt.Errorf("unknown link method %q", method)
 
@@ -923,7 +981,7 @@ func (n *Node) quickReject(from, method string) bool {
 	from = strings.ToLower(from)
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.Get(from) == nil && method != "link.connect" && method != "link.close"
+	return n.Get(from) == nil && method != "app.connect" && method != "app.close"
 }
 
 // HandleIncoming processes an incoming transaction. The caller is responsible
@@ -934,11 +992,11 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 
 	lk := n.Get(env.From)
 	if lk == nil {
-		if env.Method == "link.close" {
+		if env.Method == "app.close" {
 			n.mu.Unlock()
 			return &txResponse{Counter: env.Counter, OK: true, Timestamp: nowSecs()}, nil
 		}
-		if env.Method != "link.connect" {
+		if env.Method != "app.connect" {
 			n.mu.Unlock()
 			return nil, errNoLink
 		}
@@ -952,6 +1010,16 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 		}
 		lk = newLink(n.ID, env.From)
 		n.Links[env.From] = lk
+		// Extract app name from payload.
+		var p struct {
+			Name string `json:"name"`
+		}
+		if env.Payload != nil {
+			json.Unmarshal(env.Payload, &p)
+		}
+		if p.Name != "" {
+			lk.State.App = p.Name
+		}
 		lk.State.Status = Incoming
 	}
 
