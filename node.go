@@ -34,12 +34,20 @@ type Trustline struct {
 // Node is the central app-level entity. It implements link.Module for
 // trustline protocol messages, and provides the Trustlines map and
 // Bandwidth function that other modules depend on.
+// ClosedBalance records the outstanding balance when a trustline was closed.
+type ClosedBalance struct {
+	Peer    string `json:"peer"`
+	Balance int64  `json:"balance"`
+	Time    int64  `json:"time"`
+}
+
 type Node struct {
-	Trustlines map[string]*Trustline `json:"trustlines"`
-	name       string
-	nodeID     string
-	links      *mimesis.Node
-	reservers  []Reserver
+	Trustlines     map[string]*Trustline `json:"trustlines"`
+	ClosedBalances []ClosedBalance       `json:"closed_balances,omitempty"`
+	name           string
+	nodeID         string
+	links          *mimesis.Node
+	reservers      []Reserver
 }
 
 // NewNode creates a Node from persisted state.
@@ -125,8 +133,16 @@ func (h *Node) OnConnect(peer string) {
 }
 
 // OnClose is called by the framework when app.close completes bilaterally.
-// The link is about to be removed. Clean up the trustline data.
+// The link is about to be removed. Archive balance and clean up.
 func (h *Node) OnClose(peer string) {
+	p := h.Trustlines[peer]
+	if p != nil && p.Balance != 0 {
+		h.ClosedBalances = append(h.ClosedBalances, ClosedBalance{
+			Peer:    peer,
+			Balance: p.Balance,
+			Time:    time.Now().Unix(),
+		})
+	}
 	delete(h.Trustlines, peer)
 }
 
