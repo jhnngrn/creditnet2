@@ -119,11 +119,12 @@ func (h *Node) Bandwidth(peer string, side int) int64 {
 }
 
 
-// Busy reports whether this module has active work with the given peer.
-// A connected trustline that isn't being closed is active work.
+// Busy reports whether this module has active bilateral state with the peer.
+// Connected is bilateral, so the trustline is busy until its own close
+// handshake completes — including while IntentClose is set.
 func (h *Node) Busy(peer string) bool {
 	p := h.Trustlines[peer]
-	return p != nil && p.Connected && !p.IntentClose
+	return p != nil && p.Connected
 }
 
 // ---------------------------------------------------------------------------
