@@ -462,13 +462,20 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			if err := json.Unmarshal(payload, &p); err != nil || p.Name == "" {
 				return false, nil, fmt.Errorf("app.connect requires name")
 			}
+			if !n.isApp(p.Name) {
+				return false, nil, fmt.Errorf("unknown app %q", p.Name)
+			}
 			if l.State.IntentConnect || l.State.Status == waiting {
+				// Both sides must agree on the app.
+				if l.State.App != "" && l.State.App != p.Name {
+					return false, nil, nil
+				}
 				if l.State.App == "" {
 					l.State.App = p.Name
 				}
 				l.State.Status = Connected
 				l.State.IntentConnect = false
-				if app, ok := n.moduleMap[p.Name].(App); ok {
+				if app, ok := n.moduleMap[l.State.App].(App); ok {
 					app.OnConnect(peer)
 				}
 				return true, nil, nil
@@ -1059,16 +1066,18 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 		}
 		lk = newLink(n.ID, env.From)
 		n.Links[env.From] = lk
-		// Extract app name from payload.
+		// Extract and validate app name from payload.
 		var p struct {
 			Name string `json:"name"`
 		}
 		if env.Payload != nil {
 			json.Unmarshal(env.Payload, &p)
 		}
-		if p.Name != "" {
-			lk.State.App = p.Name
+		if p.Name == "" || !n.isApp(p.Name) {
+			n.mu.Unlock()
+			return nil, fmt.Errorf("unknown app %q", p.Name)
 		}
+		lk.State.App = p.Name
 		lk.State.Status = Incoming
 	}
 
