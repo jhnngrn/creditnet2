@@ -162,6 +162,17 @@ func (l *Link) Closing() bool { return l.State.IntentClose }
 // link.close until no module reports Busy.
 func (l *Link) Close() { l.State.IntentClose = true }
 
+// isChildModule returns true if name is a declared child module of the
+// given app. The app name itself is never a valid child module.
+func isChildModule(name, app string, apps map[string][]string) bool {
+	for _, child := range apps[app] {
+		if child == name {
+			return true
+		}
+	}
+	return false
+}
+
 // moduleAvailable returns true if the named module is bilaterally connected
 // and neither the module nor the link is closing. Use this to decide whether
 // to start new work. Mimesis dispatch uses moduleConnected instead,
@@ -169,6 +180,9 @@ func (l *Link) Close() { l.State.IntentClose = true }
 func (l *Link) moduleAvailable(name string) bool {
 	if l.State.IntentClose {
 		return false
+	}
+	if name == l.State.App {
+		return l.State.Status == Connected
 	}
 	c := l.State.Modules[name]
 	return c != nil && c.Status == Connected && !c.IntentClose
@@ -259,6 +273,9 @@ func (n *Node) appFor(module string) string {
 
 // ModuleMap returns the registered modules for serialization.
 func (n *Node) ModuleMap() map[string]Module { return n.moduleMap }
+
+// Apps returns the app→children map so callers can pass it to ConnectModules.
+func (n *Node) Apps() map[string][]string { return n.apps }
 
 func (n *Node) Get(peer string) *Link { return n.Links[peer] }
 
@@ -635,16 +652,12 @@ func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inv
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
 		return false, fmt.Errorf("bad payload")
 	}
+	// Only allow modules declared as children of this link's app.
+	if !isChildModule(p.Name, l.State.App, apps) {
+		return false, nil
+	}
 	if _, ok := modules[p.Name]; !ok {
 		return false, nil // we don't speak this module
-	}
-	// Child modules require their parent app to be the link's app.
-	for app, children := range apps {
-		for _, child := range children {
-			if child == p.Name && l.State.App != app {
-				return false, nil
-			}
-		}
 	}
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
@@ -703,6 +716,9 @@ func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[
 	}
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
 		return false, fmt.Errorf("bad payload")
+	}
+	if !isChildModule(p.Name, l.State.App, apps) {
+		return false, nil
 	}
 	mod := l.State.Modules[p.Name]
 	if mod == nil {
@@ -780,7 +796,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 			n.mu.Unlock()
 			return nil, fmt.Errorf("no link to %s", p.Peer)
 		}
-		lk.setModules(p.Modules, n.moduleMap)
+		lk.setModules(p.Modules, n.moduleMap, n.apps)
 		result = enc("ok")
 		kicks = []string{p.Peer}
 
@@ -928,11 +944,14 @@ func (n *Node) status() json.RawMessage {
 
 // ConnectModules requests connection for the named modules on this link,
 // filtering by registered modules. Existing modules are left untouched.
-func (l *Link) ConnectModules(modules []string, registered map[string]Module) {
+func (l *Link) ConnectModules(modules []string, registered map[string]Module, apps map[string][]string) {
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
 	}
 	for _, name := range modules {
+		if !isChildModule(name, l.State.App, apps) {
+			continue
+		}
 		if _, ok := registered[name]; !ok {
 			continue
 		}
@@ -948,12 +967,15 @@ func (l *Link) ConnectModules(modules []string, registered map[string]Module) {
 // setModules proposes the given modules on this link, filtering by supported.
 // Modules not in the desired set are marked IntentClose. The sync loop
 // defers sending module.close until the module reports !Busy.
-func (l *Link) setModules(modules []string, registered map[string]Module) {
+func (l *Link) setModules(modules []string, registered map[string]Module, apps map[string][]string) {
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
 	}
 	desired := map[string]bool{}
 	for _, name := range modules {
+		if !isChildModule(name, l.State.App, apps) {
+			continue
+		}
 		if _, ok := registered[name]; ok {
 			desired[name] = true
 		}

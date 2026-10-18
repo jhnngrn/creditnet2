@@ -176,6 +176,17 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	}
 	n.apps = s.apps
 
+	// Validate that declared apps implement the App interface.
+	for name := range s.apps {
+		mod := n.moduleMap[name]
+		if mod == nil {
+			log.Fatalf("node %s: declared app %q not registered", id, name)
+		}
+		if _, ok := mod.(App); !ok {
+			log.Fatalf("node %s: module %q declared as app but does not implement App", id, name)
+		}
+	}
+
 	return n
 }
 
