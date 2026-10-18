@@ -128,7 +128,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		if nov.Side[IN].Peer != peer {
 			return false, nil, nil
 		}
-		nov.Side[OUT].Queue.Enqueue("finalize", 0)
+		nov.Side[OUT].Queue.Enqueue("finalize", time.Now().Unix())
 		return true, []string{nov.Side[OUT].Peer}, nil
 	}
 
@@ -156,7 +156,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 			{Peer: m.Next},
 		},
 	}
-	nov.Side[OUT].Queue.Enqueue("commit", 0)
+	nov.Side[OUT].Queue.Enqueue("commit", time.Now().Unix())
 	h.addNovation(m.NovationID, nov)
 	return true, []string{m.Next}, nil
 }
@@ -181,7 +181,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	nov.Side[IN] = NovationSide{}
 	var kicks []string
 	if nov.Side[OUT].Peer != "" {
-		nov.Side[OUT].Queue.Enqueue("finalize", 0)
+		nov.Side[OUT].Queue.Enqueue("finalize", time.Now().Unix())
 		kicks = []string{nov.Side[OUT].Peer}
 	}
 	if nov.Side[OUT].Peer == "" {
@@ -208,7 +208,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 		h.removeNovation(m.NovationID)
 		return true, nil, nil
 	}
-	nov.Side[IN].Queue.Enqueue("rollback", 0)
+	nov.Side[IN].Queue.Enqueue("rollback", time.Now().Unix())
 	return true, []string{nov.Side[IN].Peer}, nil
 }
 
@@ -243,7 +243,7 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
 			h.removeNovation(m.NovationID)
 			return nil
 		}
-		nov.Side[IN].Queue.Enqueue("rollback", 0)
+		nov.Side[IN].Queue.Enqueue("rollback", time.Now().Unix())
 		return []string{nov.Side[IN].Peer}
 	}
 	return nil
@@ -365,7 +365,7 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	if nov.Side[side].Peer == "" {
 		return nil, nil, fmt.Errorf("no peer on %s side", method)
 	}
-	nov.Side[side].Queue.Enqueue(msg, 0)
+	nov.Side[side].Queue.Enqueue(msg, time.Now().Unix())
 	return nil, []string{nov.Side[side].Peer}, nil
 }
 
@@ -416,7 +416,7 @@ func (h *Triad) tryNovate() []string {
 					{Peer: debtor},
 				},
 			}
-			nov.Side[OUT].Queue.Enqueue("commit", 0)
+			nov.Side[OUT].Queue.Enqueue("commit", time.Now().Unix())
 			h.addNovation(novID, nov)
 			kicks = append(kicks, debtor)
 			avlD -= amount
