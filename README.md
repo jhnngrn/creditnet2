@@ -154,9 +154,7 @@ All endpoints accept JSON `{method, payload}`.
 - `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
 - `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
 - `trustline.payment` (`{peer, amount}`) — send payment to peer
-- `trustline.status` — peers with credit data, link state, incoming invites
-- `triad.status` — active novation count
-- `loops.status` — active path and clearing count
+- `status` — combined status from all modules: trustline peers with credit data, link state, incoming invites, triad novation count, loops path and clearing count
 
 Link lifecycle (accept/reject peers, module negotiation, invite mode) is handled by mimesis directly.
 
