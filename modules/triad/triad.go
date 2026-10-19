@@ -433,8 +433,7 @@ func (h *Triad) tryNovate() []string {
 // ---------------------------------------------------------------------------
 
 func (h *Triad) isConnected(peer string) bool {
-	lk := h.node.Get(peer)
-	return lk != nil && lk.State.App == "trustline"
+	return h.node.ModuleAvailable(peer, h.name)
 }
 
 // addNovation stores a novation.

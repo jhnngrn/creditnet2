@@ -1380,8 +1380,7 @@ func (h *Loops) scheduleCleanup(id string, side int) {
 // ---------------------------------------------------------------------------
 
 func (h *Loops) isConnected(peer string) bool {
-	lk := h.node.Get(peer)
-	return lk != nil && lk.State.App == "trustline"
+	return h.node.ModuleAvailable(peer, h.name)
 }
 
 // Busy reports whether this module has active work with the given peer.
