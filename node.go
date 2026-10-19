@@ -311,22 +311,23 @@ func (h *Node) NextTx(peerID string) (string, json.RawMessage, int64) {
 	if method == "" {
 		return "", nil, 0
 	}
+	ts := peer.Queue.HeadTime()
 	switch method {
 	case "set_credit_limit":
 		if peer.PendingLimit == nil {
 			return "", nil, 0
 		}
-		return "set_credit_limit", Enc(map[string]int64{"amount": *peer.PendingLimit}), 0
+		return "set_credit_limit", Enc(map[string]int64{"amount": *peer.PendingLimit}), ts
 	case "set_demurrage":
 		if peer.PendingDemurrage == nil {
 			return "", nil, 0
 		}
-		return "set_demurrage", Enc(map[string]int64{"rate": *peer.PendingDemurrage}), 0
+		return "set_demurrage", Enc(map[string]int64{"rate": *peer.PendingDemurrage}), ts
 	case "payment":
 		if peer.PendingPayment == nil {
 			return "", nil, 0
 		}
-		return "payment", Enc(map[string]int64{"amount": *peer.PendingPayment}), 0
+		return "payment", Enc(map[string]int64{"amount": *peer.PendingPayment}), ts
 	}
 	return "", nil, 0
 }
