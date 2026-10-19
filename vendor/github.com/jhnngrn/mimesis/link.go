@@ -1064,9 +1064,8 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 			n.mu.Unlock()
 			return nil, errMaxLinks
 		}
-		lk = newLink(n.ID, env.From)
-		n.Links[env.From] = lk
-		// Extract and validate app name from payload.
+		// Validate app name before creating any state, so a rejected
+		// app.connect never leaves a phantom link in n.Links.
 		var p struct {
 			Name string `json:"name"`
 		}
@@ -1077,8 +1076,10 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 			n.mu.Unlock()
 			return nil, fmt.Errorf("unknown app %q", p.Name)
 		}
+		lk = newLink(n.ID, env.From)
 		lk.State.App = p.Name
 		lk.State.Status = Incoming
+		n.Links[env.From] = lk
 	}
 
 	now := nowSecs()
