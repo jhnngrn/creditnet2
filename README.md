@@ -123,7 +123,7 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches by namesp
 
 `app.connect` — establish bilateral connection. Mutual add → instant `connected`. Incoming from unknown → `incoming` (NACKed, awaiting accept/reject). In `open` mode, auto-ACKed.
 
-`app.close` — close a connection. Modules clean up before close via ref counting. If the peer has no link, a synthetic ACK is returned.
+`app.close` — close a connection. Deferred until modules report not `Busy`. If the peer has no link, a synthetic ACK is returned.
 
 **module namespace:**
 
@@ -149,7 +149,7 @@ All endpoints accept JSON `{method, payload}`.
 
 **POST /api/account** — requires bearer token. Methods are namespace-routed (`namespace.method`):
 
-- `trustline.add_peer` (`{peer, modules?}`) — create link and initiate `app.connect`. Optional `modules` list (e.g. `["loops"]`) proposes child modules on the link. Trustline is created by `OnConnect` when the connect completes bilaterally.
+- `trustline.add_peer` (`{peer, modules?}`) — create link, create empty trustline, and initiate `app.connect`. Optional `modules` list (e.g. `["loops"]`) proposes child modules on the link.
 - `trustline.remove_peer` (`{peer}`) — initiate `app.close`. Blocked until no pending operations (`Busy` is false). On completion, `OnClose` archives non-zero balance and deletes the trustline.
 - `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
 - `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
