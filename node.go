@@ -375,9 +375,6 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 		lk := h.links.Get(peerID)
 		lk.ConnectModules(p.Modules, h.links.ModuleMap(), h.links.Apps())
 	}
-	if h.Trustlines[peerID] == nil {
-		h.Trustlines[peerID] = &Trustline{}
-	}
 	return Enc("ok"), []string{peerID}, nil
 }
 
