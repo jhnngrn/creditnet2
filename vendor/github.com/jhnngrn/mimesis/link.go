@@ -327,9 +327,6 @@ func (n *Node) hasConnectedChildren(name, peer string) bool {
 			if c != nil && c.Status == Connected {
 				return true
 			}
-			if n.hasConnectedChildren(child, peer) {
-				return true
-			}
 		}
 	}
 	return false

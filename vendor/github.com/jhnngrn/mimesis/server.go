@@ -126,11 +126,22 @@ func (s *Server) DeclareRoots(roots []string) {
 	s.roots = roots
 }
 
-// DeclareChildren declares child modules under a parent module,
-// enabling nested module hierarchies. Children can only connect
-// on a link after their parent is connected.
+// DeclareChildren declares child modules under a root module.
+// Children can only connect on a link after their parent is connected.
+// The parent must be a declared root (via DeclareRoots). Only two levels
+// are supported: root → children.
 // Call before Init.
 func (s *Server) DeclareChildren(parent string, children []string) {
+	isRoot := false
+	for _, r := range s.roots {
+		if r == parent {
+			isRoot = true
+			break
+		}
+	}
+	if !isRoot {
+		panic(fmt.Sprintf("DeclareChildren: parent %q is not a declared root", parent))
+	}
 	if s.children == nil {
 		s.children = map[string]*childGroup{}
 	}
