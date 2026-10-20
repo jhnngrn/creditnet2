@@ -43,6 +43,8 @@ import (
 
 type myModule struct{ /* ... */ }
 
+func (m *myModule) OnConnect(peer string) {}
+func (m *myModule) OnClose(peer string)   {}
 func (m *myModule) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
     // handle incoming sync
     return true, nil, nil
@@ -62,8 +64,6 @@ func (m *myModule) Status() json.RawMessage {
 func (m *myModule) Busy(peer string) bool {
     return false
 }
-func (m *myModule) OnConnect(peer string) {}
-func (m *myModule) OnClose(peer string)   {}
 
 func main() {
     srv, err := mimesis.Boot()
@@ -110,14 +110,14 @@ go run . -domain myapp.example.com -port 3000
 
 ```go
 type Module interface {
+    OnConnect(peer string)
+    OnClose(peer string)
     HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
     HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string
     HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error)
     NextTx(peer string) (string, json.RawMessage, int64)
     Status() json.RawMessage
     Busy(peer string) bool
-    OnConnect(peer string)
-    OnClose(peer string)
 }
 ```
 
