@@ -125,7 +125,7 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches by namesp
 
 `link.connect` — establish bilateral connection. Mutual add → instant `connected`. Incoming from unknown → `incoming` (NACKed, awaiting accept/reject). In `open` mode, auto-ACKed.
 
-`link.close` — close a connection. Deferred until modules report not `Busy`. If the peer has no link, a synthetic ACK is returned.
+`link.close` — close a connection. Sent automatically when all modules disconnect, or manually via `lk.Close()`. Deferred until modules report not `Busy`. If the peer has no link, a synthetic ACK is returned.
 
 **module namespace:**
 
