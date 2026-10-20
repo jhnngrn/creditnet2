@@ -72,7 +72,7 @@ type ScheduleFunc func(delay time.Duration, fn func() []string)
 
 // ModuleFactory creates a module for a newly loaded or created node.
 // The factory receives the node identity, the owning Node, a scheduler
-// for periodic work, and persisted state (nil if new). Module-specific
+// for periodic work, and persisted state (nil if new). App-specific
 // dependencies (e.g. shared data structures between modules) are
 // captured in the closure.
 type ModuleFactory func(name, nodeID string, node *Node, schedule ScheduleFunc, state json.RawMessage) Module
@@ -80,11 +80,6 @@ type ModuleFactory func(name, nodeID string, node *Node, schedule ScheduleFunc, 
 type moduleReg struct {
 	name    string
 	factory ModuleFactory
-}
-
-// childGroup describes a set of child modules under a parent.
-type childGroup struct {
-	Names []string
 }
 
 // ---------------------------------------------------------------------------
@@ -99,8 +94,7 @@ type Server struct {
 	client    *http.Client
 	mux       *http.ServeMux
 	factories []moduleReg
-	roots     []string               // allowed root modules
-	children  map[string]*childGroup // parent → child module group
+	apps      map[string][]string // app name → child module names
 
 	nmu   sync.RWMutex
 	nodes map[string]*Node
@@ -118,34 +112,15 @@ func (s *Server) Register(name string, factory ModuleFactory) {
 	s.factories = append(s.factories, moduleReg{name: name, factory: factory})
 }
 
-// DeclareRoots declares which modules are allowed as root modules.
-// Root modules are set at link connect time and are fixed for the
-// link's lifetime. Only declared root modules auto-connect on new links.
+// DeclareApp declares a module as an app — a module that owns the lifecycle
+// on a link. children lists the module names this app supports under it.
+// Multiple apps can be declared; a given link has at most one.
 // Call before Init.
-func (s *Server) DeclareRoots(roots []string) {
-	s.roots = roots
-}
-
-// DeclareChildren declares child modules under a root module.
-// Children can only connect on a link after their parent is connected.
-// The parent must be a declared root (via DeclareRoots). Only two levels
-// are supported: root → children.
-// Call before Init.
-func (s *Server) DeclareChildren(parent string, children []string) {
-	isRoot := false
-	for _, r := range s.roots {
-		if r == parent {
-			isRoot = true
-			break
-		}
+func (s *Server) DeclareApp(name string, children []string) {
+	if s.apps == nil {
+		s.apps = map[string][]string{}
 	}
-	if !isRoot {
-		panic(fmt.Sprintf("DeclareChildren: parent %q is not a declared root", parent))
-	}
-	if s.children == nil {
-		s.children = map[string]*childGroup{}
-	}
-	s.children[parent] = &childGroup{Names: children}
+	s.apps[name] = children
 }
 
 // Send posts a signed sync message to a peer's domain.
@@ -199,8 +174,18 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		m := f.factory(f.name, id, n, schedule, loaded.Handlers[f.name])
 		n.registerModule(f.name, m)
 	}
-	n.roots = s.roots
-	n.children = s.children
+	n.apps = s.apps
+
+	// Validate that declared apps implement the App interface.
+	for name := range s.apps {
+		mod := n.moduleMap[name]
+		if mod == nil {
+			log.Fatalf("node %s: declared app %q not registered", id, name)
+		}
+		if _, ok := mod.(App); !ok {
+			log.Fatalf("node %s: module %q declared as app but does not implement App", id, name)
+		}
+	}
 
 	return n
 }

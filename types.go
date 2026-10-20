@@ -28,16 +28,12 @@ const (
 // Interfaces
 // ---------------------------------------------------------------------------
 
-// Barter is the single-hop payment interface. Both the barter module
-// (simple payments) and the demurrage module (payments with decay)
-// implement this. Triad/loops use it without knowing which is active.
-type Barter interface {
-	Bandwidth(peer string, side int) int64
-	PendingBalance(peer string, side int) int64
-	Pay(peer string, amount int64, ts int64) (bool, error)
-	AdjustBalance(peer string, delta int64, ts int64)
-	RegisterReserver(r Reserver)
-}
+// BandwidthFunc returns available capacity for a peer on a given side.
+type BandwidthFunc func(peer string, side int) int64
+
+// PendingBalanceFunc returns effective balance minus reservations.
+// Positive means debt exists: peer owes us (OUT) or we owe them (IN).
+type PendingBalanceFunc func(peer string, side int) int64
 
 // Reserver reports capacity reserved by a module on a given peer/side.
 // Modules that hold temporary reservations (e.g. in-flight clearings)

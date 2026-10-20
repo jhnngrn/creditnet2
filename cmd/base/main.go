@@ -4,7 +4,6 @@ import (
 	"log"
 
 	"creditnet"
-	"creditnet/modules/barter"
 )
 
 func main() {
@@ -12,7 +11,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	creditnet.RegisterNode(srv, []string{"barter"})
-	creditnet.Register(srv, "barter", barter.NewBarter)
+	creditnet.RegisterNode(srv, nil)
 	creditnet.RunAndWait(srv)
 }

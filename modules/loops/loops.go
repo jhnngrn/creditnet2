@@ -123,32 +123,26 @@ type Loops struct {
 	Clearings map[string]*Clearing      `json:"clearings,omitempty"`
 	Probes    map[string][]*SearchProbe `json:"probes,omitempty"` // peer → outgoing search probes
 
-	name     string
-	nodeID   string
-	node     *mimesis.Node
-	schedule mimesis.ScheduleFunc
-	barter   creditnet.Barter
+	name       string
+	nodeID     string
+	node       *mimesis.Node
+	schedule   mimesis.ScheduleFunc
+	trustlines map[string]*creditnet.Trustline
+	bandwidth  creditnet.BandwidthFunc
 }
 
 func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+	tl := node.ModuleMap()["creditnet"].(*creditnet.Node)
 	h := &Loops{
-		Paths:     map[string]*Path{},
-		Clearings: map[string]*Clearing{},
-		Probes:    map[string][]*SearchProbe{},
-		name:      name,
-		nodeID:    nodeID,
-		node:      node,
-		schedule:  schedule,
-	}
-	// Find the Barter implementor in the module map.
-	for _, mod := range node.ModuleMap() {
-		if b, ok := mod.(creditnet.Barter); ok {
-			h.barter = b
-			break
-		}
-	}
-	if h.barter == nil {
-		log.Fatalf("loops %s: no Barter module found", nodeID)
+		Paths:      map[string]*Path{},
+		Clearings:  map[string]*Clearing{},
+		Probes:     map[string][]*SearchProbe{},
+		name:       name,
+		nodeID:     nodeID,
+		node:       node,
+		schedule:   schedule,
+		trustlines: tl.Trustlines,
+		bandwidth:  tl.Bandwidth,
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {
@@ -164,8 +158,6 @@ func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 	if h.Probes == nil {
 		h.Probes = map[string][]*SearchProbe{}
 	}
-	// Register as reserver so bandwidth accounts for in-flight clearings.
-	h.barter.RegisterReserver(h)
 	h.scheduleSearch()
 	// Re-schedule path expiry timers.
 	now := time.Now().Unix()
@@ -330,6 +322,7 @@ func (h *Loops) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []s
 		return false, nil, nil
 	}
 	dir := m.Direction
+	t := h.trustlines[peer]
 
 	p := h.Paths[m.ID]
 	if p != nil {
@@ -344,8 +337,8 @@ func (h *Loops) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []s
 		if m.Amount < p.Amount {
 			p.Amount = m.Amount
 		}
-		if m.Gas > 0 {
-			h.barter.AdjustBalance(peer, int64(m.Gas), ts) // accept gas at closure
+		if m.Gas > 0 && t != nil {
+			t.AddBalance(int64(m.Gas), ts) // accept gas at closure
 		}
 		if p.Peer[0] != "" && p.Peer[1] != "" {
 			// Both sides connected — found!
@@ -369,7 +362,9 @@ func (h *Loops) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []s
 	p = &Path{Amount: m.Amount, Penalty: m.Penalty, Hops: m.Hops + 1, Depth: m.Depth, Gas: m.Gas - 1, Expiry: ts + int64(PathTTL.Seconds())}
 	p.Peer[dir] = peer
 	h.Paths[m.ID] = p
-	h.barter.AdjustBalance(peer, int64(m.Gas), ts) // receive full gas from sender
+	if t != nil {
+		t.AddBalance(int64(m.Gas), ts) // receive full gas from sender
+	}
 
 	kicks := h.floodForward(m.ID, p, dir, peer)
 	h.schedulePathExpiry(m.ID)
@@ -390,7 +385,9 @@ func (h *Loops) respSearch(peer string, raw json.RawMessage, ok bool, ts int64) 
 		}
 	}
 	if ok {
-		h.barter.AdjustBalance(peer, -int64(m.Gas), ts) // sender pays gas
+		if t := h.trustlines[peer]; t != nil {
+			t.AddBalance(-int64(m.Gas), ts) // sender pays gas
+		}
 	}
 	return nil
 }
@@ -399,8 +396,7 @@ func (h *Loops) respSearch(peer string, raw json.RawMessage, ok bool, ts int64) 
 // dividing gas evenly among them (matching old creditnet's floodSearch).
 func (h *Loops) floodForward(searchID string, p *Path, dir uint8, exclude string) []string {
 	var eligible []string
-	tl := h.node.ModuleMap()["trustline"].(*creditnet.Node)
-	for peerID := range tl.Trustlines {
+	for peerID := range h.trustlines {
 		if peerID == exclude || !h.isConnected(peerID) {
 			continue
 		}
@@ -408,11 +404,11 @@ func (h *Loops) floodForward(searchID string, p *Path, dir uint8, exclude string
 			continue
 		}
 		if dir == 0 {
-			if h.barter.Bandwidth(peerID, OUT) > 0 {
+			if h.bandwidth(peerID, OUT) > 0 {
 				eligible = append(eligible, peerID)
 			}
 		} else {
-			if h.barter.Bandwidth(peerID, IN) > 0 {
+			if h.bandwidth(peerID, IN) > 0 {
 				eligible = append(eligible, peerID)
 			}
 		}
@@ -648,7 +644,7 @@ func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 			delete(h.Paths, m.ID)
 		}
 		inPen := m.Penalty * int64(hops+1)
-		if h.barter.Bandwidth(peer, IN) < m.Amount+inPen {
+		if h.bandwidth(peer, IN) < m.Amount+inPen {
 			return false, nil, nil
 		}
 		cl.Side[IN] = ClearingSide{Peer: peer, Time: ts, Penalty: inPen}
@@ -667,7 +663,7 @@ func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 	delete(h.Paths, m.ID)
 
 	inPen := m.Penalty * int64(hops+1)
-	if h.barter.Bandwidth(peer, IN) < m.Amount+inPen {
+	if h.bandwidth(peer, IN) < m.Amount+inPen {
 		return false, nil, nil
 	}
 
@@ -724,6 +720,10 @@ func (h *Loops) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 // ---------------------------------------------------------------------------
 
 func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+	t := h.trustlines[peer]
+	if t == nil {
+		return false, nil, fmt.Errorf("trustline not connected")
+	}
 	var m struct {
 		ID       string `json:"clearing_id"`
 		Preimage string `json:"preimage"`
@@ -747,7 +747,7 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 
 	// Settle IN side.
 	penConsumed := penaltyTick(cl.Amount, cl.Side[IN].Penalty, cl.Side[IN].Time, ts)
-	h.barter.AdjustBalance(peer, cl.Amount+penConsumed, ts)
+	t.AddBalance(cl.Amount+penConsumed, ts)
 	outPeer := cl.Side[OUT].Peer
 	var kicks []string
 
@@ -756,7 +756,7 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	// If not enough, skip continuation and forward final=true.
 	forwardFinal := m.Final
 	if cl.Seed == nil && !m.Final {
-		avl := h.barter.Bandwidth(peer, IN)
+		avl := h.bandwidth(peer, IN)
 		avl += cl.Amount + cl.Side[IN].Penalty
 		if avl < cl.Amount {
 			forwardFinal = true
@@ -771,8 +771,8 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			// In sync transport reqFinalize always arrives before respFinalize,
 			// so the initiator handles all continuation here.
 			nextStep := cl.Step - 1
-			avlIn := h.barter.Bandwidth(peer, IN)
-			avlOut := h.barter.Bandwidth(outPeer, OUT)
+			avlIn := h.bandwidth(peer, IN)
+			avlOut := h.bandwidth(outPeer, OUT)
 			isFinal := nextStep <= 2 || avlIn < 2*cl.Amount || avlOut < 2*cl.Amount
 			nextCl := &Clearing{
 				Amount:      cl.Amount,
@@ -792,7 +792,7 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 				nextCl.CancelPre = chainHash(cl.Seed, nextStep-2)
 			}
 			h.Clearings[nextID] = nextCl
-			h.scheduleCleanup(nextID, IN)
+							h.scheduleCleanup(nextID, IN)
 			h.scheduleCleanup(nextID, OUT)
 			if nextCl.CancelPre != nil {
 				h.scheduleCancel(nextID)
@@ -811,7 +811,7 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			}
 			if nextCl.Side[IN].Peer == "" {
 				nextCl.Side[IN] = ClearingSide{Peer: peer, Time: ts, Penalty: cl.Side[IN].Penalty}
-				h.scheduleCleanup(nextID, IN)
+							h.scheduleCleanup(nextID, IN)
 			}
 		}
 	}
@@ -845,7 +845,9 @@ func (h *Loops) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64
 	cl.Side[OUT].Queue.Dequeue()
 	if ok {
 		penConsumed := penaltyTick(cl.Amount, cl.Side[OUT].Penalty, cl.Side[OUT].Time, ts)
-		h.barter.AdjustBalance(peer, -(cl.Amount + penConsumed), ts)
+		if t := h.trustlines[peer]; t != nil {
+			t.AddBalance(-(cl.Amount + penConsumed), ts)
+		}
 
 		// Intermediary continuation: set up OUT half of next chunk.
 		// Initiator continuation is handled entirely in reqFinalize
@@ -861,7 +863,7 @@ func (h *Loops) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64
 			}
 			if nextCl.Side[OUT].Peer == "" {
 				nextCl.Side[OUT] = ClearingSide{Peer: outPeer, Penalty: cl.Side[OUT].Penalty}
-				h.scheduleCleanup(nextID, OUT)
+							h.scheduleCleanup(nextID, OUT)
 			}
 		}
 
@@ -885,6 +887,10 @@ func (h *Loops) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64
 // ---------------------------------------------------------------------------
 
 func (h *Loops) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+	t := h.trustlines[peer]
+	if t == nil {
+		return false, nil, fmt.Errorf("trustline not connected")
+	}
 	var m struct {
 		ID       string `json:"clearing_id"`
 		Preimage string `json:"preimage"`
@@ -907,7 +913,7 @@ func (h *Loops) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 
 	penConsumed := penaltyTick(cl.Amount, cl.Side[IN].Penalty, cl.Side[IN].Time, ts)
 	if penConsumed > 0 {
-		h.barter.AdjustBalance(peer, penConsumed, ts)
+		t.AddBalance(int64(penConsumed), ts)
 	}
 	cl.Side[IN] = ClearingSide{}
 	var kicks []string
@@ -938,7 +944,9 @@ func (h *Loops) respCancel(peer string, raw json.RawMessage, ok bool, ts int64) 
 	}
 	penConsumed := penaltyTick(cl.Amount, cl.Side[OUT].Penalty, cl.Side[OUT].Time, ts)
 	if penConsumed > 0 {
-		h.barter.AdjustBalance(peer, -penConsumed, ts)
+		if t := h.trustlines[peer]; t != nil {
+			t.AddBalance(-int64(penConsumed), ts)
+		}
 	}
 	cl.Side[OUT] = ClearingSide{}
 	if cl.Side[IN].Peer == "" {
@@ -997,6 +1005,10 @@ func (h *Loops) respRollback(raw json.RawMessage) {
 // ---------------------------------------------------------------------------
 
 func (h *Loops) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
+	t := h.trustlines[peer]
+	if t == nil {
+		return false, nil, fmt.Errorf("trustline not connected")
+	}
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -1024,11 +1036,11 @@ func (h *Loops) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []
 		}
 		total := cl.Amount + cl.Side[s].Penalty
 		if s == IN {
-			h.barter.AdjustBalance(peer, total, ts)
+			t.AddBalance(total, ts)
 		} else {
-			h.barter.AdjustBalance(peer, -total, ts)
+			t.AddBalance(-total, ts)
 		}
-		cl.Side[s] = ClearingSide{}
+			cl.Side[s] = ClearingSide{}
 		settled = true
 		side = s
 	}
@@ -1065,15 +1077,18 @@ func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 		}
 	}
 	if ok {
+		t := h.trustlines[peer]
 		for s := 0; s < 2; s++ {
 			if cl.Side[s].Peer == peer {
 				total := cl.Amount + cl.Side[s].Penalty
-				if s == IN {
-					h.barter.AdjustBalance(peer, total, ts)
-				} else {
-					h.barter.AdjustBalance(peer, -total, ts)
+				if t != nil {
+					if s == IN {
+						t.AddBalance(total, ts)
+					} else {
+						t.AddBalance(-total, ts)
+					}
 				}
-				cl.Side[s] = ClearingSide{}
+							cl.Side[s] = ClearingSide{}
 			}
 		}
 		if cl.Side[0].Peer == "" && cl.Side[1].Peer == "" {
@@ -1144,21 +1159,20 @@ func (h *Loops) searchAndReschedule() []string {
 
 func (h *Loops) sendSearches() []string {
 	// Quick check: need at least one debtor and one creditor.
-	tl := h.node.ModuleMap()["trustline"].(*creditnet.Node)
 	var hasDebtor, hasCreditor bool
 	var amount int64
-	for peerID := range tl.Trustlines {
+	for peerID := range h.trustlines {
 		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
 			continue
 		}
-		bwOut := h.barter.Bandwidth(peerID, OUT)
+		bwOut := h.bandwidth(peerID, OUT)
 		if bwOut > 0 {
 			hasDebtor = true
 			if amount == 0 || bwOut < amount {
 				amount = bwOut
 			}
 		}
-		if h.barter.Bandwidth(peerID, IN) > 0 {
+		if h.bandwidth(peerID, IN) > 0 {
 			hasCreditor = true
 		}
 	}
@@ -1185,14 +1199,13 @@ func (h *Loops) sendSearches() []string {
 }
 
 func (h *Loops) floodSearchInitiator(searchID string, p *Path) []string {
-	tl := h.node.ModuleMap()["trustline"].(*creditnet.Node)
 	var debtors, creditors []string
-	for peerID := range tl.Trustlines {
+	for peerID := range h.trustlines {
 		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {
 			continue
 		}
-		bwOut := h.barter.Bandwidth(peerID, OUT)
-		bwIn := h.barter.Bandwidth(peerID, IN)
+		bwOut := h.bandwidth(peerID, OUT)
+		bwIn := h.bandwidth(peerID, IN)
 		if bwOut > 0 {
 			debtors = append(debtors, peerID)
 		}
@@ -1285,7 +1298,7 @@ func (h *Loops) startLoop(searchID string) []string {
 	if p == nil || p.Peer[0] == "" {
 		return nil
 	}
-	avl := h.barter.Bandwidth(p.Peer[0], OUT)
+	avl := h.bandwidth(p.Peer[0], OUT)
 	if avl <= 0 {
 		h.expirePath(searchID)
 		return nil
@@ -1382,9 +1395,6 @@ func (h *Loops) Busy(peer string) bool {
 	return false
 }
 
-func (h *Loops) OnConnect(peer string) {}
-func (h *Loops) OnClose(peer string)   {}
-
 func (h *Loops) removeClearing(id string) {
 	delete(h.Clearings, id)
 }
@@ -1407,6 +1417,16 @@ func (h *Loops) linkSlots(peer string, reserved bool) int {
 		}
 	}
 	return count
+}
+
+func (h *Loops) connectedPeers() []string {
+	out := make([]string, 0, len(h.trustlines))
+	for id := range h.trustlines {
+		if h.isConnected(id) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
