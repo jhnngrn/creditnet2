@@ -61,7 +61,7 @@ type Triad struct {
 
 // NewTriad matches the mimesis.ModuleFactory signature.
 func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
+	tl := node.ModuleMap()["creditnet"].(*creditnet.Node)
 	h := &Triad{
 		Novations:  map[string]*Novation{},
 		name:       name,

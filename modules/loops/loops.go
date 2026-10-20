@@ -132,7 +132,7 @@ type Loops struct {
 }
 
 func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
+	tl := node.ModuleMap()["creditnet"].(*creditnet.Node)
 	h := &Loops{
 		Paths:      map[string]*Path{},
 		Clearings:  map[string]*Clearing{},

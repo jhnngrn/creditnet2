@@ -81,8 +81,21 @@ func (h *Node) RegisterReserver(r Reserver) {
 // on links that will never sync.
 func (h *Node) GetTrustline(peer string) *Trustline {
 	lk := h.links.Get(peer)
-	if lk == nil || lk.State.App != "trustline" || lk.State.Status != mimesis.Connected {
+	if lk == nil || lk.State.App != "creditnet" || lk.State.Status != mimesis.Connected {
 		return nil
+	}
+	return h.Trustlines[peer]
+}
+
+// getOrCreateTrustline returns the trustline for a connected peer,
+// creating it lazily if the link is connected but no trustline exists yet.
+func (h *Node) getOrCreateTrustline(peer string) *Trustline {
+	lk := h.links.Get(peer)
+	if lk == nil || lk.State.App != "creditnet" || lk.State.Status != mimesis.Connected {
+		return nil
+	}
+	if h.Trustlines[peer] == nil {
+		h.Trustlines[peer] = &Trustline{}
 	}
 	return h.Trustlines[peer]
 }
@@ -129,11 +142,8 @@ func (h *Node) Bandwidth(peer string, side int) int64 {
 
 
 // OnConnect is called by the framework when app.connect completes bilaterally.
-func (h *Node) OnConnect(peer string) {
-	if h.Trustlines[peer] == nil {
-		h.Trustlines[peer] = &Trustline{}
-	}
-}
+// Trustline is created lazily on first use, not here.
+func (h *Node) OnConnect(peer string) {}
 
 // OnClose is called by the framework when app.close completes bilaterally.
 // The link is about to be removed. Archive balance and clean up.
@@ -150,13 +160,10 @@ func (h *Node) OnClose(peer string) {
 }
 
 // Busy reports whether this module has active bilateral state with the peer.
-// Pending bilateral operations must complete before app.close can fire.
+// The creditnet app itself is never busy — child modules hold their own Busy,
+// and trustline state is archived unconditionally in OnClose.
 func (h *Node) Busy(peer string) bool {
-	p := h.Trustlines[peer]
-	if p == nil {
-		return false
-	}
-	return p.PendingLimit != nil || p.PendingPayment != nil || p.PendingDemurrage != nil
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -185,8 +192,8 @@ func (h *Node) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, e
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return false, err
 	}
-	peer := h.Trustlines[peerID]
-	if peer == nil || h.links.Get(peerID) == nil {
+	peer := h.getOrCreateTrustline(peerID)
+	if peer == nil {
 		return false, fmt.Errorf("peer not connected")
 	}
 	if p.Amount < 0 {
@@ -203,8 +210,8 @@ func (h *Node) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) 
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return false, err
 	}
-	peer := h.Trustlines[peerID]
-	if peer == nil || h.links.Get(peerID) == nil {
+	peer := h.getOrCreateTrustline(peerID)
+	if peer == nil {
 		return false, fmt.Errorf("peer not connected")
 	}
 	if p.Rate < 0 {
@@ -226,8 +233,8 @@ func (h *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (bool
 		return false, nil
 	}
 	peer := h.Trustlines[peerID]
-	if peer == nil || h.links.Get(peerID) == nil {
-		return false, fmt.Errorf("peer not connected")
+	if peer == nil {
+		return false, fmt.Errorf("no trustline")
 	}
 	if p.Amount > h.Bandwidth(peerID, IN) {
 		return false, nil
@@ -367,7 +374,7 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 	if peerID == h.nodeID {
 		return nil, nil, fmt.Errorf("cannot link to self")
 	}
-	if _, err := h.links.Connect(peerID, "trustline"); err != nil {
+	if _, err := h.links.Connect(peerID, "creditnet"); err != nil {
 		return nil, nil, err
 	}
 	// Request chosen child modules on this link.
@@ -404,7 +411,7 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []strin
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := h.GetTrustline(peerID)
+	peer := h.getOrCreateTrustline(peerID)
 	if peer == nil {
 		return nil, nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
@@ -428,7 +435,7 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, []string,
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := h.GetTrustline(peerID)
+	peer := h.getOrCreateTrustline(peerID)
 	if peer == nil {
 		return nil, nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
@@ -454,7 +461,7 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 	peerID := strings.ToLower(p.Peer)
 	peer := h.GetTrustline(peerID)
 	if peer == nil {
-		return nil, nil, fmt.Errorf("peer %s is not connected", peerID)
+		return nil, nil, fmt.Errorf("peer %s has no trustline", peerID)
 	}
 	if peer.PendingPayment != nil {
 		return nil, nil, fmt.Errorf("payment already pending")
