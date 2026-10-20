@@ -486,6 +486,11 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			if n.anyBusy(peer) {
 				return false, nil, errRefsHeld
 			}
+			for name := range l.State.Modules {
+				if mod := n.moduleMap[name]; mod != nil {
+					mod.OnClose(peer)
+				}
+			}
 			if mod := n.moduleMap[l.State.Root]; mod != nil {
 				mod.OnClose(peer)
 			}
@@ -501,10 +506,20 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 		}
 		switch method {
 		case "connect":
-			ok, err := l.reqModule(payload, n.moduleMap, n.InviteMode, n.roots)
+			ok, connected, err := l.reqModule(payload, n.moduleMap, n.InviteMode, n.roots)
+			if connected != "" {
+				if mod := n.moduleMap[connected]; mod != nil {
+					mod.OnConnect(peer)
+				}
+			}
 			return ok, nil, err
 		case "close":
-			ok, err := l.reqModuleClose(peer, payload, n.moduleMap, n.roots)
+			ok, closed, err := l.reqModuleClose(peer, payload, n.moduleMap, n.roots)
+			if closed != "" {
+				if mod := n.moduleMap[closed]; mod != nil {
+					mod.OnClose(peer)
+				}
+			}
 			return ok, nil, err
 		}
 		return false, nil, fmt.Errorf("unknown module method %q", method)
@@ -541,6 +556,11 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 			l.State.IntentConnect = false
 		case "close":
 			if ok {
+				for name := range l.State.Modules {
+					if mod := n.moduleMap[name]; mod != nil {
+						mod.OnClose(peer)
+					}
+				}
 				if mod := n.moduleMap[l.State.Root]; mod != nil {
 					mod.OnClose(peer)
 				}
@@ -558,9 +578,17 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 		}
 		switch method {
 		case "connect":
-			l.respModule(payload, ok)
+			if connected := l.respModule(payload, ok); connected != "" {
+				if mod := n.moduleMap[connected]; mod != nil {
+					mod.OnConnect(peer)
+				}
+			}
 		case "close":
-			l.respModuleClose(payload, ok)
+			if closed := l.respModuleClose(payload, ok); closed != "" {
+				if mod := n.moduleMap[closed]; mod != nil {
+					mod.OnClose(peer)
+				}
+			}
 		}
 		return nil
 	}
@@ -645,19 +673,21 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 // Module negotiation (internal)
 // ---------------------------------------------------------------------------
 
-func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inviteMode inviteMode, roots map[string][]string) (bool, error) {
+// reqModule returns (ok, connectedModule, error). connectedModule is non-empty
+// when the module just became bilaterally connected, so the caller can fire OnConnect.
+func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inviteMode inviteMode, roots map[string][]string) (bool, string, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
-		return false, fmt.Errorf("bad payload")
+		return false, "", fmt.Errorf("bad payload")
 	}
 	// Only allow modules declared as children of this link's root.
 	if !isChildModule(p.Name, l.State.Root, roots) {
-		return false, nil
+		return false, "", nil
 	}
 	if _, ok := modules[p.Name]; !ok {
-		return false, nil // we don't speak this module
+		return false, "", nil // we don't speak this module
 	}
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
@@ -665,13 +695,13 @@ func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inv
 	mod := l.State.Modules[p.Name]
 	// Already connected — idempotent ACK.
 	if mod != nil && mod.Status == Connected {
-		return true, nil
+		return true, "", nil
 	}
 	// Mutual — we also want this module.
 	if mod != nil && (mod.IntentConnect || mod.Status == waiting) {
 		mod.Status = Connected
 		mod.IntentConnect = false
-		return true, nil
+		return true, p.Name, nil
 	}
 	// Open mode — auto-accept supported modules.
 	if inviteMode == inviteModeOpen {
@@ -680,7 +710,7 @@ func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inv
 			l.State.Modules[p.Name] = mod
 		}
 		mod.Status = Connected
-		return true, nil
+		return true, p.Name, nil
 	}
 	// Mark as incoming — awaiting local accept/reject.
 	if mod == nil {
@@ -688,65 +718,74 @@ func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inv
 		l.State.Modules[p.Name] = mod
 	}
 	mod.Status = Incoming
-	return false, nil // NACK — not accepted yet
+	return false, "", nil // NACK — not accepted yet
 }
 
-func (l *Link) respModule(payload json.RawMessage, ok bool) {
+// respModule returns the module name when it just became bilaterally connected,
+// so the caller can fire OnConnect.
+func (l *Link) respModule(payload json.RawMessage, ok bool) string {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil {
-		return
+		return ""
 	}
 	mod := l.State.Modules[p.Name]
 	if mod == nil {
-		return
+		return ""
 	}
 	if ok {
 		mod.Status = Connected
-	} else {
-		mod.Status = waiting
+		mod.IntentConnect = false
+		return p.Name
 	}
+	mod.Status = waiting
 	mod.IntentConnect = false
+	return ""
 }
 
-func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module, roots map[string][]string) (bool, error) {
+// reqModuleClose returns (ok, closedModule, error). closedModule is non-empty
+// when the module was just removed, so the caller can fire OnClose.
+func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module, roots map[string][]string) (bool, string, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
-		return false, fmt.Errorf("bad payload")
+		return false, "", fmt.Errorf("bad payload")
 	}
 	if !isChildModule(p.Name, l.State.Root, roots) {
-		return false, nil
+		return false, "", nil
 	}
 	mod := l.State.Modules[p.Name]
 	if mod == nil {
-		return true, nil // already gone
+		return true, "", nil // already gone
 	}
 	if m := modules[p.Name]; m != nil && m.Busy(peer) {
-		return false, errRefsHeld
+		return false, "", errRefsHeld
 	}
 	delete(l.State.Modules, p.Name)
-	return true, nil
+	return true, p.Name, nil
 }
 
-func (l *Link) respModuleClose(payload json.RawMessage, ok bool) {
+// respModuleClose returns the module name when it was just removed,
+// so the caller can fire OnClose.
+func (l *Link) respModuleClose(payload json.RawMessage, ok bool) string {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil {
-		return
+		return ""
 	}
 	mod := l.State.Modules[p.Name]
 	if mod == nil {
-		return
+		return ""
 	}
 	if ok {
 		delete(l.State.Modules, p.Name)
-	} else {
-		mod.IntentClose = false
+		return p.Name
 	}
+	mod.IntentClose = false
+	return ""
 }
 
 // ---------------------------------------------------------------------------
