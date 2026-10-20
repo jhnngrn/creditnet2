@@ -75,14 +75,14 @@ type LinkState struct {
 // queuedAt is the unix-second timestamp of when the message was first queued;
 // when multiple modules return a candidate for the same peer, the oldest wins.
 type Module interface {
+	OnConnect(peer string)
+	OnClose(peer string)
 	HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
 	HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error)
 	NextTx(peer string) (string, json.RawMessage, int64)
 	Status() json.RawMessage
 	Busy(peer string) bool
-	OnConnect(peer string)
-	OnClose(peer string)
 }
 
 // queuedMsg is a message queued for sending on a link.

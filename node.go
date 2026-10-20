@@ -141,11 +141,11 @@ func (h *Node) Bandwidth(peer string, side int) int64 {
 }
 
 
-// OnConnect is called by the framework when app.connect completes bilaterally.
+// OnConnect is called by the framework when link.connect completes bilaterally.
 // Trustline is created lazily on first use, not here.
 func (h *Node) OnConnect(peer string) {}
 
-// OnClose is called by the framework when app.close completes bilaterally.
+// OnClose is called by the framework when link.close completes bilaterally.
 // The link is about to be removed. Archive balance and clean up.
 func (h *Node) OnClose(peer string) {
 	p := h.Trustlines[peer]

@@ -99,6 +99,13 @@ func (h *Triad) Reserved(peer string, side int) int64 {
 }
 
 // ---------------------------------------------------------------------------
+// Module — lifecycle
+// ---------------------------------------------------------------------------
+
+func (h *Triad) OnConnect(peer string) {}
+func (h *Triad) OnClose(peer string)   {}
+
+// ---------------------------------------------------------------------------
 // Module — HandleRequest
 // ---------------------------------------------------------------------------
 
@@ -328,9 +335,6 @@ func (h *Triad) buildMsg(id string, nov *Novation, side int) (string, json.RawMe
 func (h *Triad) Status() json.RawMessage {
 	return creditnet.Enc(map[string]any{"novations": len(h.Novations)})
 }
-
-func (h *Triad) OnConnect(peer string) {}
-func (h *Triad) OnClose(peer string)   {}
 
 // Busy reports whether this module has active work with the given peer.
 func (h *Triad) Busy(peer string) bool {

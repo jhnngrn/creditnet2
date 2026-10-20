@@ -197,6 +197,13 @@ func (h *Loops) Reserved(peer string, side int) int64 {
 
 
 // ---------------------------------------------------------------------------
+// Module — lifecycle
+// ---------------------------------------------------------------------------
+
+func (h *Loops) OnConnect(peer string) {}
+func (h *Loops) OnClose(peer string)   {}
+
+// ---------------------------------------------------------------------------
 // Module — HandleRequest
 // ---------------------------------------------------------------------------
 
@@ -1382,9 +1389,6 @@ func (h *Loops) scheduleCleanup(id string, side int) {
 func (h *Loops) isConnected(peer string) bool {
 	return h.node.ModuleAvailable(peer, h.name)
 }
-
-func (h *Loops) OnConnect(peer string) {}
-func (h *Loops) OnClose(peer string)   {}
 
 // Busy reports whether this module has active work with the given peer.
 func (h *Loops) Busy(peer string) bool {
