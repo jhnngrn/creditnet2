@@ -341,6 +341,9 @@ func (h *Triad) Busy(peer string) bool {
 	return false
 }
 
+func (h *Triad) OnConnect(peer string) {}
+func (h *Triad) OnClose(peer string)   {}
+
 func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
 	var side int
 	var msg string
