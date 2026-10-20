@@ -94,7 +94,8 @@ type Server struct {
 	client    *http.Client
 	mux       *http.ServeMux
 	factories []moduleReg
-	apps      map[string][]string // app name → child module names
+	appNames  map[string]bool     // modules declared as apps
+	children  map[string][]string // parent → child module names (apps and modules)
 
 	nmu   sync.RWMutex
 	nodes map[string]*Node
@@ -117,10 +118,24 @@ func (s *Server) Register(name string, factory ModuleFactory) {
 // Multiple apps can be declared; a given link has at most one.
 // Call before Init.
 func (s *Server) DeclareApp(name string, children []string) {
-	if s.apps == nil {
-		s.apps = map[string][]string{}
+	if s.appNames == nil {
+		s.appNames = map[string]bool{}
 	}
-	s.apps[name] = children
+	s.appNames[name] = true
+	if s.children == nil {
+		s.children = map[string][]string{}
+	}
+	s.children[name] = children
+}
+
+// DeclareChildren declares child modules under a parent module,
+// enabling nested module hierarchies. The parent need not be an app.
+// Call before Init.
+func (s *Server) DeclareChildren(parent string, children []string) {
+	if s.children == nil {
+		s.children = map[string][]string{}
+	}
+	s.children[parent] = children
 }
 
 // Send posts a signed sync message to a peer's domain.
@@ -174,10 +189,11 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		m := f.factory(f.name, id, n, schedule, loaded.Handlers[f.name])
 		n.registerModule(f.name, m)
 	}
-	n.apps = s.apps
+	n.appNames = s.appNames
+	n.children = s.children
 
 	// Validate that declared apps implement the App interface.
-	for name := range s.apps {
+	for name := range s.appNames {
 		mod := n.moduleMap[name]
 		if mod == nil {
 			log.Fatalf("node %s: declared app %q not registered", id, name)

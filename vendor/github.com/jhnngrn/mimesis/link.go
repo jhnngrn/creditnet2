@@ -136,20 +136,18 @@ func (n *Node) anyBusy(peer string) bool {
 	return false
 }
 
-// moduleBusy returns true if the named module reports being busy with
-// the given peer. Used to defer module.close until the module is idle.
-// If the module is an app, it also checks all its child modules.
+// moduleBusy returns true if the named module or any of its descendants
+// reports being busy with the given peer. Used to defer module.close
+// until the module and all its children are idle.
 func (n *Node) moduleBusy(name, peer string) bool {
 	if mod := n.moduleMap[name]; mod != nil {
 		if mod.Busy(peer) {
 			return true
 		}
 	}
-	if children, ok := n.apps[name]; ok {
-		for _, child := range children {
-			if mod := n.moduleMap[child]; mod != nil && mod.Busy(peer) {
-				return true
-			}
+	for _, child := range n.children[name] {
+		if n.moduleBusy(child, peer) {
+			return true
 		}
 	}
 	return false
@@ -162,15 +160,37 @@ func (l *Link) Closing() bool { return l.State.IntentClose }
 // link.close until no module reports Busy.
 func (l *Link) Close() { l.State.IntentClose = true }
 
-// isChildModule returns true if name is a declared child module of the
-// given app. The app name itself is never a valid child module.
-func isChildModule(name, app string, apps map[string][]string) bool {
-	for _, child := range apps[app] {
+// isChildModule returns true if name is reachable from the app in the
+// module hierarchy. Checks the full tree, not just direct children.
+func isChildModule(name, app string, children map[string][]string) bool {
+	return isDescendant(name, app, children)
+}
+
+// isDescendant returns true if name is a descendant of root in the hierarchy.
+func isDescendant(name, root string, children map[string][]string) bool {
+	for _, child := range children[root] {
 		if child == name {
+			return true
+		}
+		if isDescendant(name, child, children) {
 			return true
 		}
 	}
 	return false
+}
+
+// parentOf returns the direct parent of a module in the hierarchy,
+// searching from root downward. Returns "" if not found.
+func parentOf(name, root string, children map[string][]string) string {
+	for _, child := range children[root] {
+		if child == name {
+			return root
+		}
+		if p := parentOf(name, child, children); p != "" {
+			return p
+		}
+	}
+	return ""
 }
 
 // moduleAvailable returns true if the named module is bilaterally connected
@@ -226,7 +246,8 @@ type Node struct {
 	Links      map[string]*Link       `json:"links"`
 	InviteMode inviteMode             `json:"invite_mode,omitempty"`
 	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
-	apps       map[string][]string    `json:"-"` // app name → supported module names
+	appNames   map[string]bool         `json:"-"` // modules declared as apps
+	children   map[string][]string    `json:"-"` // parent → child module names
 	moduleMap  map[string]Module      `json:"-"`
 	// send delivers a sync message to a peer and returns the response body.
 	send   func(peer string, msg txRequest) ([]byte, error) `json:"-"`
@@ -244,7 +265,7 @@ func newNode(id string, links map[string]*Link, mode inviteMode, send func(strin
 	if mode == "" {
 		mode = inviteModeInvite
 	}
-	return &Node{ID: id, Links: links, InviteMode: mode, apps: map[string][]string{}, moduleMap: map[string]Module{}, send: send, commit: commit, timers: map[*time.Timer]struct{}{}}
+	return &Node{ID: id, Links: links, InviteMode: mode, appNames: map[string]bool{}, children: map[string][]string{}, moduleMap: map[string]Module{}, send: send, commit: commit, timers: map[*time.Timer]struct{}{}}
 }
 
 // registerModule adds a module to the node under the given name.
@@ -254,17 +275,22 @@ func (n *Node) registerModule(name string, m Module) {
 
 // isApp returns true if the named module is a registered app.
 func (n *Node) isApp(name string) bool {
-	_, ok := n.apps[name]
-	return ok
+	return n.appNames[name]
 }
 
 // appFor returns the app name that owns the given module, or "" if the
 // module is not owned by any app (or is itself an app).
 func (n *Node) appFor(module string) string {
-	for app, mods := range n.apps {
-		for _, m := range mods {
+	for parent, kids := range n.children {
+		for _, m := range kids {
 			if m == module {
-				return app
+				if n.appNames[parent] {
+					return parent
+				}
+				// Recurse: find the app that owns the parent.
+				if app := n.appFor(parent); app != "" {
+					return app
+				}
 			}
 		}
 	}
@@ -274,10 +300,46 @@ func (n *Node) appFor(module string) string {
 // ModuleMap returns the registered modules for serialization.
 func (n *Node) ModuleMap() map[string]Module { return n.moduleMap }
 
-// Apps returns the app→children map so callers can pass it to ConnectModules.
-func (n *Node) Apps() map[string][]string { return n.apps }
+// Children returns the parent→children map so callers can pass it to ConnectModules.
+func (n *Node) Children() map[string][]string { return n.children }
 
 func (n *Node) Get(peer string) *Link { return n.Links[peer] }
+
+// parentConnected returns true if the parent of the named module
+// is connected on the peer's link (or is the app itself).
+func (n *Node) parentConnected(name, peer string) bool {
+	lk := n.Get(peer)
+	if lk == nil {
+		return false
+	}
+	parent := parentOf(name, lk.State.App, n.children)
+	if parent == "" {
+		return false
+	}
+	if parent == lk.State.App {
+		return true
+	}
+	return lk.moduleConnected(parent)
+}
+
+// hasConnectedChildren returns true if any child of the named module
+// is still connected on the peer's link. Used to enforce children-close-first.
+func (n *Node) hasConnectedChildren(name, peer string) bool {
+	lk := n.Get(peer)
+	if lk == nil {
+		return false
+	}
+	for _, child := range n.children[name] {
+		if lk.moduleConnected(child) {
+			return true
+		}
+		// Check grandchildren too.
+		if n.hasConnectedChildren(child, peer) {
+			return true
+		}
+	}
+	return false
+}
 
 // ModuleAvailable returns true if the named module on the peer's link is
 // bilaterally connected and neither the module nor the link is closing.
@@ -508,10 +570,10 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 		}
 		switch method {
 		case "connect":
-			ok, err := l.reqModule(payload, n.moduleMap, n.InviteMode, n.apps)
+			ok, err := l.reqModule(payload, n.moduleMap, n.InviteMode, n.children)
 			return ok, nil, err
 		case "close":
-			ok, err := l.reqModuleClose(peer, payload, n.moduleMap, n.apps)
+			ok, err := l.reqModuleClose(peer, payload, n.moduleMap, n.children)
 			return ok, nil, err
 		}
 		return false, nil, fmt.Errorf("unknown module method %q", method)
@@ -607,9 +669,10 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 			}
 		}
 		// Module close/connect — app lifecycle is at link level.
-		// Close modules first, then connect.
+		// Close modules first (children before parents), then connect
+		// (parents before children).
 		for name, mod := range lk.State.Modules {
-			if mod.IntentClose && !n.moduleBusy(name, peer) {
+			if mod.IntentClose && !n.moduleBusy(name, peer) && !n.hasConnectedChildren(name, peer) {
 				return &queuedMsg{
 					Method:  "module.close",
 					Payload: enc(map[string]string{"name": name}),
@@ -617,7 +680,7 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 			}
 		}
 		for name, mod := range lk.State.Modules {
-			if mod.IntentConnect {
+			if mod.IntentConnect && n.parentConnected(name, peer) {
 				return &queuedMsg{
 					Method:  "module.connect",
 					Payload: enc(map[string]string{"name": name}),
@@ -652,15 +715,20 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 // Module negotiation (internal)
 // ---------------------------------------------------------------------------
 
-func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inviteMode inviteMode, apps map[string][]string) (bool, error) {
+func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inviteMode inviteMode, children map[string][]string) (bool, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
 		return false, fmt.Errorf("bad payload")
 	}
-	// Only allow modules declared as children of this link's app.
-	if !isChildModule(p.Name, l.State.App, apps) {
+	// Only allow modules declared in the hierarchy under this link's app.
+	if !isChildModule(p.Name, l.State.App, children) {
+		return false, nil
+	}
+	// Parent must be connected (or be the app itself).
+	parent := parentOf(p.Name, l.State.App, children)
+	if parent != l.State.App && !l.moduleConnected(parent) {
 		return false, nil
 	}
 	if _, ok := modules[p.Name]; !ok {
@@ -717,14 +785,14 @@ func (l *Link) respModule(payload json.RawMessage, ok bool) {
 	mod.IntentConnect = false
 }
 
-func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module, apps map[string][]string) (bool, error) {
+func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module, children map[string][]string) (bool, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
 		return false, fmt.Errorf("bad payload")
 	}
-	if !isChildModule(p.Name, l.State.App, apps) {
+	if !isChildModule(p.Name, l.State.App, children) {
 		return false, nil
 	}
 	mod := l.State.Modules[p.Name]
@@ -803,7 +871,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 			n.mu.Unlock()
 			return nil, fmt.Errorf("no link to %s", p.Peer)
 		}
-		lk.setModules(p.Modules, n.moduleMap, n.apps)
+		lk.setModules(p.Modules, n.moduleMap, n.children)
 		result = enc("ok")
 		kicks = []string{p.Peer}
 
@@ -951,12 +1019,12 @@ func (n *Node) status() json.RawMessage {
 
 // ConnectModules requests connection for the named modules on this link,
 // filtering by registered modules. Existing modules are left untouched.
-func (l *Link) ConnectModules(modules []string, registered map[string]Module, apps map[string][]string) {
+func (l *Link) ConnectModules(modules []string, registered map[string]Module, children map[string][]string) {
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
 	}
 	for _, name := range modules {
-		if !isChildModule(name, l.State.App, apps) {
+		if !isChildModule(name, l.State.App, children) {
 			continue
 		}
 		if _, ok := registered[name]; !ok {
@@ -974,13 +1042,13 @@ func (l *Link) ConnectModules(modules []string, registered map[string]Module, ap
 // setModules proposes the given modules on this link, filtering by supported.
 // Modules not in the desired set are marked IntentClose. The sync loop
 // defers sending module.close until the module reports !Busy.
-func (l *Link) setModules(modules []string, registered map[string]Module, apps map[string][]string) {
+func (l *Link) setModules(modules []string, registered map[string]Module, children map[string][]string) {
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
 	}
 	desired := map[string]bool{}
 	for _, name := range modules {
-		if !isChildModule(name, l.State.App, apps) {
+		if !isChildModule(name, l.State.App, children) {
 			continue
 		}
 		if _, ok := registered[name]; ok {
