@@ -307,23 +307,19 @@ func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
 	if bestNov == nil {
 		return "", nil, 0
 	}
-	return h.buildMsg(bestID, bestNov, bestSide)
-}
-
-func (h *Triad) buildMsg(id string, nov *Novation, side int) (string, json.RawMessage, int64) {
-	ts := nov.Side[side].Queue.HeadTime()
-	other := 1 - side
-	switch nov.Side[side].Queue.Head() {
+	ts := bestNov.Side[bestSide].Queue.HeadTime()
+	other := 1 - bestSide
+	switch bestNov.Side[bestSide].Queue.Head() {
 	case "commit":
 		return "commit", creditnet.Enc(novCommitMsg{
-			NovationID: id,
-			Amount:     nov.Amount,
-			Next:       nov.Side[other].Peer,
+			NovationID: bestID,
+			Amount:     bestNov.Amount,
+			Next:       bestNov.Side[other].Peer,
 		}), ts
 	case "finalize":
-		return "finalize", creditnet.Enc(novFinalizeMsg{NovationID: id}), ts
+		return "finalize", creditnet.Enc(novFinalizeMsg{NovationID: bestID}), ts
 	case "rollback":
-		return "rollback", creditnet.Enc(map[string]string{"novation_id": id}), ts
+		return "rollback", creditnet.Enc(map[string]string{"novation_id": bestID}), ts
 	}
 	return "", nil, 0
 }
