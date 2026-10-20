@@ -186,6 +186,21 @@ func (n *Node) hasAnyConnectedModules(peer string) bool {
 	return false
 }
 
+// hasAnyPendingModules returns true if any module has IntentConnect set,
+// meaning it's waiting to connect. Prevents auto-close during startup.
+func (n *Node) hasAnyPendingModules(peer string) bool {
+	lk := n.Get(peer)
+	if lk == nil {
+		return false
+	}
+	for _, mod := range lk.State.Modules {
+		if mod.IntentConnect {
+			return true
+		}
+	}
+	return false
+}
+
 // parentOf returns the direct parent of a module in the hierarchy.
 // Returns "" if the module has no parent (i.e. it is a parentless module).
 func parentOf(name string, children map[string][]string) string {
@@ -672,6 +687,12 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 	}
 	if lk.State.Status != Connected {
 		return nil
+	}
+	// Auto-close: if all modules are disconnected, close the link.
+	// Only when there are registered modules — a bare link with no modules stays open.
+	if len(n.moduleMap) > 0 && !lk.State.IntentClose && !n.hasAnyConnectedModules(peer) && !n.hasAnyPendingModules(peer) {
+		lk.State.IntentClose = true
+		return &queuedMsg{Method: "link.close"}
 	}
 	var best *queuedMsg
 	for name, mod := range n.moduleMap {
