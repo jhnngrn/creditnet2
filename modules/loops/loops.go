@@ -399,7 +399,7 @@ func (h *Loops) respSearch(peer string, raw json.RawMessage, ok bool, ts int64) 
 // dividing gas evenly among them (matching old creditnet's floodSearch).
 func (h *Loops) floodForward(searchID string, p *Path, dir uint8, exclude string) []string {
 	var eligible []string
-	tl := h.node.ModuleMap()["creditnet"].(*creditnet.Node)
+	tl := h.node.ModuleMap()["trustline"].(*creditnet.Node)
 	for peerID := range tl.Trustlines {
 		if peerID == exclude || !h.isConnected(peerID) {
 			continue
@@ -1144,7 +1144,7 @@ func (h *Loops) searchAndReschedule() []string {
 
 func (h *Loops) sendSearches() []string {
 	// Quick check: need at least one debtor and one creditor.
-	tl := h.node.ModuleMap()["creditnet"].(*creditnet.Node)
+	tl := h.node.ModuleMap()["trustline"].(*creditnet.Node)
 	var hasDebtor, hasCreditor bool
 	var amount int64
 	for peerID := range tl.Trustlines {
@@ -1185,7 +1185,7 @@ func (h *Loops) sendSearches() []string {
 }
 
 func (h *Loops) floodSearchInitiator(searchID string, p *Path) []string {
-	tl := h.node.ModuleMap()["creditnet"].(*creditnet.Node)
+	tl := h.node.ModuleMap()["trustline"].(*creditnet.Node)
 	var debtors, creditors []string
 	for peerID := range tl.Trustlines {
 		if !h.isConnected(peerID) || h.linkSlots(peerID, false) >= MaxPerLink {

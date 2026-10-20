@@ -451,7 +451,7 @@ func (h *Triad) removeNovation(id string) {
 
 func (h *Triad) connectedPeers() []string {
 	// Use the creditnet node's trustlines to find peers.
-	tl := h.node.ModuleMap()["creditnet"].(*creditnet.Node)
+	tl := h.node.ModuleMap()["trustline"].(*creditnet.Node)
 	out := make([]string, 0, len(tl.Trustlines))
 	for id := range tl.Trustlines {
 		if h.isConnected(id) {

@@ -154,21 +154,21 @@ func (l *Link) Closing() bool { return l.State.IntentClose }
 // link.close until no module reports Busy and all modules are disconnected.
 func (l *Link) Close() { l.State.IntentClose = true }
 
-// autoConnectModules sets IntentConnect on all parentless modules
-// (registered modules not declared as a child of any other) after
-// a link connects. This starts the module.connect cascade.
+// autoConnectModules sets IntentConnect on declared root modules
+// after a link connects. This starts the module.connect cascade.
 func (n *Node) autoConnectModules(l *Link) {
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
 	}
-	for name := range n.moduleMap {
-		if parentOf(name, n.children) == "" {
-			mod := l.State.Modules[name]
-			if mod == nil {
-				l.State.Modules[name] = &ConnectionState{IntentConnect: true}
-			} else if mod.Status != Connected {
-				mod.IntentConnect = true
-			}
+	for _, name := range n.roots {
+		if _, ok := n.moduleMap[name]; !ok {
+			continue
+		}
+		mod := l.State.Modules[name]
+		if mod == nil {
+			l.State.Modules[name] = &ConnectionState{IntentConnect: true}
+		} else if mod.Status != Connected {
+			mod.IntentConnect = true
 		}
 	}
 }
@@ -263,6 +263,7 @@ type Node struct {
 	Links      map[string]*Link       `json:"links"`
 	InviteMode inviteMode             `json:"invite_mode,omitempty"`
 	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
+	roots      []string                `json:"-"` // allowed root modules
 	children   map[string]*childGroup  `json:"-"` // parent → child module group
 	moduleMap  map[string]Module      `json:"-"`
 	// send delivers a sync message to a peer and returns the response body.
@@ -1057,9 +1058,7 @@ func (l *Link) ConnectModules(modules []string, registered map[string]Module) {
 // Modules not in the desired set are marked IntentClose. The sync loop
 // defers sending module.close until the module reports !Busy.
 //
-// Validates child-group constraints: if a group has Max set, at most that
-// many children from the group may be in the desired set. Also validates
-// that every child module's parent is included.
+// Validates that every child module's parent is included in the desired set.
 func (l *Link) setModules(modules []string, registered map[string]Module, children map[string]*childGroup) error {
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
@@ -1075,26 +1074,6 @@ func (l *Link) setModules(modules []string, registered map[string]Module, childr
 		parent := parentOf(name, children)
 		if parent != "" && !desired[parent] {
 			return fmt.Errorf("module %s requires parent %s", name, parent)
-		}
-	}
-	// Validate: child-group max constraints.
-	for parent, group := range children {
-		if group.Max <= 0 {
-			continue
-		}
-		if !desired[parent] {
-			continue
-		}
-		count := 0
-		var active []string
-		for _, name := range group.Names {
-			if desired[name] {
-				count++
-				active = append(active, name)
-			}
-		}
-		if count > group.Max {
-			return fmt.Errorf("parent %s allows at most %d of %v, got %v", parent, group.Max, group.Names, active)
 		}
 	}
 	for name := range desired {

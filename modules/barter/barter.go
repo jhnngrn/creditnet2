@@ -34,7 +34,7 @@ type Barter struct {
 
 // NewBarter matches the mimesis.ModuleFactory signature.
 func NewBarter(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-	tl := node.ModuleMap()["creditnet"].(*creditnet.Node)
+	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Barter{
 		Pending:    map[string]*PendingPayment{},
 		name:       name,

@@ -68,7 +68,7 @@ type Demurrage struct {
 
 // NewDemurrage matches the mimesis.ModuleFactory signature.
 func NewDemurrage(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-	tl := node.ModuleMap()["creditnet"].(*creditnet.Node)
+	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Demurrage{
 		PendingPay: map[string]*PendingPayment{},
 		PendingDem: map[string]*PendingDemurrage{},
@@ -300,7 +300,7 @@ func (h *Demurrage) reqSetDemurrage(peerID string, payload json.RawMessage, ts i
 	if p.Rate < 0 {
 		return false, nil, nil
 	}
-	if !h.node.ModuleAvailable(peerID, "creditnet") {
+	if !h.node.ModuleAvailable(peerID, "trustline") {
 		return false, nil, fmt.Errorf("peer not connected")
 	}
 	h.materialize(peerID, ts)
