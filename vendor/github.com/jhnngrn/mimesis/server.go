@@ -72,7 +72,7 @@ type ScheduleFunc func(delay time.Duration, fn func() []string)
 
 // ModuleFactory creates a module for a newly loaded or created node.
 // The factory receives the node identity, the owning Node, a scheduler
-// for periodic work, and persisted state (nil if new). App-specific
+// for periodic work, and persisted state (nil if new). Module-specific
 // dependencies (e.g. shared data structures between modules) are
 // captured in the closure.
 type ModuleFactory func(name, nodeID string, node *Node, schedule ScheduleFunc, state json.RawMessage) Module
@@ -94,7 +94,7 @@ type Server struct {
 	client    *http.Client
 	mux       *http.ServeMux
 	factories []moduleReg
-	apps      map[string][]string // app name → child module names
+	roots     map[string][]string // root module name → child module names
 
 	nmu   sync.RWMutex
 	nodes map[string]*Node
@@ -112,15 +112,15 @@ func (s *Server) Register(name string, factory ModuleFactory) {
 	s.factories = append(s.factories, moduleReg{name: name, factory: factory})
 }
 
-// DeclareApp declares a module as an app — a module that owns the lifecycle
-// on a link. children lists the module names this app supports under it.
-// Multiple apps can be declared; a given link has at most one.
-// Call before Init.
-func (s *Server) DeclareApp(name string, children []string) {
-	if s.apps == nil {
-		s.apps = map[string][]string{}
+// DeclareRoot declares a module as a root module — a module that owns the
+// lifecycle on a link. children lists the child module names this root
+// supports under it. Multiple roots can be declared; a given link has
+// at most one. Call before Init.
+func (s *Server) DeclareRoot(name string, children []string) {
+	if s.roots == nil {
+		s.roots = map[string][]string{}
 	}
-	s.apps[name] = children
+	s.roots[name] = children
 }
 
 // Send posts a signed sync message to a peer's domain.
@@ -174,16 +174,12 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		m := f.factory(f.name, id, n, schedule, loaded.Handlers[f.name])
 		n.registerModule(f.name, m)
 	}
-	n.apps = s.apps
+	n.roots = s.roots
 
-	// Validate that declared apps implement the App interface.
-	for name := range s.apps {
-		mod := n.moduleMap[name]
-		if mod == nil {
-			log.Fatalf("node %s: declared app %q not registered", id, name)
-		}
-		if _, ok := mod.(App); !ok {
-			log.Fatalf("node %s: module %q declared as app but does not implement App", id, name)
+	// Validate that declared root modules are registered.
+	for name := range s.roots {
+		if n.moduleMap[name] == nil {
+			log.Fatalf("node %s: declared root module %q not registered", id, name)
 		}
 	}
 

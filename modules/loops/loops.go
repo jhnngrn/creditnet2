@@ -132,7 +132,7 @@ type Loops struct {
 }
 
 func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-	tl := node.ModuleMap()["creditnet"].(*creditnet.Node)
+	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Loops{
 		Paths:      map[string]*Path{},
 		Clearings:  map[string]*Clearing{},
@@ -1382,6 +1382,9 @@ func (h *Loops) scheduleCleanup(id string, side int) {
 func (h *Loops) isConnected(peer string) bool {
 	return h.node.ModuleAvailable(peer, h.name)
 }
+
+func (h *Loops) OnConnect(peer string) {}
+func (h *Loops) OnClose(peer string)   {}
 
 // Busy reports whether this module has active work with the given peer.
 func (h *Loops) Busy(peer string) bool {

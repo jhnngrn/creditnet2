@@ -61,7 +61,7 @@ type Triad struct {
 
 // NewTriad matches the mimesis.ModuleFactory signature.
 func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-	tl := node.ModuleMap()["creditnet"].(*creditnet.Node)
+	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Triad{
 		Novations:  map[string]*Novation{},
 		name:       name,
@@ -328,6 +328,9 @@ func (h *Triad) buildMsg(id string, nov *Novation, side int) (string, json.RawMe
 func (h *Triad) Status() json.RawMessage {
 	return creditnet.Enc(map[string]any{"novations": len(h.Novations)})
 }
+
+func (h *Triad) OnConnect(peer string) {}
+func (h *Triad) OnClose(peer string)   {}
 
 // Busy reports whether this module has active work with the given peer.
 func (h *Triad) Busy(peer string) bool {

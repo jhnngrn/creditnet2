@@ -14,15 +14,15 @@ var Boot = mimesis.Boot
 // RunAndWait initializes the server and blocks until interrupted.
 var RunAndWait = mimesis.RunAndWait
 
-// RegisterNode registers the creditnet Node module as an app on the server.
+// RegisterNode registers the trustline Node module as a root on the server.
 // This must be called before any Register calls, because other modules
 // depend on the Node's trustlines and bandwidth.
-// children lists the module names that run under the creditnet app.
+// children lists the child module names that run under trustline.
 func RegisterNode(srv *mimesis.Server, children []string) {
-	srv.Register("creditnet", func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+	srv.Register("trustline", func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
 		return NewNode(name, nodeID, node, state)
 	})
-	srv.DeclareApp("creditnet", children)
+	srv.DeclareRoot("trustline", children)
 }
 
 // Register registers a module factory on the server.
@@ -32,9 +32,9 @@ func Register(srv *mimesis.Server, name string, factory mimesis.ModuleFactory) {
 	srv.Register(name, func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
 		m := factory(name, nodeID, node, schedule, state)
 		if r, ok := m.(Reserver); ok {
-			mod := node.ModuleMap()["creditnet"]
+			mod := node.ModuleMap()["trustline"]
 			if mod == nil {
-				panic(fmt.Sprintf("creditnet.Register: creditnet module not found for %s — call RegisterNode before Register", nodeID))
+				panic(fmt.Sprintf("creditnet.Register: trustline module not found for %s — call RegisterNode before Register", nodeID))
 			}
 			mod.(*Node).RegisterReserver(r)
 		}
