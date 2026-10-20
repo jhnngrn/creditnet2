@@ -176,3 +176,6 @@ func (h *Barter) Status() json.RawMessage {
 func (h *Barter) Busy(peer string) bool {
 	return h.Pending[peer] != nil
 }
+
+func (h *Barter) OnConnect(peer string) {}
+func (h *Barter) OnClose(peer string)   {}

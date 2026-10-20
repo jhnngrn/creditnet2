@@ -1395,6 +1395,9 @@ func (h *Loops) Busy(peer string) bool {
 	return false
 }
 
+func (h *Loops) OnConnect(peer string) {}
+func (h *Loops) OnClose(peer string)   {}
+
 func (h *Loops) removeClearing(id string) {
 	delete(h.Clearings, id)
 }

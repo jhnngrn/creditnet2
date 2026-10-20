@@ -192,14 +192,10 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	n.appNames = s.appNames
 	n.children = s.children
 
-	// Validate that declared apps implement the App interface.
+	// Validate that declared apps are registered.
 	for name := range s.appNames {
-		mod := n.moduleMap[name]
-		if mod == nil {
+		if n.moduleMap[name] == nil {
 			log.Fatalf("node %s: declared app %q not registered", id, name)
-		}
-		if _, ok := mod.(App); !ok {
-			log.Fatalf("node %s: module %q declared as app but does not implement App", id, name)
 		}
 	}
 

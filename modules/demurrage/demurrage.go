@@ -178,3 +178,6 @@ func (h *Demurrage) Status() json.RawMessage {
 func (h *Demurrage) Busy(peer string) bool {
 	return h.Pending[peer] != nil
 }
+
+func (h *Demurrage) OnConnect(peer string) {}
+func (h *Demurrage) OnClose(peer string)   {}

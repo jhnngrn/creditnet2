@@ -81,13 +81,6 @@ type Module interface {
 	NextTx(peer string) (string, json.RawMessage, int64)
 	Status() json.RawMessage
 	Busy(peer string) bool
-}
-
-// App is a Module that owns the lifecycle of a link. It is notified
-// when the bilateral app.connect and app.close handshakes complete.
-// A module passed to DeclareApp must implement App.
-type App interface {
-	Module
 	OnConnect(peer string)
 	OnClose(peer string)
 }
@@ -537,17 +530,13 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				}
 				l.State.Status = Connected
 				l.State.IntentConnect = false
-				if app, ok := n.moduleMap[l.State.App].(App); ok {
-					app.OnConnect(peer)
-				}
+				n.moduleMap[l.State.App].OnConnect(peer)
 				return true, nil, nil
 			}
 			if n.InviteMode == inviteModeOpen {
 				l.State.App = p.Name
 				l.State.Status = Connected
-				if app, ok := n.moduleMap[p.Name].(App); ok {
-					app.OnConnect(peer)
-				}
+				n.moduleMap[p.Name].OnConnect(peer)
 				return true, nil, nil
 			}
 			return false, nil, nil
@@ -555,9 +544,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			if n.anyBusy(peer) {
 				return false, nil, errRefsHeld
 			}
-			if app, ok := n.moduleMap[l.State.App].(App); ok {
-				app.OnClose(peer)
-			}
+			n.moduleMap[l.State.App].OnClose(peer)
 			n.delete(peer)
 			return true, nil, nil
 		}
@@ -601,18 +588,14 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 		case "connect":
 			if ok {
 				l.State.Status = Connected
-				if app, ok := n.moduleMap[l.State.App].(App); ok {
-					app.OnConnect(peer)
-				}
+				n.moduleMap[l.State.App].OnConnect(peer)
 			} else {
 				l.State.Status = waiting
 			}
 			l.State.IntentConnect = false
 		case "close":
 			if ok {
-				if app, ok := n.moduleMap[l.State.App].(App); ok {
-					app.OnClose(peer)
-				}
+				n.moduleMap[l.State.App].OnClose(peer)
 				n.delete(peer)
 			} else {
 				l.State.IntentClose = false
