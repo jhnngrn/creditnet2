@@ -94,7 +94,6 @@ type Server struct {
 	client    *http.Client
 	mux       *http.ServeMux
 	factories []moduleReg
-	rootNames map[string]bool     // modules declared as roots
 	children  map[string][]string // parent → child module names
 
 	nmu   sync.RWMutex
@@ -113,23 +112,9 @@ func (s *Server) Register(name string, factory ModuleFactory) {
 	s.factories = append(s.factories, moduleReg{name: name, factory: factory})
 }
 
-// DeclareRoot declares a module as a root — a module that owns the lifecycle
-// on a link. children lists the module names this root supports under it.
-// Multiple roots can be declared; a given link has at most one.
-// Call before Init.
-func (s *Server) DeclareRoot(name string, children []string) {
-	if s.rootNames == nil {
-		s.rootNames = map[string]bool{}
-	}
-	s.rootNames[name] = true
-	if s.children == nil {
-		s.children = map[string][]string{}
-	}
-	s.children[name] = children
-}
-
 // DeclareChildren declares child modules under a parent module,
-// enabling nested module hierarchies. The parent need not be an app.
+// enabling nested module hierarchies. Children can only connect
+// on a link after their parent is connected.
 // Call before Init.
 func (s *Server) DeclareChildren(parent string, children []string) {
 	if s.children == nil {
@@ -189,15 +174,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		m := f.factory(f.name, id, n, schedule, loaded.Handlers[f.name])
 		n.registerModule(f.name, m)
 	}
-	n.rootNames = s.rootNames
 	n.children = s.children
-
-	// Validate that declared roots are registered.
-	for name := range s.rootNames {
-		if n.moduleMap[name] == nil {
-			log.Fatalf("node %s: declared root %q not registered", id, name)
-		}
-	}
 
 	return n
 }

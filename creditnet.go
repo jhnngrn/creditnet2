@@ -14,15 +14,15 @@ var Boot = mimesis.Boot
 // RunAndWait initializes the server and blocks until interrupted.
 var RunAndWait = mimesis.RunAndWait
 
-// RegisterNode registers the creditnet Node module as a root on the server.
+// RegisterNode registers the creditnet Node module on the server.
 // This must be called before any Register calls, because other modules
 // depend on the Node's trustlines and bandwidth.
-// children lists the module names that run under the creditnet root.
+// children lists the module names that connect under creditnet.
 func RegisterNode(srv *mimesis.Server, children []string) {
 	srv.Register("creditnet", func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
 		return NewNode(name, nodeID, node, state)
 	})
-	srv.DeclareRoot("creditnet", children)
+	srv.DeclareChildren("creditnet", children)
 }
 
 // Register registers a module factory on the server.

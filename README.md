@@ -41,7 +41,7 @@ github.com/jhnngrn/mimesis   (external)
 
 creditnet.go           thin wrapper: Boot, RegisterNode, Register
 types.go               creditnet-specific types and re-exports
-node.go                Node: creditnet root module,
+node.go                Node: creditnet module,
                        holds trustlines and bandwidth, registers reservers,
                        OnClose lifecycle, ClosedBalances archive,
                        trustline sync: credit limits
@@ -62,10 +62,10 @@ cmd/
   loops-demurrage/     server with creditnet + demurrage (+ barter + loops nested)
 ```
 
-Node is the root module — every module implements `OnConnect` and
+Node is the creditnet module — every module implements `OnConnect` and
 `OnClose` lifecycle hooks. Node holds trustlines and bandwidth that other
 modules depend on. `RegisterNode` registers it as `"creditnet"` with
-`DeclareRoot`. Child modules (barter, demurrage, triad, loops) receive
+`DeclareChildren`. Child modules (barter, demurrage, triad, loops) receive
 trustlines and bandwidth from the Node via `node.ModuleMap()["creditnet"]`.
 Different binaries under `cmd/` combine different sets of child modules,
 either flat or nested under demurrage.
@@ -85,9 +85,8 @@ Node's lifecycle callbacks:
   just before the link is deleted. Archives non-zero balance to
   `ClosedBalances` and deletes the trustline if one exists.
 
-Connected checks use link existence: `node.Get(peer)` returns non-nil
-and `link.State.Root == "creditnet"`. There is no separate connected
-state on the trustline itself.
+Connected checks use `node.ModuleAvailable(peer, "creditnet")`. There
+is no separate connected state on the trustline itself.
 
 ## Trustline layer
 
@@ -103,13 +102,12 @@ Trustlines are created lazily and destroyed on link close:
 - **OnClose** archives non-zero balance to `ClosedBalances` and deletes
   the trustline when `link.close` completes.
 
-There is no separate trustline state machine — link existence is the
-sole source of truth. If `node.Get(peer)` is non-nil and
-`link.State.Root == "creditnet"`, the peer is connected.
+There is no separate trustline state machine — module connection is the
+sole source of truth. `node.ModuleAvailable(peer, "creditnet")` checks
+that the creditnet module is bilaterally connected and not closing.
 
-The creditnet root's `Busy(peer)` always returns false — child modules
-hold their own Busy, and trustline state is archived unconditionally
-in `OnClose`.
+Node's `Busy(peer)` always returns false — child modules hold their own
+Busy, and trustline state is archived unconditionally in `OnClose`.
 
 ### Sync protocol
 

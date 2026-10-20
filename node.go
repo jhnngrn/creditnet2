@@ -78,8 +78,7 @@ func (h *Node) RegisterReserver(r Reserver) {
 // are excluded so that account operations cannot create pending state
 // on links that will never sync.
 func (h *Node) GetTrustline(peer string) *Trustline {
-	lk := h.links.Get(peer)
-	if lk == nil || lk.State.Root != "creditnet" || lk.State.Status != mimesis.Connected {
+	if !h.links.ModuleAvailable(peer, h.name) {
 		return nil
 	}
 	return h.Trustlines[peer]
@@ -88,8 +87,7 @@ func (h *Node) GetTrustline(peer string) *Trustline {
 // getOrCreateTrustline returns the trustline for a connected peer,
 // creating it lazily if the link is connected but no trustline exists yet.
 func (h *Node) getOrCreateTrustline(peer string) *Trustline {
-	lk := h.links.Get(peer)
-	if lk == nil || lk.State.Root != "creditnet" || lk.State.Status != mimesis.Connected {
+	if !h.links.ModuleAvailable(peer, h.name) {
 		return nil
 	}
 	if h.Trustlines[peer] == nil {
@@ -295,13 +293,13 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 	if peerID == h.nodeID {
 		return nil, nil, fmt.Errorf("cannot link to self")
 	}
-	if _, err := h.links.Connect(peerID, "creditnet"); err != nil {
+	if _, err := h.links.Connect(peerID); err != nil {
 		return nil, nil, err
 	}
 	// Request chosen child modules on this link.
 	if len(p.Modules) > 0 {
 		lk := h.links.Get(peerID)
-		lk.ConnectModules(p.Modules, h.links.ModuleMap(), h.links.Children())
+		lk.ConnectModules(p.Modules, h.links.ModuleMap())
 	}
 	return Enc("ok"), []string{peerID}, nil
 }
