@@ -41,7 +41,7 @@ github.com/jhnngrn/mimesis   (external)
 
 creditnet.go           thin wrapper: Boot, RegisterNode, Register
 types.go               creditnet-specific types and re-exports
-node.go                Node: creditnet app implementing mimesis.App,
+node.go                Node: trustline root module implementing mimesis.Module,
                        holds trustlines and bandwidth, registers reservers,
                        OnClose lifecycle, ClosedBalances archive,
                        trustline sync: credit limits, balances, payments
@@ -53,16 +53,16 @@ modules/
   loops/               multi-hop loop clearing with hash-chain 2PC settlement
 
 cmd/
-  base/                server with creditnet app only
-  triad/               server with creditnet + triad module
-  loops/               server with creditnet + loops module
+  base/                server with trustline module only
+  triad/               server with trustline + triad module
+  loops/               server with trustline + loops module
 ```
 
-Node is the app — it implements `mimesis.App` (with `OnConnect` and
-`OnClose` lifecycle hooks) and holds trustlines and bandwidth that other
-modules depend on. `RegisterNode` registers it as `"creditnet"` with
-`DeclareApp`. Child modules (triad, loops) receive trustlines and
-bandwidth from the Node via `links.ModuleMap()["creditnet"]`. Different
+Node is the root module — it implements `mimesis.Module` (with `OnConnect`
+and `OnClose` lifecycle hooks) and holds trustlines and bandwidth that
+other modules depend on. `RegisterNode` registers it as `"trustline"` with
+`DeclareRoot`. Child modules (triad, loops) receive trustlines and
+bandwidth from the Node via `links.ModuleMap()["trustline"]`. Different
 binaries under `cmd/` combine different sets of child modules.
 
 ## Link layer
@@ -72,22 +72,22 @@ handled entirely by mimesis. See the
 [mimesis README](https://github.com/jhnngrn/mimesis) for the link state
 machine, module negotiation, and invite modes.
 
-creditnet's Node implements `mimesis.App`, so it receives lifecycle
+creditnet's Node implements `mimesis.Module`, so it receives lifecycle
 callbacks:
 
-- **OnConnect(peer)** — called when `app.connect` completes bilaterally.
+- **OnConnect(peer)** — called when `link.connect` completes bilaterally.
   No-op; trustline is created lazily on first use.
-- **OnClose(peer)** — called when `app.close` completes bilaterally,
+- **OnClose(peer)** — called when `link.close` completes bilaterally,
   just before the link is deleted. Archives non-zero balance to
   `ClosedBalances` and deletes the trustline if one exists.
 
 Connected checks use link existence: `node.Get(peer)` returns non-nil
-and `link.State.App == "creditnet"`. There is no separate connected
+and `link.State.Root == "trustline"`. There is no separate connected
 state on the trustline itself.
 
 ## Trustline layer
 
-Trustline handling is built into Node under the `"creditnet"` namespace. It manages per-peer credit data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
+Trustline handling is built into Node under the `"trustline"` namespace. It manages per-peer credit data: `credit_limit` (what I extend), `credit_limit_in` (what peer extends to me), `balance`, and `demurrage` rates. Changes are transactional — a credit limit, demurrage change or payment is pending until the peer confirms.
 
 ### Trustline lifecycle
 
@@ -97,13 +97,13 @@ Trustlines are created lazily and destroyed by the app destructor:
   or `set_demurrage` operation. Peers that connect but never set a credit
   limit leave no trustline state.
 - **OnClose** archives non-zero balance to `ClosedBalances` and deletes
-  the trustline when `app.close` completes.
+  the trustline when `link.close` completes.
 
 There is no separate trustline state machine — link existence is the
 sole source of truth. If `node.Get(peer)` is non-nil and
-`link.State.App == "creditnet"`, the peer is connected.
+`link.State.Root == "trustline"`, the peer is connected.
 
-The creditnet app's `Busy(peer)` always returns false — child modules
+The trustline module's `Busy(peer)` always returns false — child modules
 hold their own Busy, and trustline state is archived unconditionally
 in `OnClose`.
 
@@ -119,11 +119,11 @@ Response piggybacking: when sending a new request, the peer includes its respons
 
 Sync methods are namespace-routed: `namespace.method`. Node dispatches by namespace prefix.
 
-**app namespace:**
+**link namespace:**
 
-`app.connect` — establish bilateral connection. Mutual add → instant `connected`. Incoming from unknown → `incoming` (NACKed, awaiting accept/reject). In `open` mode, auto-ACKed.
+`link.connect` — establish bilateral connection. Mutual add → instant `connected`. Incoming from unknown → `incoming` (NACKed, awaiting accept/reject). In `open` mode, auto-ACKed.
 
-`app.close` — close a connection. Deferred until modules report not `Busy`. If the peer has no link, a synthetic ACK is returned.
+`link.close` — close a connection. Deferred until modules report not `Busy`. If the peer has no link, a synthetic ACK is returned.
 
 **module namespace:**
 
@@ -131,13 +131,13 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches by namesp
 
 `module.close` — close a child module on a link. Deferred until the module reports not Busy.
 
-**creditnet namespace:**
+**trustline namespace:**
 
-`creditnet.set_credit_limit` — tell peer what credit limit I've set for them. Creates trustline lazily. Pending until peer confirms, then applied locally.
+`trustline.set_credit_limit` — tell peer what credit limit I've set for them. Creates trustline lazily. Pending until peer confirms, then applied locally.
 
-`creditnet.set_demurrage` — tell peer my demurrage rate. Creates trustline lazily. Materializes existing demurrage before applying. Pending until peer confirms.
+`trustline.set_demurrage` — tell peer my demurrage rate. Creates trustline lazily. Materializes existing demurrage before applying. Pending until peer confirms.
 
-`creditnet.payment` — send payment to peer. Requires existing trustline. Receiver validates against their credit limit, both sides adjust balance on success.
+`trustline.payment` — send payment to peer. Requires existing trustline. Receiver validates against their credit limit, both sides adjust balance on success.
 
 ## API
 
@@ -149,15 +149,15 @@ All endpoints accept JSON `{method, payload}`.
 
 **POST /api/account** — requires bearer token. Methods are namespace-routed (`namespace.method`):
 
-- `creditnet.add_peer` (`{peer, modules?}`) — create link and initiate `app.connect`. Optional `modules` list (e.g. `["loops"]`) proposes child modules on the link.
-- `creditnet.remove_peer` (`{peer}`) — initiate `app.close`. On completion, `OnClose` archives non-zero balance and deletes the trustline.
-- `creditnet.set_credit_limit` (`{peer, amount}`) — set credit limit (creates trustline lazily), queue sync
-- `creditnet.set_demurrage` (`{peer, rate}`) — set demurrage rate (creates trustline lazily), queue sync
-- `creditnet.payment` (`{peer, amount}`) — send payment to peer (requires existing trustline)
+- `trustline.add_peer` (`{peer, modules?}`) — create link and initiate `link.connect`. Optional `modules` list (e.g. `["loops"]`) proposes child modules on the link.
+- `trustline.remove_peer` (`{peer}`) — initiate `link.close`. On completion, `OnClose` archives non-zero balance and deletes the trustline.
+- `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit (creates trustline lazily), queue sync
+- `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate (creates trustline lazily), queue sync
+- `trustline.payment` (`{peer, amount}`) — send payment to peer (requires existing trustline)
 - `status` — combined status from all modules: trustline peers with credit data, link state, incoming invites, triad novation count, loops path and clearing count
 
 Link lifecycle (accept/reject peers, module negotiation, invite mode) is handled by mimesis directly.
 
-**POST /p2p/tx** — bilateral sync (`app.*`, `creditnet.*`, `triad.*`, `loops.*`)
+**POST /p2p/tx** — bilateral sync (`link.*`, `trustline.*`, `triad.*`, `loops.*`)
 
 **GET /p2p/key** — public key for signature verification
