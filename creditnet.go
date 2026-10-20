@@ -17,11 +17,13 @@ var RunAndWait = mimesis.RunAndWait
 // This must be called before any Register calls, because other modules
 // depend on the Node's trustlines and bandwidth.
 // children lists the module names that connect under creditnet.
-func RegisterNode(srv *mimesis.Server, children []string) {
+// Optional ChildOpt values configure constraints on the child group,
+// e.g. mimesis.Max(1) to make the children mutually exclusive.
+func RegisterNode(srv *mimesis.Server, children []string, opts ...mimesis.ChildOpt) {
 	srv.Register("creditnet", func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
 		return NewNode(name, nodeID, node, state)
 	})
-	srv.DeclareChildren("creditnet", children)
+	srv.DeclareChildren("creditnet", children, opts...)
 }
 
 // Register registers a module factory on the server.

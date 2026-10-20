@@ -137,9 +137,11 @@ func (n *Node) moduleBusy(name, peer string) bool {
 			return true
 		}
 	}
-	for _, child := range n.children[name] {
-		if n.moduleBusy(child, peer) {
-			return true
+	if g := n.children[name]; g != nil {
+		for _, child := range g.Names {
+			if n.moduleBusy(child, peer) {
+				return true
+			}
 		}
 	}
 	return false
@@ -203,9 +205,9 @@ func (n *Node) hasAnyPendingModules(peer string) bool {
 
 // parentOf returns the direct parent of a module in the hierarchy.
 // Returns "" if the module has no parent (i.e. it is a parentless module).
-func parentOf(name string, children map[string][]string) string {
-	for parent, kids := range children {
-		for _, kid := range kids {
+func parentOf(name string, children map[string]*childGroup) string {
+	for parent, group := range children {
+		for _, kid := range group.Names {
 			if kid == name {
 				return parent
 			}
@@ -261,7 +263,7 @@ type Node struct {
 	Links      map[string]*Link       `json:"links"`
 	InviteMode inviteMode             `json:"invite_mode,omitempty"`
 	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
-	children   map[string][]string    `json:"-"` // parent → child module names
+	children   map[string]*childGroup  `json:"-"` // parent → child module group
 	moduleMap  map[string]Module      `json:"-"`
 	// send delivers a sync message to a peer and returns the response body.
 	send   func(peer string, msg txRequest) ([]byte, error) `json:"-"`
@@ -279,7 +281,7 @@ func newNode(id string, links map[string]*Link, mode inviteMode, send func(strin
 	if mode == "" {
 		mode = inviteModeInvite
 	}
-	return &Node{ID: id, Links: links, InviteMode: mode, children: map[string][]string{}, moduleMap: map[string]Module{}, send: send, commit: commit, timers: map[*time.Timer]struct{}{}}
+	return &Node{ID: id, Links: links, InviteMode: mode, children: map[string]*childGroup{}, moduleMap: map[string]Module{}, send: send, commit: commit, timers: map[*time.Timer]struct{}{}}
 }
 
 // registerModule adds a module to the node under the given name.
@@ -291,7 +293,7 @@ func (n *Node) registerModule(name string, m Module) {
 func (n *Node) ModuleMap() map[string]Module { return n.moduleMap }
 
 // Children returns the parent→children map so callers can pass it to ConnectModules.
-func (n *Node) Children() map[string][]string { return n.children }
+func (n *Node) Children() map[string]*childGroup { return n.children }
 
 func (n *Node) Get(peer string) *Link { return n.Links[peer] }
 
@@ -318,13 +320,15 @@ func (n *Node) hasConnectedChildren(name, peer string) bool {
 	if lk == nil {
 		return false
 	}
-	for _, child := range n.children[name] {
-		c := lk.State.Modules[child]
-		if c != nil && c.Status == Connected {
-			return true
-		}
-		if n.hasConnectedChildren(child, peer) {
-			return true
+	if g := n.children[name]; g != nil {
+		for _, child := range g.Names {
+			c := lk.State.Modules[child]
+			if c != nil && c.Status == Connected {
+				return true
+			}
+			if n.hasConnectedChildren(child, peer) {
+				return true
+			}
 		}
 	}
 	return false
@@ -722,7 +726,7 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 // reqModule handles an incoming module.connect request.
 // Returns (ok, moduleName, error). moduleName is non-empty when the module
 // became bilaterally connected (so the caller can fire OnConnect).
-func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inviteMode inviteMode, children map[string][]string) (bool, string, error) {
+func (l *Link) reqModule(payload json.RawMessage, modules map[string]Module, inviteMode inviteMode, children map[string]*childGroup) (bool, string, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
@@ -881,7 +885,10 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 			n.mu.Unlock()
 			return nil, fmt.Errorf("no link to %s", p.Peer)
 		}
-		lk.setModules(p.Modules, n.moduleMap)
+		if err := lk.setModules(p.Modules, n.moduleMap, n.children); err != nil {
+			n.mu.Unlock()
+			return nil, err
+		}
 		result = enc("ok")
 		kicks = []string{p.Peer}
 
@@ -1049,7 +1056,11 @@ func (l *Link) ConnectModules(modules []string, registered map[string]Module) {
 // setModules proposes the given modules on this link, filtering by supported.
 // Modules not in the desired set are marked IntentClose. The sync loop
 // defers sending module.close until the module reports !Busy.
-func (l *Link) setModules(modules []string, registered map[string]Module) {
+//
+// Validates child-group constraints: if a group has Max set, at most that
+// many children from the group may be in the desired set. Also validates
+// that every child module's parent is included.
+func (l *Link) setModules(modules []string, registered map[string]Module, children map[string]*childGroup) error {
 	if l.State.Modules == nil {
 		l.State.Modules = map[string]*ConnectionState{}
 	}
@@ -1057,6 +1068,33 @@ func (l *Link) setModules(modules []string, registered map[string]Module) {
 	for _, name := range modules {
 		if _, ok := registered[name]; ok {
 			desired[name] = true
+		}
+	}
+	// Validate: child's parent must be in the desired set.
+	for name := range desired {
+		parent := parentOf(name, children)
+		if parent != "" && !desired[parent] {
+			return fmt.Errorf("module %s requires parent %s", name, parent)
+		}
+	}
+	// Validate: child-group max constraints.
+	for parent, group := range children {
+		if group.Max <= 0 {
+			continue
+		}
+		if !desired[parent] {
+			continue
+		}
+		count := 0
+		var active []string
+		for _, name := range group.Names {
+			if desired[name] {
+				count++
+				active = append(active, name)
+			}
+		}
+		if count > group.Max {
+			return fmt.Errorf("parent %s allows at most %d of %v, got %v", parent, group.Max, group.Names, active)
 		}
 	}
 	for name := range desired {
@@ -1076,6 +1114,7 @@ func (l *Link) setModules(modules []string, registered map[string]Module) {
 			mod.IntentClose = true
 		}
 	}
+	return nil
 }
 
 // AcceptModule accepts an incoming module proposal.

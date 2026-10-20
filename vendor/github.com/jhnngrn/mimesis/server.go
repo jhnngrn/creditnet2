@@ -82,6 +82,21 @@ type moduleReg struct {
 	factory ModuleFactory
 }
 
+// childGroup describes a set of child modules under a parent.
+type childGroup struct {
+	Names []string
+	Max   int // 0 = unlimited
+}
+
+// ChildOpt configures a childGroup.
+type ChildOpt func(*childGroup)
+
+// Max limits how many children from the group can be active simultaneously
+// on a single link. For example, Max(1) makes the children mutually exclusive.
+func Max(n int) ChildOpt {
+	return func(g *childGroup) { g.Max = n }
+}
+
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
@@ -94,7 +109,7 @@ type Server struct {
 	client    *http.Client
 	mux       *http.ServeMux
 	factories []moduleReg
-	children  map[string][]string // parent → child module names
+	children  map[string]*childGroup // parent → child module group
 
 	nmu   sync.RWMutex
 	nodes map[string]*Node
@@ -115,12 +130,18 @@ func (s *Server) Register(name string, factory ModuleFactory) {
 // DeclareChildren declares child modules under a parent module,
 // enabling nested module hierarchies. Children can only connect
 // on a link after their parent is connected.
+// Optional ChildOpt values configure constraints, e.g. Max(1)
+// makes the children mutually exclusive.
 // Call before Init.
-func (s *Server) DeclareChildren(parent string, children []string) {
+func (s *Server) DeclareChildren(parent string, children []string, opts ...ChildOpt) {
 	if s.children == nil {
-		s.children = map[string][]string{}
+		s.children = map[string]*childGroup{}
 	}
-	s.children[parent] = children
+	g := &childGroup{Names: children}
+	for _, o := range opts {
+		o(g)
+	}
+	s.children[parent] = g
 }
 
 // Send posts a signed sync message to a peer's domain.
