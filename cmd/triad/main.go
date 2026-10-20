@@ -4,7 +4,6 @@ import (
 	"log"
 
 	"creditnet"
-	"creditnet/modules/barter"
 	"creditnet/modules/demurrage"
 	"creditnet/modules/triad"
 )
@@ -14,11 +13,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// creditnet → demurrage → {barter, triad}
+	// creditnet → demurrage → triad
 	creditnet.RegisterNode(srv, []string{"demurrage"})
 	creditnet.Register(srv, "demurrage", demurrage.NewDemurrage)
-	srv.DeclareChildren("demurrage", []string{"barter", "triad"})
-	creditnet.Register(srv, "barter", barter.NewBarter)
+	srv.DeclareChildren("demurrage", []string{"triad"})
 	creditnet.Register(srv, "triad", triad.NewTriad)
 	creditnet.RunAndWait(srv)
 }

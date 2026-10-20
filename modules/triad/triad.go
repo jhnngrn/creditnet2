@@ -54,23 +54,27 @@ type Triad struct {
 	nodeID     string
 	node       *mimesis.Node
 	schedule   mimesis.ScheduleFunc
-	trustlines     map[string]*creditnet.Trustline
-	bandwidth      creditnet.BandwidthFunc
-	pendingBalance creditnet.PendingBalanceFunc
+	barter     creditnet.Barter
 }
 
 // NewTriad matches the mimesis.ModuleFactory signature.
 func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-	tl := node.ModuleMap()["creditnet"].(*creditnet.Node)
 	h := &Triad{
-		Novations:  map[string]*Novation{},
-		name:       name,
-		nodeID:     nodeID,
-		node:       node,
-		schedule:   schedule,
-		trustlines:     tl.Trustlines,
-		bandwidth:      tl.Bandwidth,
-		pendingBalance: tl.PendingBalance,
+		Novations: map[string]*Novation{},
+		name:      name,
+		nodeID:    nodeID,
+		node:      node,
+		schedule:  schedule,
+	}
+	// Find the Barter implementor in the module map.
+	for _, mod := range node.ModuleMap() {
+		if b, ok := mod.(creditnet.Barter); ok {
+			h.barter = b
+			break
+		}
+	}
+	if h.barter == nil {
+		log.Fatalf("triad %s: no Barter module found", nodeID)
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {
@@ -80,6 +84,8 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 	if h.Novations == nil {
 		h.Novations = map[string]*Novation{}
 	}
+	// Register as reserver so bandwidth accounts for in-flight novations.
+	h.barter.RegisterReserver(h)
 	h.scheduleNovate()
 	return h
 }
@@ -139,13 +145,13 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 	if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Next) >= MaxNovPerLink {
 		return false, nil, nil
 	}
-	bwIn := h.bandwidth(peer, IN)
-	bwOut := h.bandwidth(m.Next, OUT)
+	bwIn := h.barter.Bandwidth(peer, IN)
+	bwOut := h.barter.Bandwidth(m.Next, OUT)
 	if bwIn < m.Amount || bwOut < m.Amount {
 		return false, nil, nil
 	}
 	// At least one side must have debt to settle.
-	if h.pendingBalance(peer, IN) <= 0 && h.pendingBalance(m.Next, OUT) <= 0 {
+	if h.barter.PendingBalance(peer, IN) <= 0 && h.barter.PendingBalance(m.Next, OUT) <= 0 {
 		return false, nil, nil
 	}
 
@@ -162,10 +168,6 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 }
 
 func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
-	p := h.trustlines[peer]
-	if p == nil {
-		return false, nil, fmt.Errorf("trustline not connected")
-	}
 	var m novFinalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return false, nil, fmt.Errorf("bad payload")
@@ -177,7 +179,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	if nov.Side[IN].Peer != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
-	p.AddBalance(nov.Amount, ts)
+	h.barter.AdjustBalance(peer, nov.Amount, ts)
 	nov.Side[IN] = NovationSide{}
 	var kicks []string
 	if nov.Side[OUT].Peer != "" {
@@ -259,9 +261,7 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 		return
 	}
 	nov.Side[OUT].Queue.Dequeue()
-	if p := h.trustlines[peer]; p != nil {
-		p.AddBalance(-nov.Amount, ts)
-	}
+	h.barter.AdjustBalance(peer, -nov.Amount, ts)
 	nov.Side[OUT] = NovationSide{}
 	if nov.Side[IN].Peer == "" {
 		h.removeNovation(m.NovationID)
@@ -391,7 +391,7 @@ func (h *Triad) tryNovate() []string {
 	var kicks []string
 	peers := h.connectedPeers()
 	for _, debtor := range peers {
-		avlD := h.pendingBalance(debtor, OUT)
+		avlD := h.barter.PendingBalance(debtor, OUT)
 		if avlD <= 0 || h.novLinkCount(debtor) >= MaxNovPerLink {
 			continue
 		}
@@ -399,7 +399,7 @@ func (h *Triad) tryNovate() []string {
 			if creditor == debtor {
 				continue
 			}
-			avlC := h.pendingBalance(creditor, IN)
+			avlC := h.barter.PendingBalance(creditor, IN)
 			if avlC <= 0 || h.novLinkCount(creditor) >= MaxNovPerLink {
 				continue
 			}
@@ -450,8 +450,10 @@ func (h *Triad) removeNovation(id string) {
 }
 
 func (h *Triad) connectedPeers() []string {
-	out := make([]string, 0, len(h.trustlines))
-	for id := range h.trustlines {
+	// Use the creditnet node's trustlines to find peers.
+	tl := h.node.ModuleMap()["creditnet"].(*creditnet.Node)
+	out := make([]string, 0, len(tl.Trustlines))
+	for id := range tl.Trustlines {
 		if h.isConnected(id) {
 			out = append(out, id)
 		}

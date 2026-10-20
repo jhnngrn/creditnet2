@@ -22,13 +22,14 @@ type PendingPayment struct {
 }
 
 // Barter handles single-hop direct payments between peers.
+// Implements creditnet.Barter interface.
 type Barter struct {
 	Pending    map[string]*PendingPayment `json:"pending,omitempty"`
 	name       string
 	nodeID     string
 	node       *mimesis.Node
 	trustlines map[string]*creditnet.Trustline
-	bandwidth  creditnet.BandwidthFunc
+	reservers  []creditnet.Reserver
 }
 
 // NewBarter matches the mimesis.ModuleFactory signature.
@@ -40,7 +41,6 @@ func NewBarter(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedul
 		nodeID:     nodeID,
 		node:       node,
 		trustlines: tl.Trustlines,
-		bandwidth:  tl.Bandwidth,
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {
@@ -51,6 +51,87 @@ func NewBarter(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedul
 		h.Pending = map[string]*PendingPayment{}
 	}
 	return h
+}
+
+// RegisterReserver adds a Reserver whose reservations are subtracted
+// from available bandwidth.
+func (h *Barter) RegisterReserver(r creditnet.Reserver) {
+	h.reservers = append(h.reservers, r)
+}
+
+// ---------------------------------------------------------------------------
+// creditnet.Barter interface
+// ---------------------------------------------------------------------------
+
+// PendingBalance returns balance minus reservations.
+func (h *Barter) PendingBalance(peer string, side int) int64 {
+	tl := h.trustlines[peer]
+	if tl == nil {
+		return 0
+	}
+	var debt int64
+	if side == OUT {
+		debt = tl.Balance
+	} else {
+		debt = -tl.Balance
+	}
+	for _, r := range h.reservers {
+		debt -= r.Reserved(peer, side)
+	}
+	return debt
+}
+
+// Bandwidth returns available capacity for a peer on a given side.
+func (h *Barter) Bandwidth(peer string, side int) int64 {
+	tl := h.trustlines[peer]
+	if tl == nil {
+		return 0
+	}
+	var limit int64
+	if side == OUT {
+		limit = tl.CreditLimitIn
+	} else {
+		limit = tl.CreditLimit
+	}
+	total := limit + h.PendingBalance(peer, side)
+	if total < 0 {
+		return 0
+	}
+	return total
+}
+
+// AdjustBalance directly adjusts the balance for a peer.
+// Used by settlement protocols (triad, loops) for non-payment balance changes.
+func (h *Barter) AdjustBalance(peer string, delta int64, ts int64) {
+	tl := h.trustlines[peer]
+	if tl == nil {
+		return
+	}
+	tl.Balance += delta
+}
+
+// Pay validates and queues a payment to a peer.
+func (h *Barter) Pay(peer string, amount int64, ts int64) (bool, error) {
+	if amount <= 0 {
+		return false, fmt.Errorf("amount must be positive")
+	}
+	tl := h.trustlines[peer]
+	if tl == nil {
+		return false, fmt.Errorf("peer %s has no trustline", peer)
+	}
+	if !h.node.ModuleAvailable(peer, h.name) {
+		return false, fmt.Errorf("barter not connected with %s", peer)
+	}
+	if h.Pending[peer] != nil {
+		return false, fmt.Errorf("payment already pending")
+	}
+	if amount > h.Bandwidth(peer, OUT) {
+		return false, fmt.Errorf("insufficient credit")
+	}
+	pp := &PendingPayment{Amount: amount}
+	pp.Queue.Enqueue("payment")
+	h.Pending[peer] = pp
+	return true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -79,10 +160,10 @@ func (h *Barter) reqPayment(peerID string, payload json.RawMessage, ts int64) (b
 	if peer == nil {
 		return false, nil, fmt.Errorf("no trustline")
 	}
-	if p.Amount > h.bandwidth(peerID, IN) {
+	if p.Amount > h.Bandwidth(peerID, IN) {
 		return false, nil, nil
 	}
-	peer.AddBalance(p.Amount, ts)
+	peer.Balance += p.Amount
 	return true, nil, nil
 }
 
@@ -103,7 +184,7 @@ func (h *Barter) HandleResponse(peer, method string, payload json.RawMessage, ok
 		return nil
 	}
 	if ok {
-		tl.AddBalance(-pp.Amount, ts)
+		tl.Balance -= pp.Amount
 	}
 	delete(h.Pending, peer)
 	return nil
@@ -143,25 +224,13 @@ func (h *Barter) payment(payload json.RawMessage) (json.RawMessage, []string, er
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	tl := h.trustlines[peerID]
-	if tl == nil {
-		return nil, nil, fmt.Errorf("peer %s has no trustline", peerID)
+	ok, err := h.Pay(peerID, p.Amount, 0)
+	if err != nil {
+		return nil, nil, err
 	}
-	if !h.node.ModuleAvailable(peerID, h.name) {
-		return nil, nil, fmt.Errorf("barter not connected with %s", peerID)
+	if !ok {
+		return nil, nil, fmt.Errorf("payment failed")
 	}
-	if h.Pending[peerID] != nil {
-		return nil, nil, fmt.Errorf("payment already pending")
-	}
-	if p.Amount <= 0 {
-		return nil, nil, fmt.Errorf("amount must be positive")
-	}
-	if p.Amount > h.bandwidth(peerID, OUT) {
-		return nil, nil, fmt.Errorf("insufficient credit")
-	}
-	pp := &PendingPayment{Amount: p.Amount}
-	pp.Queue.Enqueue("payment")
-	h.Pending[peerID] = pp
 	return creditnet.Enc("ok"), []string{peerID}, nil
 }
 

@@ -15,14 +15,11 @@ import (
 // ---------------------------------------------------------------------------
 
 type Trustline struct {
-	Queue            Queue `json:"queue"`
-	CreditLimit      int64    `json:"credit_limit"`
-	CreditLimitIn    int64    `json:"credit_limit_in"`
-	Balance          int64    `json:"balance"`
-	Demurrage        int64    `json:"demurrage"`        // my rate (promille/year)
-	DemurrageIn      int64    `json:"demurrage_in"`     // peer's rate
-	DemurrageTime    int64    `json:"demurrage_time"`   // last materialized (secs)
-	PendingLimit     *int64   `json:"pending_limit,omitempty"`
+	Queue        Queue  `json:"queue"`
+	CreditLimit  int64  `json:"credit_limit"`
+	CreditLimitIn int64 `json:"credit_limit_in"`
+	Balance      int64  `json:"balance"`
+	PendingLimit *int64 `json:"pending_limit,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -45,7 +42,6 @@ type Node struct {
 	name           string
 	nodeID         string
 	links          *mimesis.Node
-	reservers      []Reserver
 }
 
 // NewNode creates a Node from persisted state.
@@ -67,16 +63,7 @@ func NewNode(name, nodeID string, links *mimesis.Node, state json.RawMessage) *N
 	return h
 }
 
-// RegisterReserver adds a Reserver whose reservations are subtracted
-// from available bandwidth.
-func (h *Node) RegisterReserver(r Reserver) {
-	h.reservers = append(h.reservers, r)
-}
-
 // GetTrustline returns the trustline data for a connected peer, or nil.
-// The link must be bilaterally connected — waiting or incoming links
-// are excluded so that account operations cannot create pending state
-// on links that will never sync.
 func (h *Node) GetTrustline(peer string) *Trustline {
 	if !h.links.ModuleAvailable(peer, h.name) {
 		return nil
@@ -95,47 +82,6 @@ func (h *Node) getOrCreateTrustline(peer string) *Trustline {
 	}
 	return h.Trustlines[peer]
 }
-
-// PendingBalance returns effective balance minus reservations.
-// Positive means debt exists: peer owes us (OUT) or we owe them (IN).
-func (h *Node) PendingBalance(peer string, side int) int64 {
-	p := h.GetTrustline(peer)
-	if p == nil {
-		return 0
-	}
-	eff := p.EffectiveBalance(time.Now().Unix())
-	var debt int64
-	if side == OUT {
-		debt = eff
-	} else {
-		debt = -eff
-	}
-	for _, r := range h.reservers {
-		debt -= r.Reserved(peer, side)
-	}
-	return debt
-}
-
-// Bandwidth returns available capacity for a peer on a given side.
-// bw = CreditLimit + PendingBalance, floored at 0.
-func (h *Node) Bandwidth(peer string, side int) int64 {
-	p := h.GetTrustline(peer)
-	if p == nil {
-		return 0
-	}
-	var limit int64
-	if side == OUT {
-		limit = p.CreditLimitIn
-	} else {
-		limit = p.CreditLimit
-	}
-	total := limit + h.PendingBalance(peer, side)
-	if total < 0 {
-		return 0
-	}
-	return total
-}
-
 
 // OnConnect is called by the framework when app.connect completes bilaterally.
 // Trustline is created lazily on first use, not here.
@@ -220,16 +166,12 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 // ---------------------------------------------------------------------------
 
 func (h *Node) Status() json.RawMessage {
-	now := time.Now().Unix()
 	peers := make(map[string]any)
 	for id, p := range h.Trustlines {
 		info := map[string]any{
-			"credit_limit":      p.CreditLimit,
-			"credit_limit_in":   p.CreditLimitIn,
-			"balance":           p.Balance,
-			"effective_balance": p.EffectiveBalance(now),
-			"demurrage":         p.Demurrage,
-			"demurrage_in":      p.DemurrageIn,
+			"credit_limit":    p.CreditLimit,
+			"credit_limit_in": p.CreditLimitIn,
+			"balance":         p.Balance,
 		}
 		if p.PendingLimit != nil {
 			info["pending_limit"] = *p.PendingLimit

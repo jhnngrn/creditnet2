@@ -2,7 +2,6 @@ package creditnet
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/jhnngrn/mimesis"
 )
@@ -26,18 +25,6 @@ func RegisterNode(srv *mimesis.Server, children []string) {
 }
 
 // Register registers a module factory on the server.
-// If the module implements Reserver, it is automatically registered
-// with the trustline Node.
 func Register(srv *mimesis.Server, name string, factory mimesis.ModuleFactory) {
-	srv.Register(name, func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
-		m := factory(name, nodeID, node, schedule, state)
-		if r, ok := m.(Reserver); ok {
-			mod := node.ModuleMap()["creditnet"]
-			if mod == nil {
-				panic(fmt.Sprintf("creditnet.Register: creditnet module not found for %s — call RegisterNode before Register", nodeID))
-			}
-			mod.(*Node).RegisterReserver(r)
-		}
-		return m
-	})
+	srv.Register(name, factory)
 }
