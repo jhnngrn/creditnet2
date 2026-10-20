@@ -81,7 +81,7 @@ func (h *Demurrage) reqSetDemurrage(peerID string, payload json.RawMessage, ts i
 // creating it lazily if the link is connected but no trustline exists yet.
 func (h *Demurrage) getOrCreateTrustline(peer string) *creditnet.Trustline {
 	lk := h.node.Get(peer)
-	if lk == nil || lk.State.App != "creditnet" || lk.State.Status != mimesis.Connected {
+	if lk == nil || lk.State.Root != "creditnet" || lk.State.Status != mimesis.Connected {
 		return nil
 	}
 	if h.trustlines[peer] == nil {

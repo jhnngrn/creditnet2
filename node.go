@@ -79,7 +79,7 @@ func (h *Node) RegisterReserver(r Reserver) {
 // on links that will never sync.
 func (h *Node) GetTrustline(peer string) *Trustline {
 	lk := h.links.Get(peer)
-	if lk == nil || lk.State.App != "creditnet" || lk.State.Status != mimesis.Connected {
+	if lk == nil || lk.State.Root != "creditnet" || lk.State.Status != mimesis.Connected {
 		return nil
 	}
 	return h.Trustlines[peer]
@@ -89,7 +89,7 @@ func (h *Node) GetTrustline(peer string) *Trustline {
 // creating it lazily if the link is connected but no trustline exists yet.
 func (h *Node) getOrCreateTrustline(peer string) *Trustline {
 	lk := h.links.Get(peer)
-	if lk == nil || lk.State.App != "creditnet" || lk.State.Status != mimesis.Connected {
+	if lk == nil || lk.State.Root != "creditnet" || lk.State.Status != mimesis.Connected {
 		return nil
 	}
 	if h.Trustlines[peer] == nil {
