@@ -11,13 +11,15 @@ creditnet is a federated bilateral credit network built on this protocol. Each s
 ## Build
 
 ```
-go build ./cmd/base         # server with base handler (peers, credit, payments)
+go build ./cmd/barter       # barter only (demo, no demurrage)
+go build ./cmd/triad        # demurrage + barter + triad
+go build ./cmd/loops        # demurrage + barter + loops
 ```
 
 ## Run
 
 ```
-./base -domain node1.example.com -port 3000 -scheme http
+./triad -domain node1.example.com -port 3000 -scheme http
 ```
 
 Flags:
@@ -55,11 +57,9 @@ modules/
   loops/               multi-hop loop clearing with hash-chain 2PC settlement
 
 cmd/
-  base/                server with creditnet + barter
-  triad/               server with creditnet + barter + triad
-  loops/               server with creditnet + barter + loops
-  triad-demurrage/     server with creditnet + demurrage (+ barter + triad nested)
-  loops-demurrage/     server with creditnet + demurrage (+ barter + loops nested)
+  barter/              creditnet → barter (demo, no demurrage)
+  triad/               creditnet → demurrage → {barter, triad}
+  loops/               creditnet → demurrage → {barter, loops}
 ```
 
 Node is the creditnet module — every module implements `OnConnect` and
