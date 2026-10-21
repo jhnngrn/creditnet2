@@ -342,10 +342,12 @@ function langForFile(name) {
   return 'plaintext';
 }
 
-function setActive(name) {
+function setActive(fullPath) {
   var links = document.querySelectorAll('.file-list a');
   for (var i = 0; i < links.length; i++) {
-    if (links[i].getAttribute('data-file') === name) {
+    var b = links[i].getAttribute('data-base');
+    var f = links[i].getAttribute('data-file');
+    if (b && f && (b + f) === fullPath) {
       links[i].classList.add('active');
     } else {
       links[i].classList.remove('active');
@@ -354,9 +356,10 @@ function setActive(name) {
 }
 
 async function viewFile(name, basePath) {
-  if (name === currentFile) return;
-  currentFile = name;
-  setActive(name);
+  var fullPath = basePath + name;
+  if (fullPath === currentFile) return;
+  currentFile = fullPath;
+  setActive(fullPath);
   document.getElementById('viewer-filename').textContent = name;
   document.getElementById('viewer-raw').href = basePath + name;
   document.getElementById('viewer-body').innerHTML = '<div class="loading">loading...</div>';
@@ -477,7 +480,6 @@ async function loadFiles() {
 
     sidebar.appendChild(ul);
 
-    // Default: show README.md
     viewFile('README.md', './src/');
   } catch (e) {
     document.getElementById('files-loading').textContent = 'could not load file list';
