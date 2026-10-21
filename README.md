@@ -76,7 +76,7 @@ creditnet's Node implements `mimesis.Module`, so it receives lifecycle
 callbacks:
 
 - **OnConnect(peer)** — called when `link.connect` completes bilaterally.
-  No-op; trustline is created lazily on first use.
+  Creates the trustline for this peer.
 - **OnClose(peer)** — called when `link.close` completes bilaterally,
   just before the link is deleted. Archives non-zero balance to
   `ClosedBalances` and deletes the trustline if one exists.
@@ -91,11 +91,10 @@ Trustline handling is built into Node under the `"trustline"` namespace. It mana
 
 ### Trustline lifecycle
 
-Trustlines are created lazily and destroyed by the app destructor:
+Trustlines are created on connect and destroyed on close:
 
-- **Creation** — a `Trustline{}` is created on first `set_credit_limit`
-  or `set_demurrage` operation. Peers that connect but never set a credit
-  limit leave no trustline state.
+- **Creation** — a `Trustline{}` is created in `OnConnect` when the
+  bilateral link completes. Every connected peer has a trustline.
 - **OnClose** archives non-zero balance to `ClosedBalances` and deletes
   the trustline when `link.close` completes.
 
@@ -133,9 +132,9 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches by namesp
 
 **trustline namespace:**
 
-`trustline.set_credit_limit` — tell peer what credit limit I've set for them. Creates trustline lazily. Pending until peer confirms, then applied locally.
+`trustline.set_credit_limit` — tell peer what credit limit I've set for them. Pending until peer confirms, then applied locally.
 
-`trustline.set_demurrage` — tell peer my demurrage rate. Creates trustline lazily. Materializes existing demurrage before applying. Pending until peer confirms.
+`trustline.set_demurrage` — tell peer my demurrage rate. Materializes existing demurrage before applying. Pending until peer confirms.
 
 `trustline.payment` — send payment to peer. Requires existing trustline. Receiver validates against their credit limit, both sides adjust balance on success.
 
@@ -151,8 +150,8 @@ All endpoints accept JSON `{method, payload}`.
 
 - `trustline.add_peer` (`{peer, modules?}`) — create link and initiate `link.connect`. Optional `modules` list (e.g. `["loops"]`) proposes child modules on the link.
 - `trustline.remove_peer` (`{peer}`) — initiate `link.close`. On completion, `OnClose` archives non-zero balance and deletes the trustline.
-- `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit (creates trustline lazily), queue sync
-- `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate (creates trustline lazily), queue sync
+- `trustline.set_credit_limit` (`{peer, amount}`) — set credit limit, queue sync
+- `trustline.set_demurrage` (`{peer, rate}`) — set demurrage rate, queue sync
 - `trustline.payment` (`{peer, amount}`) — send payment to peer (requires existing trustline)
 - `status` — combined status from all modules: trustline peers with credit data, link state, incoming invites, triad novation count, loops path and clearing count
 
