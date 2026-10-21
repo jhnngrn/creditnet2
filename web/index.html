@@ -120,6 +120,7 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
   <header>
     <h1>creditnet <span style="font-weight:400;font-size:14px;color:var(--fg2)" id="h-user"></span></h1>
     <div class="right">
+      <button onclick="showModal('settings')">Settings</button>
       <button onclick="doLogout()">Sign out</button>
     </div>
   </header>
@@ -469,7 +470,13 @@ function showModal(type) {
   const c = document.getElementById('modal-container');
   let html = '';
 
-  if (type === 'create-user') {
+  if (type === 'settings') {
+    html = modal('Settings',
+      '<label>Current password</label><input id="m-old-pw" type="password">'
+      + '<label>New password</label><input id="m-new-pw" type="password">'
+    , 'submitChangePw()');
+  }
+  else if (type === 'create-user') {
     html = modal('Create user', '<label>Username</label><input id="m-cu-user"><label>Password</label><input id="m-cu-pass" type="password">', 'submitCreateUser()');
   }
   else if (type === 'reset-pw') {
@@ -508,6 +515,13 @@ function modal(title, body, onSubmit) {
 }
 function closeModal() { const c = document.getElementById('modal-container'); c.style.display = 'none'; c.innerHTML = ''; }
 function mErr(msg) { document.getElementById('m-error').textContent = msg; }
+
+async function submitChangePw() {
+  const old_password = document.getElementById('m-old-pw').value, new_password = document.getElementById('m-new-pw').value;
+  if (!new_password) { mErr('New password required'); return; }
+  try { await api('/api/auth', 'change_password', {Old: old_password, New: new_password}); closeModal(); toast('Password changed'); }
+  catch(e) { mErr(e.message); }
+}
 
 async function submitAddLink() {
   const peer = document.getElementById('m-peer').value.trim();
