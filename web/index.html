@@ -131,8 +131,11 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
     <div id="links-container"></div>
   </div>
 
-  <!-- Stats -->
-  <div id="stats-section" class="section"></div>
+  <!-- Receipts -->
+  <div id="receipts-section" class="section" style="display:none">
+    <div class="section-header"><h2>Receipts</h2></div>
+    <div id="receipts-list"></div>
+  </div>
 </div>
 
 <div id="modal-container" style="display:none"></div>
@@ -217,7 +220,7 @@ async function refresh() {
     status = await api('/api/account', 'status');
     renderPending();
     renderLinks();
-    renderStats();
+    renderReceipts();
   } catch (e) {
     if (e.message.includes('nauthorized')) { doLogout(); return; }
     toast('Error: ' + e.message);
@@ -391,13 +394,31 @@ async function removeLink(peer) {
   catch(e) { toast(e.message); }
 }
 
-// --- Stats ---
-function renderStats() {
-  const el = document.getElementById('stats-section');
-  const links = status.links || {};
-  const trustlines = status.trustline?.peers || {};
-  const count = Object.entries(links).filter(([,l]) => l.state?.status === 'connected').length;
-  el.innerHTML = '';
+// --- Receipts ---
+function renderReceipts() {
+  const receipts = status.trustline?.receipts || [];
+  const sec = document.getElementById('receipts-section');
+  const el = document.getElementById('receipts-list');
+  if (!receipts.length) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  let html = '';
+  for (let i = receipts.length - 1; i >= 0; i--) {
+    const r = receipts[i];
+    const amt = toDisplay(Math.abs(r.amount));
+    const dir = r.amount < 0 ? 'sent' : 'received';
+    const cls = r.status ? (r.amount < 0 ? 'neg' : 'pos') : 'fg2';
+    const statusLabel = r.status ? '' : ' (failed)';
+    const d = new Date(r.timestamp * 1000);
+    const time = d.toLocaleString();
+    html += '<div class="link-card" style="padding:10px 14px;margin-bottom:4px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center">'
+      + '<div><span style="font-weight:500">' + dir + '</span> ' + r.peer + statusLabel + '</div>'
+      + '<div style="font-weight:600;color:var(--' + cls + ')">' + (r.amount < 0 ? '-' : '+') + amt + '</div>'
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--fg2)">' + time + '</div>'
+      + '</div>';
+  }
+  el.innerHTML = html;
 }
 
 // --- Modals ---
