@@ -87,6 +87,11 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .toast.show { opacity: 1; }
 .empty { text-align: center; color: var(--fg2); padding: 32px 0; font-size: 14px; }
 
+.user-list { width: 100%; border-collapse: collapse; }
+.user-list th { text-align: left; font-size: 12px; font-weight: 500; color: var(--fg2); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.user-list td { padding: 8px; border-bottom: 1px solid var(--border); font-size: 14px; }
+.user-list tr:hover td { background: var(--row-hover); }
+
 @media (max-width: 500px) {
   .stats { grid-template-columns: 1fr; }
   .link-controls { flex-direction: column; align-items: stretch; }
@@ -119,22 +124,31 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
     </div>
   </header>
 
-  <!-- Pending link/module requests -->
-  <div id="pending-section" class="section" style="display:none">
-    <div class="section-header"><h2>Pending requests</h2></div>
-    <div id="pending-list"></div>
+  <!-- Admin view -->
+  <div id="admin-view" style="display:none">
+    <div class="section-header"><h2>Users</h2><button class="btn btn-sm" onclick="showModal('create-user')">Create user</button></div>
+    <div id="admin-users"></div>
   </div>
 
-  <!-- Links -->
-  <div class="section">
-    <div class="section-header"><h2>Links</h2><button class="btn btn-sm" onclick="showModal('add-link')">+ Add link</button></div>
-    <div id="links-container"></div>
-  </div>
+  <!-- User dashboard -->
+  <div id="dashboard-view">
+    <!-- Pending link/module requests -->
+    <div id="pending-section" class="section" style="display:none">
+      <div class="section-header"><h2>Pending requests</h2></div>
+      <div id="pending-list"></div>
+    </div>
 
-  <!-- Receipts -->
-  <div id="receipts-section" class="section">
-    <div class="section-header"><h2>Receipts</h2></div>
-    <div id="receipts-list"></div>
+    <!-- Links -->
+    <div class="section">
+      <div class="section-header"><h2>Links</h2><button class="btn btn-sm" onclick="showModal('add-link')">+ Add link</button></div>
+      <div id="links-container"></div>
+    </div>
+
+    <!-- Receipts -->
+    <div id="receipts-section" class="section">
+      <div class="section-header"><h2>Receipts</h2></div>
+      <div id="receipts-list"></div>
+    </div>
   </div>
 </div>
 
@@ -148,10 +162,13 @@ function toDisplay(v) { return (v / UNIT).toFixed(2); }
 function toBase(v) { return Math.round(parseFloat(v) * UNIT); }
 let token = null;
 let username = null;
+let isAdmin = false;
 let status = null;
 let expanded = {};
 
-try { token = sessionStorage.getItem('cn-token'); username = sessionStorage.getItem('cn-user'); } catch(e) {}
+try { token = sessionStorage.getItem('cn-token'); username = sessionStorage.getItem('cn-user'); isAdmin = sessionStorage.getItem('cn-admin') === 'true'; } catch(e) {}
+
+async function adminApi(method, payload) { return api('/api/admin', method, payload); }
 
 async function api(endpoint, method, payload) {
   const headers = {'Content-Type': 'application/json'};
@@ -182,7 +199,8 @@ function showMain() {
   document.getElementById('login-view').style.display = 'none';
   document.getElementById('main-view').style.display = '';
   document.getElementById('h-user').textContent = username;
-  refresh();
+  if (isAdmin) { document.getElementById('admin-view').style.display = 'block'; document.getElementById('dashboard-view').style.display = 'none'; refreshAdmin(); }
+  else { document.getElementById('admin-view').style.display = 'none'; document.getElementById('dashboard-view').style.display = 'block'; refresh(); }
 }
 
 async function doLogin() {
@@ -190,8 +208,8 @@ async function doLogin() {
   if (!u) return;
   try {
     const r = await api('/api/auth', 'login', {username: u, password: p});
-    token = r.token; username = u;
-    try { sessionStorage.setItem('cn-token', token); sessionStorage.setItem('cn-user', username); } catch(e) {}
+    token = r.token; username = u; isAdmin = !!r.admin;
+    try { sessionStorage.setItem('cn-token', token); sessionStorage.setItem('cn-user', username); sessionStorage.setItem('cn-admin', isAdmin); } catch(e) {}
     document.getElementById('l-error').textContent = '';
     showMain();
   } catch (e) { document.getElementById('l-error').textContent = e.message; }
@@ -207,12 +225,34 @@ async function doRegister() {
 }
 function doLogout() {
   api('/api/auth', 'logout').catch(()=>{});
-  token = null; username = null;
-  try { sessionStorage.removeItem('cn-token'); sessionStorage.removeItem('cn-user'); } catch(e) {}
+  token = null; username = null; isAdmin = false;
+  try { sessionStorage.removeItem('cn-token'); sessionStorage.removeItem('cn-user'); sessionStorage.removeItem('cn-admin'); } catch(e) {}
   showLogin();
 }
 document.getElementById('l-pass').addEventListener('keydown', e => { if (e.key==='Enter') doLogin(); });
 document.getElementById('l-user').addEventListener('keydown', e => { if (e.key==='Enter') document.getElementById('l-pass').focus(); });
+
+// --- Admin ---
+async function refreshAdmin() {
+  try { const users = await adminApi('list_users'); renderUsers(users); }
+  catch (e) { if (e.message.includes('nauthorized')) { doLogout(); return; } toast('Error: '+e.message); }
+}
+function renderUsers(users) {
+  const c = document.getElementById('admin-users');
+  if (!users||!users.length) { c.innerHTML = '<div class="empty">No users.</div>'; return; }
+  users.sort((a,b) => a.name.localeCompare(b.name));
+  let h = '<table class="user-list"><thead><tr><th>User</th><th>Role</th><th></th></tr></thead><tbody>';
+  for (const u of users) {
+    h += '<tr><td>'+esc(u.name)+'</td><td>'+(u.admin?'<span class="tag">admin</span>':'user')+'</td><td style="text-align:right">'
+      + '<button class="btn btn-sm" onclick="showModal(\'reset-pw\',\''+esc(u.name)+'\')">Reset pw</button> '
+      + (u.admin?'':'<button class="btn btn-sm btn-danger" onclick="deleteUser(\''+esc(u.name)+'\')">Delete</button>')
+      + '</td></tr>';
+  }
+  c.innerHTML = h + '</tbody></table>';
+}
+async function deleteUser(name) {
+  try { await adminApi('delete_user',{username:name}); toast('Deleted'); refreshAdmin(); } catch(e) { toast(e.message); }
+}
 
 // --- Dashboard ---
 async function refresh() {
@@ -427,7 +467,14 @@ function showModal(type) {
   const c = document.getElementById('modal-container');
   let html = '';
 
-  if (type === 'add-link') {
+  if (type === 'create-user') {
+    html = modal('Create user', '<label>Username</label><input id="m-cu-user"><label>Password</label><input id="m-cu-pass" type="password">', 'submitCreateUser()');
+  }
+  else if (type === 'reset-pw') {
+    const who = arguments[1] || '';
+    html = modal('Reset password', '<label>User</label><input value="'+esc(who)+'" readonly><input id="m-rp-user" type="hidden" value="'+esc(who)+'"><label>New password</label><input id="m-rp-pass" type="password">', 'submitResetPw()');
+  }
+  else if (type === 'add-link') {
     html = modal('Add link',
       '<label>Peer address</label><input id="m-peer" placeholder="alice@other.example.com">'
       + '<label>Credit limit (optional)</label><input id="m-limit" type="text" inputmode="decimal" placeholder="0.00" oninput="limitDec(this)">'
@@ -475,6 +522,16 @@ async function submitAddLink() {
   } catch(e) { mErr(e.message); }
 }
 
+async function submitCreateUser() {
+  const user=document.getElementById('m-cu-user').value.trim(), pass=document.getElementById('m-cu-pass').value;
+  if (!user) { mErr('Username required'); return; }
+  try { await adminApi('create_user',{username:user,password:pass}); closeModal(); toast('User created'); refreshAdmin(); } catch(e) { mErr(e.message); }
+}
+async function submitResetPw() {
+  const user=document.getElementById('m-rp-user').value, pass=document.getElementById('m-rp-pass').value;
+  try { await adminApi('reset_password',{username:user,password:pass}); closeModal(); toast('Password reset'); } catch(e) { mErr(e.message); }
+}
+
 async function submitModules() {
   const checks = document.querySelectorAll('.m-mod-check');
   const modules = Array.from(checks).filter(c => c.checked).map(c => c.value);
@@ -485,7 +542,7 @@ async function submitModules() {
 function limitDec(el) { el.value = el.value.replace(/[^0-9.]/g, '').replace(/(\...?).*/,'$1'); }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-setInterval(() => { if (token && !document.activeElement?.matches('input,select')) refresh(); }, 5000);
+setInterval(() => { if (token && !document.activeElement?.matches('input,select')) { if (isAdmin) refreshAdmin(); else refresh(); } }, 5000);
 if (token && username) showMain(); else showLogin();
 </script>
 </body>
