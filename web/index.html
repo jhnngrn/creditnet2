@@ -1,0 +1,729 @@
+<title>Creditnet</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #0f1114;
+  --bg2: #181b20;
+  --bg3: #22262d;
+  --fg: #d4d7dd;
+  --fg2: #8b919a;
+  --accent: #5b9bd5;
+  --accent2: #3a7ab8;
+  --green: #6bc785;
+  --red: #d46b6b;
+  --orange: #d4a36b;
+  --border: #2a2e35;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f5f6f8;
+    --bg2: #ffffff;
+    --bg3: #e8eaed;
+    --fg: #1a1d23;
+    --fg2: #5f6570;
+    --accent: #2e73b5;
+    --accent2: #1d5a96;
+    --green: #2d8e4e;
+    --red: #c04444;
+    --orange: #b07830;
+    --border: #d0d3d8;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f5f6f8;
+  --bg2: #ffffff;
+  --bg3: #e8eaed;
+  --fg: #1a1d23;
+  --fg2: #5f6570;
+  --accent: #2e73b5;
+  --accent2: #1d5a96;
+  --green: #2d8e4e;
+  --red: #c04444;
+  --orange: #b07830;
+  --border: #d0d3d8;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px;
+  min-height: 100vh;
+}
+
+.mono { font-family: 'IBM Plex Mono', monospace; }
+
+.container { max-width: 720px; margin: 0 auto; }
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.header h1 {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.header .identity {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--fg2);
+}
+
+/* Auth */
+.auth-box {
+  max-width: 340px;
+  margin: 80px auto;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 32px;
+}
+.auth-box h2 {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+/* Forms */
+input, select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  width: 100%;
+}
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+input::placeholder { color: var(--fg2); opacity: 0.6; }
+
+label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg2);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.field { margin-bottom: 14px; }
+
+button {
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 16px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  background: var(--bg3);
+  color: var(--fg);
+  transition: background 0.15s;
+}
+button:hover { background: var(--border); }
+button:disabled { opacity: 0.4; cursor: default; }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent2); }
+.btn-primary:hover { background: var(--accent2); }
+.btn-danger { background: var(--red); color: #fff; border-color: var(--red); }
+.btn-danger:hover { opacity: 0.85; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Checkbox */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.checkbox-row input[type="checkbox"] { width: auto; }
+
+/* Cards / Sections */
+.section {
+  margin-bottom: 24px;
+}
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--fg2);
+  margin-bottom: 10px;
+}
+
+.peer-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin-bottom: 8px;
+}
+.peer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.peer-name {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  font-weight: 500;
+}
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+.badge-connected { background: var(--green); color: #000; }
+.badge-waiting { background: var(--orange); color: #000; }
+.badge-incoming { background: var(--accent); color: #fff; }
+.badge-closing { background: var(--red); color: #fff; }
+
+.peer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px 16px;
+  margin-bottom: 10px;
+}
+.peer-stat label {
+  font-size: 10px;
+  margin-bottom: 1px;
+}
+.peer-stat .val {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  font-weight: 500;
+}
+.peer-stat .val.positive { color: var(--green); }
+.peer-stat .val.negative { color: var(--red); }
+.peer-stat .pending {
+  font-size: 11px;
+  color: var(--orange);
+  font-style: italic;
+}
+
+.module-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.mod-badge {
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+}
+.mod-badge.mod-connected { border-color: var(--green); color: var(--green); }
+.mod-badge.mod-waiting { border-color: var(--orange); color: var(--orange); }
+.mod-badge.mod-incoming { border-color: var(--accent); color: var(--accent); }
+
+/* Actions panel */
+.actions-toggle {
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.actions-toggle:hover { text-decoration: underline; }
+.actions-panel {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+@media (max-width: 500px) { .actions-panel { grid-template-columns: 1fr; } }
+.action-group label { margin-bottom: 3px; }
+.action-group { display: flex; flex-direction: column; gap: 4px; }
+.action-group .input-row { display: flex; gap: 4px; }
+.action-group .input-row input { flex: 1; }
+.action-group .input-row button { flex-shrink: 0; }
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-size: 13px;
+  z-index: 100;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.toast.show { opacity: 1; }
+.toast.ok { background: var(--green); color: #000; }
+.toast.err { background: var(--red); color: #fff; }
+
+/* Add peer form */
+.add-peer-form {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+.add-peer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.add-peer-row .field { margin-bottom: 0; flex: 1; min-width: 180px; }
+
+.auth-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.auth-tab {
+  flex: 1;
+  text-align: center;
+  padding: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  background: var(--bg);
+  color: var(--fg2);
+}
+.auth-tab.active { background: var(--accent); color: #fff; }
+
+.empty-state {
+  text-align: center;
+  color: var(--fg2);
+  padding: 32px 16px;
+  font-size: 13px;
+}
+
+[hidden] { display: none !important; }
+</style>
+
+<div class="container">
+  <!-- Auth Screen -->
+  <div id="auth-screen">
+    <div class="auth-box">
+      <h2>creditnet</h2>
+      <div class="auth-tabs">
+        <button class="auth-tab active" onclick="setAuthTab('login')">Login</button>
+        <button class="auth-tab" onclick="setAuthTab('register')">Register</button>
+      </div>
+      <div id="auth-form">
+        <div class="field">
+          <label>Username</label>
+          <input id="auth-user" type="text" placeholder="alice" autocomplete="username" autocapitalize="none">
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input id="auth-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+        </div>
+        <button id="auth-btn" class="btn-primary" style="width:100%" onclick="doAuth()">Login</button>
+        <div id="auth-error" style="color:var(--red);font-size:12px;margin-top:8px;text-align:center"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" hidden>
+    <div class="header">
+      <div>
+        <h1>creditnet</h1>
+        <div class="identity" id="node-identity"></div>
+      </div>
+      <button class="btn-sm" onclick="doLogout()">Logout</button>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Add Peer</div>
+      <div class="add-peer-form">
+        <div class="add-peer-row">
+          <div class="field">
+            <label>Peer Identity</label>
+            <input id="add-peer-id" type="text" placeholder="bob@example.com" autocapitalize="none">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;padding-bottom:0">
+            <div class="checkbox-row">
+              <input type="checkbox" id="add-peer-triad" checked>
+              <label style="margin:0;text-transform:none;font-size:13px">triad</label>
+            </div>
+          </div>
+          <button class="btn-primary btn-sm" onclick="doAddPeer()">Connect</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Peers</div>
+      <div id="peers-list"></div>
+      <div id="peers-empty" class="empty-state" hidden>No peers yet. Connect to someone above.</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const state = {
+  token: null,
+  user: null,
+  authMode: 'login',
+  status: null,
+  openPeers: new Set(),
+  refreshTimer: null,
+};
+
+// --- API ---
+async function api(endpoint, method, payload, token) {
+  const body = { method };
+  if (payload !== undefined) body.payload = payload;
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  try {
+    const r = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+    if (r.status === 401) { doLogout(); return { ok: false, error: 'Session expired' }; }
+    return await r.json();
+  } catch (e) {
+    return { ok: false, error: 'Network error' };
+  }
+}
+function authApi(method, payload) { return api('/api/auth', method, payload); }
+function accountApi(method, payload) { return api('/api/account', method, payload, state.token); }
+
+// --- Toast ---
+function toast(msg, ok) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show ' + (ok ? 'ok' : 'err');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// --- Auth ---
+function setAuthTab(mode) {
+  state.authMode = mode;
+  document.querySelectorAll('.auth-tab').forEach((t, i) => {
+    t.classList.toggle('active', (i === 0 && mode === 'login') || (i === 1 && mode === 'register'));
+  });
+  document.getElementById('auth-btn').textContent = mode === 'login' ? 'Login' : 'Register';
+  document.getElementById('auth-error').textContent = '';
+}
+
+async function doAuth() {
+  const user = document.getElementById('auth-user').value.trim();
+  const pass = document.getElementById('auth-pass').value;
+  if (!user || !pass) return;
+  const errEl = document.getElementById('auth-error');
+  errEl.textContent = '';
+  if (state.authMode === 'register') {
+    const r = await authApi('register', { username: user, password: pass });
+    if (!r.ok) { errEl.textContent = r.error; return; }
+    // auto-login after register
+  }
+  const r = await authApi('login', { username: user, password: pass });
+  if (!r.ok) { errEl.textContent = r.error; return; }
+  state.token = r.result.token;
+  state.user = user.toLowerCase();
+  try { sessionStorage.setItem('cn_token', state.token); sessionStorage.setItem('cn_user', state.user); } catch(e) {}
+  showDashboard();
+}
+
+function doLogout() {
+  if (state.token) authApi('logout', undefined).catch(() => {});
+  state.token = null;
+  state.user = null;
+  try { sessionStorage.removeItem('cn_token'); sessionStorage.removeItem('cn_user'); } catch(e) {}
+  clearInterval(state.refreshTimer);
+  document.getElementById('auth-screen').hidden = false;
+  document.getElementById('dashboard').hidden = true;
+  document.getElementById('auth-pass').value = '';
+}
+
+function showDashboard() {
+  document.getElementById('auth-screen').hidden = true;
+  document.getElementById('dashboard').hidden = false;
+  refreshStatus();
+  clearInterval(state.refreshTimer);
+  state.refreshTimer = setInterval(refreshStatus, 3000);
+}
+
+// --- Status ---
+async function refreshStatus() {
+  const r = await accountApi('status');
+  if (!r.ok) return;
+  state.status = r.result;
+  renderIdentity();
+  renderPeers();
+}
+
+function renderIdentity() {
+  const el = document.getElementById('node-identity');
+  // infer domain from peer identities or fallback
+  let domain = '';
+  const links = state.status.links || {};
+  for (const peer of Object.keys(links)) {
+    const parts = peer.split('@');
+    if (parts.length === 2) { domain = parts[1]; break; }
+  }
+  el.textContent = domain ? state.user + '@' + domain : state.user;
+}
+
+function renderPeers() {
+  const container = document.getElementById('peers-list');
+  const links = state.status.links || {};
+  const trustlines = (state.status.trustline && state.status.trustline.peers) || {};
+  const triadStatus = state.status.triad || {};
+  const peers = Object.keys(links);
+
+  document.getElementById('peers-empty').hidden = peers.length > 0;
+
+  // Build new HTML
+  const frags = peers.map(peer => {
+    const link = links[peer];
+    const st = link.state || {};
+    const tl = trustlines[peer] || {};
+    const status = st.intent_close ? 'closing' : (st.status || 'unknown');
+    const modules = st.modules || {};
+
+    let html = '<div class="peer-card" data-peer="' + esc(peer) + '">';
+
+    // Header
+    html += '<div class="peer-header">';
+    html += '<span class="peer-name mono">' + esc(peer) + '</span>';
+    html += '<span class="badge badge-' + status + '">' + status + '</span>';
+    html += '</div>';
+
+    // Incoming link: accept/reject
+    if (status === 'incoming') {
+      html += '<div class="btn-row" style="margin-bottom:8px">';
+      html += '<button class="btn-sm btn-primary" onclick="doLinkAction(\'link.accept\',\'' + esc(peer) + '\')">Accept</button>';
+      html += '<button class="btn-sm btn-danger" onclick="doLinkAction(\'link.reject\',\'' + esc(peer) + '\')">Reject</button>';
+      html += '</div>';
+    }
+
+    // Module badges
+    const modNames = Object.keys(modules);
+    if (modNames.length > 0) {
+      html += '<div class="module-badges">';
+      for (const m of modNames) {
+        const mod = modules[m];
+        const ms = mod.intent_close ? 'closing' : (mod.status || 'unknown');
+        html += '<span class="mod-badge mod-' + ms + '">' + esc(m) + ' · ' + ms + '</span>';
+        if (ms === 'incoming') {
+          html += '<button class="btn-sm" style="font-size:11px" onclick="doModuleAction(\'module.accept\',\'' + esc(peer) + '\',\'' + esc(m) + '\')">accept</button>';
+          html += '<button class="btn-sm" style="font-size:11px" onclick="doModuleAction(\'module.reject\',\'' + esc(peer) + '\',\'' + esc(m) + '\')">reject</button>';
+        }
+      }
+      html += '</div>';
+    }
+
+    // Trustline stats (only if connected)
+    if (status === 'connected') {
+      const bal = tl.balance || 0;
+      const effBal = tl.effective_balance || 0;
+      const balClass = effBal > 0 ? 'positive' : effBal < 0 ? 'negative' : '';
+
+      html += '<div class="peer-grid">';
+      html += stat('Balance', effBal, balClass, null);
+      html += stat('Credit limit', tl.credit_limit || 0, '', tl.pending_limit !== undefined ? 'pending: ' + tl.pending_limit : null);
+      html += stat('Their limit', tl.credit_limit_in || 0, '', null);
+      html += stat('Demurrage', (tl.demurrage || 0) + '‰/yr', '', tl.pending_demurrage !== undefined ? 'pending: ' + tl.pending_demurrage + '‰' : null);
+      html += stat('Their demurrage', (tl.demurrage_in || 0) + '‰/yr', '', null);
+      if (tl.pending_payment !== undefined) {
+        html += stat('Pending payment', tl.pending_payment, 'negative', null);
+      }
+      html += '</div>';
+
+      // Actions toggle
+      const open = state.openPeers.has(peer);
+      html += '<button class="actions-toggle" onclick="toggleActions(\'' + esc(peer) + '\')">' + (open ? '▾ actions' : '▸ actions') + '</button>';
+
+      if (open) {
+        html += '<div class="actions-panel">';
+
+        // Set credit limit
+        html += '<div class="action-group"><label>Set credit limit</label>';
+        html += '<div class="input-row"><input type="number" id="cl-' + esc(peer) + '" placeholder="amount" min="0">';
+        html += '<button class="btn-sm btn-primary" onclick="doSetLimit(\'' + esc(peer) + '\')">Set</button></div></div>';
+
+        // Payment
+        html += '<div class="action-group"><label>Send payment</label>';
+        html += '<div class="input-row"><input type="number" id="pay-' + esc(peer) + '" placeholder="amount" min="1">';
+        html += '<button class="btn-sm btn-primary" onclick="doPayment(\'' + esc(peer) + '\')">Send</button></div></div>';
+
+        // Demurrage
+        html += '<div class="action-group"><label>Set demurrage (‰/yr)</label>';
+        html += '<div class="input-row"><input type="number" id="dem-' + esc(peer) + '" placeholder="rate" min="0">';
+        html += '<button class="btn-sm btn-primary" onclick="doSetDemurrage(\'' + esc(peer) + '\')">Set</button></div></div>';
+
+        // Set modules
+        const hasTriad = !!modules['triad'];
+        html += '<div class="action-group"><label>Modules</label>';
+        html += '<div class="checkbox-row"><input type="checkbox" id="mod-triad-' + esc(peer) + '"' + (hasTriad ? ' checked' : '') + '>';
+        html += '<label style="margin:0;text-transform:none;font-size:13px">triad</label></div>';
+        html += '<button class="btn-sm" onclick="doSetModules(\'' + esc(peer) + '\')">Update modules</button></div>';
+
+        // Remove peer
+        html += '<div class="action-group"><label>Danger</label>';
+        html += '<button class="btn-sm btn-danger" onclick="doRemovePeer(\'' + esc(peer) + '\')">Remove peer</button></div>';
+
+        html += '</div>';
+      }
+    }
+
+    html += '</div>';
+    return html;
+  });
+
+  container.innerHTML = frags.join('');
+}
+
+function stat(label, value, cls, pending) {
+  let html = '<div class="peer-stat"><label>' + label + '</label>';
+  html += '<div class="val ' + (cls || '') + '">' + value + '</div>';
+  if (pending) html += '<div class="pending">' + esc(pending) + '</div>';
+  html += '</div>';
+  return html;
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function toggleActions(peer) {
+  if (state.openPeers.has(peer)) state.openPeers.delete(peer);
+  else state.openPeers.add(peer);
+  renderPeers();
+}
+
+// --- Actions ---
+async function doLinkAction(method, peer) {
+  const r = await accountApi(method, { peer });
+  toast(r.ok ? 'Done' : r.error, r.ok);
+  if (r.ok) refreshStatus();
+}
+
+async function doModuleAction(method, peer, module) {
+  const r = await accountApi(method, { peer, module });
+  toast(r.ok ? 'Done' : r.error, r.ok);
+  if (r.ok) refreshStatus();
+}
+
+async function doAddPeer() {
+  const peer = document.getElementById('add-peer-id').value.trim();
+  if (!peer) return;
+  const modules = [];
+  if (document.getElementById('add-peer-triad').checked) modules.push('triad');
+  const r = await accountApi('trustline.add_peer', { peer, modules });
+  toast(r.ok ? 'Connected to ' + peer : r.error, r.ok);
+  if (r.ok) {
+    document.getElementById('add-peer-id').value = '';
+    refreshStatus();
+  }
+}
+
+async function doSetLimit(peer) {
+  const input = document.getElementById('cl-' + peer);
+  const amount = parseInt(input.value);
+  if (isNaN(amount) || amount < 0) { toast('Invalid amount', false); return; }
+  const r = await accountApi('trustline.set_credit_limit', { peer, amount });
+  toast(r.ok ? 'Credit limit set' : r.error, r.ok);
+  if (r.ok) { input.value = ''; refreshStatus(); }
+}
+
+async function doPayment(peer) {
+  const input = document.getElementById('pay-' + peer);
+  const amount = parseInt(input.value);
+  if (isNaN(amount) || amount <= 0) { toast('Invalid amount', false); return; }
+  const r = await accountApi('trustline.payment', { peer, amount });
+  toast(r.ok ? 'Payment sent' : r.error, r.ok);
+  if (r.ok) { input.value = ''; refreshStatus(); }
+}
+
+async function doSetDemurrage(peer) {
+  const input = document.getElementById('dem-' + peer);
+  const rate = parseInt(input.value);
+  if (isNaN(rate) || rate < 0) { toast('Invalid rate', false); return; }
+  const r = await accountApi('trustline.set_demurrage', { peer, rate });
+  toast(r.ok ? 'Demurrage set' : r.error, r.ok);
+  if (r.ok) { input.value = ''; refreshStatus(); }
+}
+
+async function doSetModules(peer) {
+  const modules = [];
+  if (document.getElementById('mod-triad-' + peer).checked) modules.push('triad');
+  const r = await accountApi('link.set_modules', { peer, modules });
+  toast(r.ok ? 'Modules updated' : r.error, r.ok);
+  if (r.ok) refreshStatus();
+}
+
+async function doRemovePeer(peer) {
+  const r = await accountApi('trustline.remove_peer', { peer });
+  toast(r.ok ? 'Peer removed' : r.error, r.ok);
+  if (r.ok) { state.openPeers.delete(peer); refreshStatus(); }
+}
+
+// --- Init ---
+(function init() {
+  // Restore session
+  try {
+    const t = sessionStorage.getItem('cn_token');
+    const u = sessionStorage.getItem('cn_user');
+    if (t && u) { state.token = t; state.user = u; showDashboard(); return; }
+  } catch(e) {}
+
+  // Enter on password field
+  document.getElementById('auth-pass').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doAuth();
+  });
+  document.getElementById('auth-user').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('auth-pass').focus();
+  });
+  const addPeerEl = document.getElementById('add-peer-id');
+  if (addPeerEl) addPeerEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter') doAddPeer();
+  });
+})();
+</script>
