@@ -355,7 +355,7 @@ async function setLimit(peer) {
   if (!el.value.trim()) return;
   const v = Math.round(parseFloat(el.value) * 100);
   if (isNaN(v) || v < 0) return;
-  try { await api('/api/account', 'trustline.set_credit_limit', {peer, limit: v}); toast('Limit updated'); el.value = ''; refresh(); }
+  try { await api('/api/account', 'trustline.set_credit_limit', {peer, amount: v}); toast('Limit updated'); el.value = ''; refresh(); }
   catch(e) { toast(e.message); }
 }
 
