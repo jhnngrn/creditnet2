@@ -230,13 +230,13 @@ function renderPending() {
 
   // Incoming link requests (links where we haven't accepted yet)
   for (const [peer, l] of Object.entries(links)) {
-    if (l.state?.status === 'incoming') {
+    if (l.state?.status === 'incoming' && !l.state?.intent_connect) {
       items.push({type: 'link', peer, label: 'wants to connect'});
     }
     // Incoming module proposals
     const mods = l.state?.modules || {};
     for (const [mod, ms] of Object.entries(mods)) {
-      if (ms.status === 'incoming') {
+      if (ms.status === 'incoming' && !ms.intent_connect) {
         items.push({type: 'module', peer, module: mod, label: mod + ' module proposal'});
       }
     }
