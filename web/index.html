@@ -132,7 +132,7 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
   </div>
 
   <!-- Receipts -->
-  <div id="receipts-section" class="section" style="display:none">
+  <div id="receipts-section" class="section">
     <div class="section-header"><h2>Receipts</h2></div>
     <div id="receipts-list"></div>
   </div>
@@ -399,8 +399,7 @@ function renderReceipts() {
   const receipts = status.trustline?.receipts || [];
   const sec = document.getElementById('receipts-section');
   const el = document.getElementById('receipts-list');
-  if (!receipts.length) { sec.style.display = 'none'; return; }
-  sec.style.display = '';
+  if (!receipts.length) { el.innerHTML = '<div class="empty">No receipts yet.</div>'; return; }
   let html = '';
   for (let i = receipts.length - 1; i >= 0; i--) {
     const r = receipts[i];
