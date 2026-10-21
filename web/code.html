@@ -134,17 +134,13 @@ body {
 }
 .file-icon { flex-shrink: 0; color: var(--fg-muted); width: 14px; height: 14px; }
 .dir-icon { flex-shrink: 0; color: var(--accent); width: 14px; height: 14px; }
-.dir-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+.file-list li a.dir-toggle {
   color: var(--fg-muted);
   font-weight: 500;
-  border-left: 2px solid transparent;
-  margin-top: 4px;
+}
+.file-list li a.dir-toggle:hover {
+  color: var(--fg);
+  background: var(--border);
 }
 
 /* Right: content viewer */
@@ -411,22 +407,65 @@ async function viewFile(name, basePath) {
   }
 }
 
+async function loadDir(basePath, parentUl, depth) {
+  var res = await fetch(basePath);
+  var items = await res.json();
+
+  var files = [];
+  var dirs = [];
+  for (var i = 0; i < items.length; i++) {
+    var f = items[i];
+    if (SKIP[f.name]) continue;
+    if (f.type === 'directory') dirs.push(f);
+    else files.push(f);
+  }
+  files.sort(function(a, b) { return a.name.localeCompare(b.name); });
+  dirs.sort(function(a, b) { return a.name.localeCompare(b.name); });
+
+  for (var i = 0; i < files.length; i++) {
+    parentUl.appendChild(makeFileLink(files[i].name, basePath, depth));
+  }
+
+  for (var i = 0; i < dirs.length; i++) {
+    parentUl.appendChild(makeDirNode(dirs[i].name, basePath, depth));
+  }
+}
+
+function makeDirNode(name, basePath, depth) {
+  var li = document.createElement('li');
+  var a = document.createElement('a');
+  a.href = '#';
+  a.className = 'dir-toggle';
+  var pad = '';
+  for (var i = 0; i < depth; i++) pad += '<span style="width:14px;display:inline-block"></span>';
+  a.innerHTML = pad + dirIconSvg() + '<span>' + escapeHtml(name) + '/</span>';
+
+  var childUl = document.createElement('ul');
+  childUl.className = 'file-list';
+  childUl.style.display = 'none';
+
+  var fetched = false;
+  var open = false;
+
+  a.onclick = async function(e) {
+    e.preventDefault();
+    if (!fetched) {
+      fetched = true;
+      try {
+        await loadDir(basePath + name + '/', childUl, depth + 1);
+      } catch(err) {}
+    }
+    open = !open;
+    childUl.style.display = open ? '' : 'none';
+  };
+
+  li.appendChild(a);
+  li.appendChild(childUl);
+  return li;
+}
+
 async function loadFiles() {
   try {
-    var res = await fetch('./src/');
-    var items = await res.json();
-
-    var files = [];
-    var dirs = [];
-    for (var i = 0; i < items.length; i++) {
-      var f = items[i];
-      if (SKIP[f.name]) continue;
-      if (f.type === 'directory') dirs.push(f);
-      else files.push(f);
-    }
-    files.sort(function(a, b) { return a.name.localeCompare(b.name); });
-    dirs.sort(function(a, b) { return a.name.localeCompare(b.name); });
-
     var sidebar = document.getElementById('sidebar');
     var loading = document.getElementById('files-loading');
     loading.remove();
@@ -434,30 +473,7 @@ async function loadFiles() {
     var ul = document.createElement('ul');
     ul.className = 'file-list';
 
-    // Root files
-    for (var i = 0; i < files.length; i++) {
-      ul.appendChild(makeFileLink(files[i].name, './src/'));
-    }
-
-    // Subdirectories
-    for (var i = 0; i < dirs.length; i++) {
-      var dirName = dirs[i].name;
-      var label = document.createElement('li');
-      label.innerHTML = '<div class="dir-label">' + dirIconSvg() + ' ' + escapeHtml(dirName) + '/</div>';
-      ul.appendChild(label);
-
-      // Fetch subdirectory contents
-      try {
-        var subRes = await fetch('./src/' + dirName + '/');
-        var subItems = await subRes.json();
-        subItems.sort(function(a, b) { return a.name.localeCompare(b.name); });
-        for (var j = 0; j < subItems.length; j++) {
-          if (subItems[j].type === 'file') {
-            ul.appendChild(makeFileLink(subItems[j].name, './src/' + dirName + '/', '  '));
-          }
-        }
-      } catch(e) {}
-    }
+    await loadDir('./src/', ul, 0);
 
     sidebar.appendChild(ul);
 
@@ -468,13 +484,15 @@ async function loadFiles() {
   }
 }
 
-function makeFileLink(name, basePath, indent) {
+function makeFileLink(name, basePath, depth) {
   var li = document.createElement('li');
   var a = document.createElement('a');
   a.href = '#';
   a.setAttribute('data-file', name);
   a.setAttribute('data-base', basePath);
-  a.innerHTML = (indent ? '<span style="width:14px;display:inline-block"></span>' : '') + fileIconSvg() + '<span>' + escapeHtml(name) + '</span>';
+  var pad = '';
+  for (var i = 0; i < depth; i++) pad += '<span style="width:14px;display:inline-block"></span>';
+  a.innerHTML = pad + fileIconSvg() + '<span>' + escapeHtml(name) + '</span>';
   a.onclick = function(e) {
     e.preventDefault();
     viewFile(this.getAttribute('data-file'), this.getAttribute('data-base'));
