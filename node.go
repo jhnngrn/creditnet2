@@ -87,18 +87,6 @@ func (h *Node) GetTrustline(peer string) *Trustline {
 	return h.Trustlines[peer]
 }
 
-// getOrCreateTrustline returns the trustline for a connected peer,
-// creating it lazily if the link is connected but no trustline exists yet.
-func (h *Node) getOrCreateTrustline(peer string) *Trustline {
-	lk := h.links.Get(peer)
-	if lk == nil || lk.State.Root != "trustline" || lk.State.Status != mimesis.Connected {
-		return nil
-	}
-	if h.Trustlines[peer] == nil {
-		h.Trustlines[peer] = &Trustline{}
-	}
-	return h.Trustlines[peer]
-}
 
 // PendingBalance returns effective balance minus reservations.
 // Positive means debt exists: peer owes us (OUT) or we owe them (IN).
@@ -142,8 +130,11 @@ func (h *Node) Bandwidth(peer string, side int) int64 {
 
 
 // OnConnect is called by the framework when link.connect completes bilaterally.
-// Trustline is created lazily on first use, not here.
-func (h *Node) OnConnect(peer string) {}
+func (h *Node) OnConnect(peer string) {
+	if h.Trustlines[peer] == nil {
+		h.Trustlines[peer] = &Trustline{}
+	}
+}
 
 // OnClose is called by the framework when link.close completes bilaterally.
 // The link is about to be removed. Archive balance and clean up.
@@ -192,7 +183,7 @@ func (h *Node) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, e
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return false, err
 	}
-	peer := h.getOrCreateTrustline(peerID)
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return false, fmt.Errorf("peer not connected")
 	}
@@ -210,7 +201,7 @@ func (h *Node) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) 
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return false, err
 	}
-	peer := h.getOrCreateTrustline(peerID)
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return false, fmt.Errorf("peer not connected")
 	}
@@ -422,7 +413,7 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []strin
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := h.getOrCreateTrustline(peerID)
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return nil, nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
@@ -446,7 +437,7 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, []string,
 		return nil, nil, fmt.Errorf("bad request")
 	}
 	peerID := strings.ToLower(p.Peer)
-	peer := h.getOrCreateTrustline(peerID)
+	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return nil, nil, fmt.Errorf("peer %s is not connected", peerID)
 	}
