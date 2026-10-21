@@ -397,9 +397,7 @@ function renderStats() {
   const links = status.links || {};
   const trustlines = status.trustline?.peers || {};
   const count = Object.entries(links).filter(([,l]) => l.state?.status === 'connected').length;
-  el.innerHTML = '<div class="stats">'
-    + '<div class="stat-card"><div class="label">Links</div><div class="value">' + count + '</div></div>'
-    + '</div>';
+  el.innerHTML = '';
 }
 
 // --- Modals ---
