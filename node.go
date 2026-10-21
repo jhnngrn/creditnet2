@@ -379,10 +379,14 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 		return nil, nil, err
 	}
 	// Set initial credit limit if provided.
+	// The link is still in "waiting" state, so getOrCreateTrustline
+	// won't work — create the trustline entry directly.
 	if p.CreditLimit > 0 {
-		peer := h.getOrCreateTrustline(peerID)
-		peer.PendingLimit = &p.CreditLimit
-		peer.Queue.Enqueue("set_credit_limit")
+		if h.Trustlines[peerID] == nil {
+			h.Trustlines[peerID] = &Trustline{}
+		}
+		h.Trustlines[peerID].PendingLimit = &p.CreditLimit
+		h.Trustlines[peerID].Queue.Enqueue("set_credit_limit")
 	}
 	// Request chosen child modules on this link.
 	if len(p.Modules) > 0 {
