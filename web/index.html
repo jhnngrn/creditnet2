@@ -473,7 +473,7 @@ function showModal(type) {
   if (type === 'settings') {
     html = modal('Settings',
       '<label>Current password</label><input id="m-old-pw" type="password">'
-      + '<label>New password</label><input id="m-new-pw" type="password">'
+      + '<label>New password</label><input id="m-new-pw" type="password" onkeydown="if(event.key===\'Enter\')submitChangePw()">'
     , 'submitChangePw()');
   }
   else if (type === 'create-user') {
