@@ -140,6 +140,9 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 
 <script>
 const API = location.origin;
+const UNIT = 100000;
+function toDisplay(v) { return (v / UNIT).toFixed(2); }
+function toBase(v) { return Math.round(parseFloat(v) * UNIT); }
 let token = null;
 let username = null;
 let status = null;
@@ -292,13 +295,13 @@ function renderLinks() {
   const links = status.links || {};
   const peers = Object.keys(links).sort();
   let html = '';
-  const trustlines = status.trustline || {};
+  const trustlines = status.trustline?.peers || {};
   for (const peer of peers) {
     const l = links[peer];
     if (l.state?.status !== 'connected') continue;
     const t = trustlines[peer] || {};
     const rawBal = t.balance || 0;
-    const bal = (rawBal / 100).toFixed(2);
+    const bal = toDisplay(rawBal);
     const cls = rawBal > 0 ? 'pos' : rawBal < 0 ? 'neg' : '';
     const ep = esc(peer);
     const isExp = expanded[peer];
@@ -306,8 +309,8 @@ function renderLinks() {
     html += '<div class="card">'
       + '<div class="link-top"><span class="link-peer">' + ep + '</span><span class="link-balance ' + cls + '">' + bal + '</span></div>'
       + '<div class="link-limits">'
-      + '<span>credit out <strong>' + ((t.credit_limit||0)/100).toFixed(2) + '</strong></span>'
-      + '<span>credit in <strong>' + ((t.credit_limit_in||0)/100).toFixed(2) + '</strong></span>'
+      + '<span>credit out <strong>' + toDisplay(t.credit_limit||0) + '</strong></span>'
+      + '<span>credit in <strong>' + toDisplay(t.credit_limit_in||0) + '</strong></span>'
       + '</div>'
       + '<div class="link-controls">'
       + '<input id="lim-' + ep + '" type="text" inputmode="decimal" placeholder="limit" oninput="limitDec(this)" onkeydown="if(event.key===\'Enter\')setLimit(\'' + ep + '\')">'
@@ -328,7 +331,7 @@ function renderLinks() {
         + '<span style="color:var(--fg2)">(per year)</span>'
         + '</div>'
         + '<div class="link-controls" style="margin-top:6px">'
-        + '<input id="dem-' + ep + '" type="text" inputmode="decimal" placeholder="%/yr" value="' + demOut + '" oninput="limitDec(this)" onkeydown="if(event.key===\'Enter\')setDemurrage(\'' + ep + '\')">'
+        + '<input id="dem-' + ep + '" type="text" inputmode="decimal" placeholder="%/yr" value="' + demOut + '" onkeydown="if(event.key===\'Enter\')setDemurrage(\'' + ep + '\')">'
         + '<button class="btn btn-sm btn-primary" onclick="setDemurrage(\'' + ep + '\')">Set demurrage</button>'
         + '</div>'
         + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">'
@@ -353,7 +356,7 @@ function toggleExpand(peer) { expanded[peer] = !expanded[peer]; renderLinks(); }
 async function setLimit(peer) {
   const el = document.getElementById('lim-' + peer);
   if (!el.value.trim()) return;
-  const v = Math.round(parseFloat(el.value) * 100);
+  const v = toBase(el.value);
   if (isNaN(v) || v < 0) return;
   try { await api('/api/account', 'trustline.set_credit_limit', {peer, amount: v}); toast('Limit updated'); el.value = ''; refresh(); }
   catch(e) { toast(e.message); }
@@ -361,7 +364,7 @@ async function setLimit(peer) {
 
 async function doPay(peer) {
   const el = document.getElementById('pay-' + peer);
-  const v = Math.round(parseFloat(el.value) * 100);
+  const v = toBase(el.value);
   if (!v || v <= 0) return;
   try { await api('/api/account', 'trustline.payment', {peer, amount: v}); toast('Paid'); el.value = ''; refresh(); }
   catch(e) { toast(e.message); }
@@ -384,7 +387,7 @@ async function removeLink(peer) {
 function renderStats() {
   const el = document.getElementById('stats-section');
   const links = status.links || {};
-  const trustlines = status.trustline || {};
+  const trustlines = status.trustline?.peers || {};
   const count = Object.entries(links).filter(([,l]) => l.state?.status === 'connected').length;
   let totalOut = 0, totalIn = 0;
   for (const t of Object.values(trustlines)) {
@@ -393,7 +396,7 @@ function renderStats() {
   }
   el.innerHTML = '<div class="stats">'
     + '<div class="stat-card"><div class="label">Links</div><div class="value">' + count + '</div></div>'
-    + '<div class="stat-card"><div class="label">Total credit out</div><div class="value">' + (totalOut/100).toFixed(2) + '</div></div>'
+    + '<div class="stat-card"><div class="label">Total credit out</div><div class="value">' + toDisplay(totalOut) + '</div></div>'
     + '</div>';
 }
 
@@ -443,7 +446,7 @@ async function submitAddLink() {
   const triad = document.getElementById('m-triad').checked;
   if (!peer) { mErr('Peer required'); return; }
   try {
-    const limit = limitVal ? Math.round(parseFloat(limitVal) * 100) : 0;
+    const limit = limitVal ? toBase(limitVal) : 0;
     await api('/api/account', 'trustline.add_peer', {peer, credit_limit: limit});
     if (triad) {
       try { await api('/api/account', 'link.set_modules', {peer, modules: ['triad']}); } catch(e) {}
