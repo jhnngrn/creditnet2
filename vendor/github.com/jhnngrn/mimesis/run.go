@@ -44,7 +44,13 @@ func RunAndWait(srv *Server) {
 	if err := srv.Init(); err != nil {
 		log.Fatal(err)
 	}
+	RunAndServe(srv)
+}
 
+// RunAndServe listens and blocks until interrupted.
+// Unlike RunAndWait, it assumes Init has already been called, so extra
+// routes can be added to the mux between Init and RunAndServe.
+func RunAndServe(srv *Server) {
 	ln, err := net.Listen("tcp", srv.cfg.Listen)
 	if err != nil {
 		log.Fatal(err)

@@ -14,6 +14,10 @@ var Boot = mimesis.Boot
 // RunAndWait initializes the server and blocks until interrupted.
 var RunAndWait = mimesis.RunAndWait
 
+// RunAndServe blocks until interrupted, like RunAndWait but assumes
+// Init has already been called (so extra routes can be added to the mux).
+var RunAndServe = mimesis.RunAndServe
+
 // RegisterNode registers the trustline Node module as a root on the server.
 // This must be called before any Register calls, because other modules
 // depend on the Node's trustlines and bandwidth.

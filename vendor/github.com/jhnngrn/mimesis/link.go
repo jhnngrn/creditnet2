@@ -925,6 +925,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 			return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 		}
 		result = enc("ok")
+		kicks = []string{p.Peer}
 
 	case ns == "" && method == "status":
 		result = n.status()

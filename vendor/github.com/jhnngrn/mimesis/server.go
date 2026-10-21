@@ -107,6 +107,10 @@ type Server struct {
 	keyCache map[string]cachedKey
 }
 
+// Mux returns the server's HTTP mux after Init. Use it to add routes
+// (e.g. a static file server) before calling Run or Serve.
+func (s *Server) Mux() *http.ServeMux { return s.mux }
+
 // Register adds a module factory. Call before Init.
 func (s *Server) Register(name string, factory ModuleFactory) {
 	s.factories = append(s.factories, moduleReg{name: name, factory: factory})

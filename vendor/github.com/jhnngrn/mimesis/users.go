@@ -78,10 +78,10 @@ func (s *Server) createUser(username, password string, admin bool) error {
 	}
 	nodeID := username + "@" + s.cfg.Domain
 	n := s.newNode(nodeID, nil)
+	n.commit()
 	s.nmu.Lock()
 	s.nodes[username] = n
 	s.nmu.Unlock()
-	n.commit()
 	return nil
 }
 
