@@ -231,8 +231,12 @@ function renderPending() {
   const links = status.links || {};
   let items = [];
 
-  // Incoming link requests (links where we haven't accepted yet)
   for (const [peer, l] of Object.entries(links)) {
+    // Outgoing link requests (waiting for peer to accept)
+    if (l.state?.status === 'waiting') {
+      items.push({type: 'waiting', peer, label: 'waiting for response'});
+    }
+    // Incoming link requests (links where we haven't accepted yet)
     if (l.state?.status === 'incoming' && !l.state?.intent_connect) {
       items.push({type: 'link', peer, label: 'wants to connect'});
     }
@@ -256,6 +260,10 @@ function renderPending() {
   if (!items.length) { sec.style.display = 'none'; return; }
   sec.style.display = '';
   list.innerHTML = items.map(item => {
+    if (item.type === 'waiting') {
+      return '<div class="pending-item"><span>' + esc(item.peer) + ' — ' + item.label + '</span>'
+        + '<span style="color:var(--fg2);font-size:13px;font-style:italic">pending</span></div>';
+    }
     if (item.type === 'link') {
       return '<div class="pending-item"><span>' + esc(item.peer) + ' — ' + item.label + '</span>'
         + '<div style="display:flex;gap:6px">'
