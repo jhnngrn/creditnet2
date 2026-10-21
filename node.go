@@ -44,6 +44,7 @@ type ClosedBalance struct {
 type Node struct {
 	Trustlines     map[string]*Trustline `json:"trustlines"`
 	ClosedBalances []ClosedBalance       `json:"closed_balances,omitempty"`
+	Receipts       []Receipt             `json:"receipts,omitempty"`
 	name           string
 	nodeID         string
 	links          *mimesis.Node
@@ -67,6 +68,19 @@ func NewNode(name, nodeID string, links *mimesis.Node, state json.RawMessage) *N
 		h.Trustlines = map[string]*Trustline{}
 	}
 	return h
+}
+
+// AddReceipt logs a completed payment.
+func (h *Node) AddReceipt(peer string, amount int64, ok bool) {
+	if len(h.Receipts) >= MaxReceipts {
+		h.Receipts = h.Receipts[1:]
+	}
+	h.Receipts = append(h.Receipts, Receipt{
+		Peer:      peer,
+		Amount:    amount,
+		Status:    ok,
+		Timestamp: time.Now().Unix(),
+	})
 }
 
 // RegisterReserver adds a Reserver whose reservations are subtracted
@@ -231,6 +245,7 @@ func (h *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (bool
 		return false, nil
 	}
 	peer.AddBalance(p.Amount, ts)
+	h.AddReceipt(peerID, p.Amount, true)
 	return true, nil
 }
 
@@ -256,8 +271,11 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 		}
 		peer.PendingDemurrage = nil
 	case "payment":
-		if ok && peer.PendingPayment != nil {
-			peer.AddBalance(-*peer.PendingPayment, ts)
+		if peer.PendingPayment != nil {
+			if ok {
+				peer.AddBalance(-*peer.PendingPayment, ts)
+			}
+			h.AddReceipt(peerID, -*peer.PendingPayment, ok)
 		}
 		peer.PendingPayment = nil
 	}
@@ -294,7 +312,7 @@ func (h *Node) Status() json.RawMessage {
 		}
 		peers[id] = info
 	}
-	return Enc(map[string]any{"peers": peers})
+	return Enc(map[string]any{"peers": peers, "receipts": h.Receipts})
 }
 
 // link.Module — NextTx
