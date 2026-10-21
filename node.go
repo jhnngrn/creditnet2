@@ -388,8 +388,8 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 		return nil, nil, err
 	}
 	// Set initial credit limit if provided.
-	// The link is still in "waiting" state, so getOrCreateTrustline
-	// won't work — create the trustline entry directly.
+	// The link is still in "waiting" state — create the trustline
+	// entry directly so the limit can be queued.
 	if p.CreditLimit > 0 {
 		if h.Trustlines[peerID] == nil {
 			h.Trustlines[peerID] = &Trustline{}
