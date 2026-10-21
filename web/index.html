@@ -444,14 +444,13 @@ function renderReceipts() {
   for (let i = receipts.length - 1; i >= 0; i--) {
     const r = receipts[i];
     const amt = toDisplay(Math.abs(r.amount));
-    const dir = r.amount < 0 ? 'sent' : 'received';
     const cls = r.status ? (r.amount < 0 ? 'neg' : 'pos') : 'fg2';
     const statusLabel = r.status ? '' : ' (failed)';
     const d = new Date(r.timestamp * 1000);
     const time = d.toLocaleString();
     html += '<div class="link-card" style="padding:10px 14px;margin-bottom:4px">'
       + '<div style="display:flex;justify-content:space-between;align-items:center">'
-      + '<div><span style="font-weight:500">' + dir + '</span> ' + r.peer
+      + '<div>' + esc(r.peer)
       + (r.module ? ' <span class="tag" style="margin-left:6px">'+esc(r.module)+'</span>' : '')
       + statusLabel + '</div>'
       + '<div style="font-weight:600;color:var(--' + cls + ')">' + (r.amount < 0 ? '-' : '+') + amt + '</div>'
