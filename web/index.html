@@ -230,13 +230,13 @@ function renderPending() {
 
   // Incoming link requests (links where we haven't accepted yet)
   for (const [peer, l] of Object.entries(links)) {
-    if (l.incoming && !l.accepted) {
+    if (l.state?.status === 'incoming') {
       items.push({type: 'link', peer, label: 'wants to connect'});
     }
     // Incoming module proposals
-    const mods = l.modules || {};
-    for (const [mod, state] of Object.entries(mods)) {
-      if (state === 'incoming') {
+    const mods = l.state?.modules || {};
+    for (const [mod, ms] of Object.entries(mods)) {
+      if (ms.status === 'incoming') {
         items.push({type: 'module', peer, module: mod, label: mod + ' module proposal'});
       }
     }
@@ -291,11 +291,13 @@ function renderLinks() {
   const c = document.getElementById('links-container');
   const links = status.links || {};
   const peers = Object.keys(links).sort();
-  if (!peers.length) { c.innerHTML = '<div class="empty">No links yet.</div>'; return; }
   let html = '';
+  const trustlines = status.trustline || {};
   for (const peer of peers) {
     const l = links[peer];
-    const rawBal = l.balance || 0;
+    if (l.state?.status !== 'connected') continue;
+    const t = trustlines[peer] || {};
+    const rawBal = t.balance || 0;
     const bal = (rawBal / 100).toFixed(2);
     const cls = rawBal > 0 ? 'pos' : rawBal < 0 ? 'neg' : '';
     const ep = esc(peer);
@@ -304,8 +306,8 @@ function renderLinks() {
     html += '<div class="card">'
       + '<div class="link-top"><span class="link-peer">' + ep + '</span><span class="link-balance ' + cls + '">' + bal + '</span></div>'
       + '<div class="link-limits">'
-      + '<span>credit out <strong>' + ((l.credit_limit||0)/100).toFixed(2) + '</strong></span>'
-      + '<span>credit in <strong>' + ((l.credit_limit_in||0)/100).toFixed(2) + '</strong></span>'
+      + '<span>credit out <strong>' + ((t.credit_limit||0)/100).toFixed(2) + '</strong></span>'
+      + '<span>credit in <strong>' + ((t.credit_limit_in||0)/100).toFixed(2) + '</strong></span>'
       + '</div>'
       + '<div class="link-controls">'
       + '<input id="lim-' + ep + '" type="text" inputmode="decimal" placeholder="limit" oninput="limitDec(this)" onkeydown="if(event.key===\'Enter\')setLimit(\'' + ep + '\')">'
@@ -316,9 +318,9 @@ function renderLinks() {
       + '</div>';
 
     if (isExp) {
-      const mods = l.modules || {};
-      const demOut = ((l.demurrage || 0) / 10).toFixed(1);
-      const demIn = ((l.demurrage_in || 0) / 10).toFixed(1);
+      const mods = l.state?.modules || {};
+      const demOut = ((t.demurrage || 0) / 10).toFixed(1);
+      const demIn = ((t.demurrage_in || 0) / 10).toFixed(1);
       html += '<div class="link-detail">'
         + '<div class="link-limits">'
         + '<span>demurrage out <strong>' + demOut + '%</strong></span>'
@@ -331,8 +333,8 @@ function renderLinks() {
         + '</div>'
         + '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">'
         + '<span style="font-size:13px">modules</span>'
-        + Object.entries(mods).map(([name, active]) =>
-            '<span class="tag' + (active ? '' : ' tag-pending') + '">' + name + (active ? '' : ' (pending)') + '</span>'
+        + Object.entries(mods).map(([name, ms]) =>
+            '<span class="tag' + (ms.status === 'connected' ? '' : ' tag-pending') + '">' + name + (ms.status === 'connected' ? '' : ' (' + (ms.status||'pending') + ')') + '</span>'
           ).join('')
         + '<button class="btn btn-sm" onclick="currentPeer=\'' + ep + '\';showModal(\'modules\')">Edit</button>'
         + '</div>'
@@ -343,7 +345,7 @@ function renderLinks() {
     }
     html += '</div>';
   }
-  c.innerHTML = html;
+  c.innerHTML = html || '<div class="empty">No links yet.</div>';
 }
 
 function toggleExpand(peer) { expanded[peer] = !expanded[peer]; renderLinks(); }
@@ -382,11 +384,12 @@ async function removeLink(peer) {
 function renderStats() {
   const el = document.getElementById('stats-section');
   const links = status.links || {};
-  const count = Object.keys(links).length;
+  const trustlines = status.trustline || {};
+  const count = Object.entries(links).filter(([,l]) => l.state?.status === 'connected').length;
   let totalOut = 0, totalIn = 0;
-  for (const l of Object.values(links)) {
-    totalOut += l.credit_limit || 0;
-    totalIn += l.credit_limit_in || 0;
+  for (const t of Object.values(trustlines)) {
+    totalOut += t.credit_limit || 0;
+    totalIn += t.credit_limit_in || 0;
   }
   el.innerHTML = '<div class="stats">'
     + '<div class="stat-card"><div class="label">Links</div><div class="value">' + count + '</div></div>'
@@ -410,11 +413,11 @@ function showModal(type) {
     , 'submitAddLink()');
   }
   else if (type === 'modules') {
-    const cur = status.links[currentPeer]?.modules || {};
+    const cur = status.links[currentPeer]?.state?.modules || {};
     const mods = ['triad'];
     const checks = mods.map(m => {
       const enabled = m in cur;
-      const state = enabled ? (cur[m] ? ' <span style="color:var(--pos);font-size:12px">active</span>' : ' <span style="color:var(--fg2);font-size:12px;font-style:italic">pending</span>') : '';
+      const state = enabled ? (cur[m]?.status === 'connected' ? ' <span style="color:var(--pos);font-size:12px">active</span>' : ' <span style="color:var(--fg2);font-size:12px;font-style:italic">' + (cur[m]?.status||'pending') + '</span>') : '';
       return '<label style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:14px;cursor:pointer">'
         + '<input type="checkbox" class="m-mod-check" value="' + m + '" ' + (enabled ? 'checked' : '') + ' style="width:16px;height:16px;flex-shrink:0"> ' + m + state + '</label>';
     }).join('');
