@@ -518,7 +518,6 @@ function mErr(msg) { document.getElementById('m-error').textContent = msg; }
 
 async function submitChangePw() {
   const old_password = document.getElementById('m-old-pw').value, new_password = document.getElementById('m-new-pw').value;
-  if (!new_password) { mErr('New password required'); return; }
   try { await api('/api/auth', 'change_password', {Old: old_password, New: new_password}); closeModal(); toast('Password changed'); }
   catch(e) { mErr(e.message); }
 }
