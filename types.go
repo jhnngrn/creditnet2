@@ -53,6 +53,8 @@ type Receipt struct {
 	Amount    int64  `json:"amount"`
 	Status    bool   `json:"status"`
 	Timestamp int64  `json:"timestamp"`
+	Module    string `json:"module,omitempty"`
+	Preimage  string `json:"preimage,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

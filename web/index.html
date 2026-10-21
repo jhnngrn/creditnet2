@@ -451,10 +451,13 @@ function renderReceipts() {
     const time = d.toLocaleString();
     html += '<div class="link-card" style="padding:10px 14px;margin-bottom:4px">'
       + '<div style="display:flex;justify-content:space-between;align-items:center">'
-      + '<div><span style="font-weight:500">' + dir + '</span> ' + r.peer + statusLabel + '</div>'
+      + '<div><span style="font-weight:500">' + dir + '</span> ' + r.peer
+      + (r.module ? ' <span class="tag" style="margin-left:6px">'+esc(r.module)+'</span>' : '')
+      + statusLabel + '</div>'
       + '<div style="font-weight:600;color:var(--' + cls + ')">' + (r.amount < 0 ? '-' : '+') + amt + '</div>'
       + '</div>'
       + '<div style="font-size:12px;color:var(--fg2)">' + time + '</div>'
+      + (r.preimage ? '<div style="color:var(--fg2);font-size:11px;font-family:monospace;margin-top:2px">proof: 0x'+esc(r.preimage.slice(0,16))+'…</div>' : '')
       + '</div>';
   }
   el.innerHTML = html;
