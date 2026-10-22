@@ -319,6 +319,7 @@ body {
 var SKIP = {'.git':1, 'vendor':1, 'web':1, 'loops':1};
 var currentFile = null;
 var fileCache = {};
+var dirOpeners = {};
 
 function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -360,6 +361,7 @@ async function viewFile(name, basePath) {
   if (fullPath === currentFile) return;
   currentFile = fullPath;
   setActive(fullPath);
+  history.replaceState(null, '', '#' + fullPath.replace('./src/', ''));
   document.getElementById('viewer-filename').textContent = name;
   document.getElementById('viewer-raw').href = basePath + name;
   document.getElementById('viewer-body').innerHTML = '<div class="loading">loading...</div>';
@@ -449,13 +451,29 @@ function makeDirNode(name, basePath, depth) {
 
   var fetched = false;
   var open = false;
+  var dirPath = basePath + name + '/';
+
+  async function openDir() {
+    if (!fetched) {
+      fetched = true;
+      try {
+        await loadDir(dirPath, childUl, depth + 1);
+      } catch(err) {}
+    }
+    if (!open) {
+      open = true;
+      childUl.style.display = '';
+    }
+  }
+
+  dirOpeners[dirPath] = openDir;
 
   a.onclick = async function(e) {
     e.preventDefault();
     if (!fetched) {
       fetched = true;
       try {
-        await loadDir(basePath + name + '/', childUl, depth + 1);
+        await loadDir(dirPath, childUl, depth + 1);
       } catch(err) {}
     }
     open = !open;
@@ -465,6 +483,20 @@ function makeDirNode(name, basePath, depth) {
   li.appendChild(a);
   li.appendChild(childUl);
   return li;
+}
+
+async function openPath(path) {
+  var parts = path.split('/');
+  var fileName = parts.pop();
+  var basePath = './src/';
+  for (var i = 0; i < parts.length; i++) {
+    var dirPath = basePath + parts[i] + '/';
+    if (dirOpeners[dirPath]) {
+      await dirOpeners[dirPath]();
+    }
+    basePath = dirPath;
+  }
+  viewFile(fileName, basePath);
 }
 
 async function loadFiles() {
@@ -480,7 +512,12 @@ async function loadFiles() {
 
     sidebar.appendChild(ul);
 
-    viewFile('README.md', './src/');
+    var hash = location.hash.slice(1);
+    if (hash) {
+      await openPath(decodeURIComponent(hash));
+    } else {
+      viewFile('README.md', './src/');
+    }
   } catch (e) {
     document.getElementById('files-loading').textContent = 'could not load file list';
   }
