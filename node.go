@@ -375,9 +375,8 @@ func (h *Node) HandleAccount(method string, payload json.RawMessage) (json.RawMe
 
 func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, error) {
 	var p struct {
-		Peer        string   `json:"peer"`
-		Modules     []string `json:"modules,omitempty"`
-		CreditLimit int64    `json:"credit_limit"`
+		Peer    string   `json:"peer"`
+		Modules []string `json:"modules,omitempty"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, nil, fmt.Errorf("bad request")
@@ -391,16 +390,6 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 	}
 	if _, err := h.links.Connect(peerID, "trustline"); err != nil {
 		return nil, nil, err
-	}
-	// Set initial credit limit if provided.
-	// The link is still in "waiting" state — create the trustline
-	// entry directly so the limit can be queued.
-	if p.CreditLimit > 0 {
-		if h.Trustlines[peerID] == nil {
-			h.Trustlines[peerID] = &Trustline{}
-		}
-		h.Trustlines[peerID].PendingLimit = &p.CreditLimit
-		h.Trustlines[peerID].Queue.Enqueue("set_credit_limit")
 	}
 	// Request chosen child modules on this link.
 	if len(p.Modules) > 0 {

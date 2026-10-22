@@ -523,13 +523,15 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			if n.anyBusy(peer) {
 				return false, nil, errRefsHeld
 			}
-			for name := range l.State.Modules {
-				if mod := n.moduleMap[name]; mod != nil {
+			if l.State.Status == Connected {
+				for name := range l.State.Modules {
+					if mod := n.moduleMap[name]; mod != nil {
+						mod.OnClose(peer)
+					}
+				}
+				if mod := n.moduleMap[l.State.Root]; mod != nil {
 					mod.OnClose(peer)
 				}
-			}
-			if mod := n.moduleMap[l.State.Root]; mod != nil {
-				mod.OnClose(peer)
 			}
 			n.delete(peer)
 			return true, nil, nil
@@ -593,13 +595,15 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 			l.State.IntentConnect = false
 		case "close":
 			if ok {
-				for name := range l.State.Modules {
-					if mod := n.moduleMap[name]; mod != nil {
+				if l.State.Status == Connected {
+					for name := range l.State.Modules {
+						if mod := n.moduleMap[name]; mod != nil {
+							mod.OnClose(peer)
+						}
+					}
+					if mod := n.moduleMap[l.State.Root]; mod != nil {
 						mod.OnClose(peer)
 					}
-				}
-				if mod := n.moduleMap[l.State.Root]; mod != nil {
-					mod.OnClose(peer)
 				}
 				n.delete(peer)
 			} else {
