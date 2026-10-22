@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>source code</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/go.min.js"></script>
@@ -291,6 +292,7 @@ body {
   <div class="top-bar">
     <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>
     creditnet
+    <button class="raw-btn" id="dl-btn" onclick="downloadZip()">download .zip</button>
     <a class="back" href="index.html">&larr; back</a>
   </div>
 
@@ -497,6 +499,42 @@ async function openPath(path) {
     basePath = dirPath;
   }
   viewFile(fileName, basePath);
+}
+
+async function collectFiles(basePath, zip, prefix) {
+  var res = await fetch(basePath);
+  var items = await res.json();
+  for (var i = 0; i < items.length; i++) {
+    var f = items[i];
+    if (SKIP[f.name]) continue;
+    if (f.type === 'directory') {
+      await collectFiles(basePath + f.name + '/', zip, prefix + f.name + '/');
+    } else {
+      var r = await fetch(basePath + f.name);
+      var text = await r.text();
+      zip.file(prefix + f.name, text);
+    }
+  }
+}
+
+async function downloadZip() {
+  var btn = document.getElementById('dl-btn');
+  btn.textContent = 'downloading...';
+  btn.disabled = true;
+  try {
+    var zip = new JSZip();
+    await collectFiles('./src/', zip, 'creditnet/');
+    var blob = await zip.generateAsync({type: 'blob'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'creditnet.zip';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch(e) {
+    alert('download failed');
+  }
+  btn.textContent = 'download .zip';
+  btn.disabled = false;
 }
 
 async function loadFiles() {
