@@ -164,6 +164,11 @@ func (h *Node) OnClose(peer string) {
 	delete(h.Trustlines, peer)
 }
 
+// ForceRemove handles unilateral link removal. Same cleanup as OnClose.
+func (h *Node) ForceRemove(peer string) {
+	h.OnClose(peer)
+}
+
 // Busy reports whether this module has active bilateral state with the peer.
 // The creditnet app itself is never busy — child modules hold their own Busy,
 // and trustline state is archived unconditionally in OnClose.
@@ -399,8 +404,7 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 	}
 	// Request chosen child modules on this link.
 	if len(p.Modules) > 0 {
-		lk := h.links.Get(peerID)
-		lk.ConnectModules(p.Modules, h.links.ModuleMap(), h.links.Roots())
+		h.links.ConnectModules(peerID, p.Modules)
 	}
 	return Enc("ok"), []string{peerID}, nil
 }

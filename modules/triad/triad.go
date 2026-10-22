@@ -102,8 +102,9 @@ func (h *Triad) Reserved(peer string, side int) int64 {
 // Module — lifecycle
 // ---------------------------------------------------------------------------
 
-func (h *Triad) OnConnect(peer string) {}
-func (h *Triad) OnClose(peer string)   {}
+func (h *Triad) OnConnect(peer string)   {}
+func (h *Triad) OnClose(peer string)     {}
+func (h *Triad) ForceRemove(peer string) {}
 
 // ---------------------------------------------------------------------------
 // Module — HandleRequest

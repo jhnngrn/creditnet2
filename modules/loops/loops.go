@@ -200,8 +200,9 @@ func (h *Loops) Reserved(peer string, side int) int64 {
 // Module — lifecycle
 // ---------------------------------------------------------------------------
 
-func (h *Loops) OnConnect(peer string) {}
-func (h *Loops) OnClose(peer string)   {}
+func (h *Loops) OnConnect(peer string)   {}
+func (h *Loops) OnClose(peer string)     {}
+func (h *Loops) ForceRemove(peer string) {}
 
 // ---------------------------------------------------------------------------
 // Module — HandleRequest

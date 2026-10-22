@@ -19,15 +19,16 @@ collision deterministically, so conflicts never need manual resolution.
 Pending sends and cached responses are persisted, so nothing is lost if
 a node crashes mid-sync.
 
-An **App** is a module that owns the lifecycle on a link. The app name is
-sent in `app.connect` and stored in `LinkState.App`. A link runs exactly
-one app. Multiple apps can be declared on a server; which one runs is
-decided at connect time by the code calling `Connect(peer, app)`.
+A **Root module** is a module that owns the lifecycle on a link. The root
+module name is sent in `link.connect` and stored in `LinkState.Root`. A
+link runs exactly one root module. Multiple root modules can be declared
+on a server; which one runs is decided at connect time by the code calling
+`Connect(peer, root)`.
 
 A **Module** handles application-specific sync methods and account API
 calls. Modules are registered as factories and instantiated per node.
-Child modules are declared under an app with `DeclareApp` — they can only
-connect on a link that runs their parent app.
+Child modules are declared under a root module with `DeclareRoot` — they
+can only connect on a link that runs their parent root module.
 
 ## Usage
 
@@ -41,6 +42,9 @@ import (
 
 type myModule struct{ /* ... */ }
 
+func (m *myModule) OnConnect(peer string)   {}
+func (m *myModule) OnClose(peer string)     {}
+func (m *myModule) ForceRemove(peer string) {}
 func (m *myModule) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
     // handle incoming sync
     return true, nil, nil
@@ -70,7 +74,7 @@ func main() {
         return &myModule{}
     })
     srv.Register("helper", newHelper)
-    srv.DeclareApp("myapp", []string{"helper"}) // myapp is an app with helper as child module
+    srv.DeclareRoot("myapp", []string{"helper"}) // myapp is a root module with helper as child
     mimesis.RunAndWait(srv)
 }
 ```
@@ -86,7 +90,7 @@ go run . -domain myapp.example.com -port 3000
 - `Boot()` — parse flags, create a server
 - `NewServer(Config)` — create with explicit config
 - `srv.Register(name, factory)` — register a module factory
-- `srv.DeclareApp(name, children)` — declare a module as an app with optional child modules
+- `srv.DeclareRoot(name, children)` — declare a module as a root module with optional child modules
 - `srv.Init()` — load persisted nodes, set up HTTP routes
 - `srv.Run(ctx)` / `srv.Serve(ctx, listener)` — start serving
 - `RunAndWait(srv)` — init + serve + block until SIGINT/SIGTERM
@@ -105,41 +109,41 @@ go run . -domain myapp.example.com -port 3000
 
 ```go
 type Module interface {
+    OnConnect(peer string)
+    OnClose(peer string)
     HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
     HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string
     HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error)
     NextTx(peer string) (string, json.RawMessage, int64)
     Status() json.RawMessage
     Busy(peer string) bool
+    ForceRemove(peer string)
 }
 ```
 
-### App interface
+`OnConnect` is called when a module becomes bilaterally connected — on
+`link.connect` for the root module, and on `module.connect` for child
+modules. `OnClose` is called when a module is disconnected — on
+`module.close` for child modules, and on `link.close` for all modules
+(children first, then root), just before the link is deleted. Modules
+use these to create and clean up per-peer state. Modules that don't need
+lifecycle hooks provide empty implementations.
 
-A module declared as an app with `DeclareApp` must implement `App`, which
-embeds `Module` and adds lifecycle hooks:
+The `[]string` return value (routes) lists peers to whom the handler
+routed an outgoing transaction. Routing is committed atomically with the
+originating transaction.
 
-```go
-type App interface {
-    Module
-    OnConnect(peer string)
-    OnClose(peer string)
-}
-```
-
-`OnConnect` is called when `app.connect` completes bilaterally — on both
-the initiating and receiving side. `OnClose` is called when `app.close`
-completes bilaterally, just before the link is deleted. The app uses these
-to create and clean up per-peer state. Declared apps are validated at
-startup — if a module registered as an app does not implement `App`,
-the server fatals.
+`ForceRemove` is called when a link is unilaterally removed without
+bilateral consensus. The module must clean up state that would normally
+be garbage collected through the bilateral close cycle.
 
 ### Node
 
 The `*Node` received by the module factory:
 
 - `node.Get(peer) *Link` — get an existing link
-- `node.Connect(peer, app) (*Link, error)` — create an outgoing link running the named app
+- `node.Connect(peer, root) (*Link, error)` — create an outgoing link running the named root module
+- `node.ForceRemove(peer)` — unilaterally remove a link without bilateral consensus
 - `node.ModuleMap() map[string]Module` — access other module instances
 - `node.ModuleAvailable(peer, module) bool` — true if module is bilaterally connected and not closing
 
@@ -147,7 +151,7 @@ The `*Node` received by the module factory:
 
 Modules implement `Busy(peer string) bool` to report whether they have
 active work with a peer. The sync loop checks `Busy` before sending
-`module.close` or `app.close`, deferring the close until the module is
+`module.close` or `link.close`, deferring the close until the module is
 idle. Because `Busy` reads bilateral state that only changes through
 req/resp exchanges, the peer is always in the sync loop when the
 transition happens — no polling or timers needed.
@@ -162,18 +166,18 @@ Methods available on a `*Link`:
 
 - `lk.Close()` — mark the link for closing (deferred until no module is Busy)
 - `lk.Closing() bool` — true if the link is closing
-- `lk.ConnectModules(modules, registered, apps)` — request connection for child modules (additive)
+- `node.ConnectModules(peer, modules)` — request connection for child modules on a link (additive)
 
 
 ### Account commands
 
 Built-in account API commands handled by mimesis directly:
 
-**app.\*** — app-level:
-- `app.accept {peer}` — accept an incoming link
-- `app.reject {peer}` — reject an incoming link
-- `app.set_modules {peer, modules}` — propose modules on a link
-- `app.set_invite_mode {mode}` — set invite mode (open/invite/closed)
+**link.\*** — link-level:
+- `link.accept {peer}` — accept an incoming link
+- `link.reject {peer}` — reject an incoming link
+- `link.set_modules {peer, modules}` — propose modules on a link
+- `link.set_invite_mode {mode}` — set invite mode (open/invite/closed)
 
 **module.\*** — module-level:
 - `module.accept {peer, module}` — accept an incoming module proposal
