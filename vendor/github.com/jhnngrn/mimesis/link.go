@@ -492,6 +492,9 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			if !n.isRoot(p.Name) {
 				return false, nil, fmt.Errorf("unknown root module %q", p.Name)
 			}
+			if l.State.Status == Connected {
+				return false, nil, fmt.Errorf("link already connected")
+			}
 			if l.State.IntentConnect || l.State.Status == waiting {
 				// Both sides must agree on the root module.
 				if l.State.Root != "" && l.State.Root != p.Name {
