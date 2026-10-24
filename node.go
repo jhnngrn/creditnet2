@@ -45,19 +45,18 @@ type Node struct {
 	nodeID         string
 	links          *mimesis.Node
 	send           mimesis.SendFunc
-	dequeue        mimesis.DequeueFunc
 	reservers      []Reserver
 }
 
 // NewNode creates a Node from persisted state.
-func NewNode(name, nodeID string, links *mimesis.Node, send mimesis.SendFunc, dequeue mimesis.DequeueFunc, state json.RawMessage) *Node {
+func NewNode(name, nodeID string, links *mimesis.Node, send mimesis.SendFunc, cancel mimesis.CancelFunc, state json.RawMessage) *Node {
+	_ = cancel // trustline has no race conditions requiring cancel
 	h := &Node{
 		Trustlines: map[string]*Trustline{},
 		name:       name,
 		nodeID:     nodeID,
 		links:      links,
 		send:       send,
-		dequeue:    dequeue,
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {
@@ -291,7 +290,6 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 		}
 		h.AddReceipt(peerID, -req.Amount, ok)
 	}
-	h.dequeue(peerID, "")
 }
 
 // ---------------------------------------------------------------------------

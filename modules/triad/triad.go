@@ -48,14 +48,14 @@ type Triad struct {
 	node           *mimesis.Node
 	schedule       mimesis.ScheduleFunc
 	send           mimesis.SendFunc
-	dequeue        mimesis.DequeueFunc
+	cancel         mimesis.CancelFunc
 	trustlines     map[string]*creditnet.Trustline
 	bandwidth      creditnet.BandwidthFunc
 	pendingBalance creditnet.PendingBalanceFunc
 }
 
 // NewTriad matches the mimesis.ModuleFactory signature.
-func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, dequeue mimesis.DequeueFunc, state json.RawMessage) mimesis.Module {
+func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, cancel mimesis.CancelFunc, state json.RawMessage) mimesis.Module {
 	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Triad{
 		Novations:      map[string]*Novation{},
@@ -64,7 +64,7 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 		node:           node,
 		schedule:       schedule,
 		send:           send,
-		dequeue:        dequeue,
+		cancel:         cancel,
 		trustlines:     tl.Trustlines,
 		bandwidth:      tl.Bandwidth,
 		pendingBalance: tl.PendingBalance,
@@ -254,7 +254,6 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 	if json.Unmarshal(raw, &m) != nil {
 		return
 	}
-	h.dequeue(peer, m.NovationID)
 	nov := h.Novations[m.NovationID]
 	if nov == nil {
 		// tryNovate-originated: no Novation yet.
@@ -285,7 +284,6 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if nov == nil {
 		return
 	}
-	h.dequeue(peer, m.NovationID)
 	if p := h.trustlines[peer]; p != nil {
 		p.AddBalance(-nov.Amount, ts)
 	}
@@ -437,7 +435,7 @@ func (h *Triad) removeNovation(id string) {
 	if nov := h.Novations[id]; nov != nil {
 		for s := 0; s < 2; s++ {
 			if nov.Side[s] != "" {
-				h.dequeue(nov.Side[s], id)
+				h.cancel(nov.Side[s], id)
 			}
 		}
 	}
