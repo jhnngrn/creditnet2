@@ -327,10 +327,9 @@ func (h *Triad) Status() json.RawMessage {
 }
 
 // Busy reports whether this module has active work with the given peer.
+// The framework checks the outbox separately, so this only checks
+// module-internal state (in-flight novations).
 func (h *Triad) Busy(peer string) bool {
-	if peerOutbox := h.node.Outbox[peer]; peerOutbox != nil && len(peerOutbox[h.name]) > 0 {
-		return true
-	}
 	for _, nov := range h.Novations {
 		for s := 0; s < 2; s++ {
 			if nov.Side[s] == peer {

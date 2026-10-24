@@ -70,14 +70,9 @@ func NewNode(name, nodeID string, links *mimesis.Node, send mimesis.SendFunc, de
 	return h
 }
 
-// outboxEntry returns the pending outbox entry for a peer and queueID, or nil.
-func (h *Node) outboxEntry(peer, queueID string) *mimesis.OutboxEntry {
-	if pm := h.links.Outbox[peer]; pm != nil {
-		if mm := pm[h.name]; mm != nil {
-			return mm[queueID]
-		}
-	}
-	return nil
+// outboxHas reports whether an outbox entry exists for this module, peer and queueID.
+func (h *Node) outboxHas(peer, queueID string) bool {
+	return h.links.OutboxHas(peer, h.name, queueID)
 }
 
 // AddReceipt logs a completed payment.
@@ -271,36 +266,33 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 	if peer == nil {
 		return nil
 	}
-	entry := h.outboxEntry(peerID, method)
 	switch method {
 	case "set_credit_limit":
-		if ok && entry != nil {
+		if ok {
 			var req struct {
 				Amount int64 `json:"amount"`
 			}
-			json.Unmarshal(entry.Payload, &req)
+			json.Unmarshal(payload, &req)
 			peer.CreditLimit = req.Amount
 		}
 	case "set_demurrage":
-		if ok && entry != nil {
+		if ok {
 			var req struct {
 				Rate int64 `json:"rate"`
 			}
-			json.Unmarshal(entry.Payload, &req)
+			json.Unmarshal(payload, &req)
 			peer.MaterializeDemurrage(ts)
 			peer.Demurrage = req.Rate
 		}
 	case "payment":
-		if entry != nil {
-			var req struct {
-				Amount int64 `json:"amount"`
-			}
-			json.Unmarshal(entry.Payload, &req)
-			if ok {
-				peer.AddBalance(-req.Amount, ts)
-			}
-			h.AddReceipt(peerID, -req.Amount, ok)
+		var req struct {
+			Amount int64 `json:"amount"`
 		}
+		json.Unmarshal(payload, &req)
+		if ok {
+			peer.AddBalance(-req.Amount, ts)
+		}
+		h.AddReceipt(peerID, -req.Amount, ok)
 	}
 	h.dequeue(peerID, method)
 	return nil
@@ -322,12 +314,10 @@ func (h *Node) Status() json.RawMessage {
 			"demurrage":         p.Demurrage,
 			"demurrage_in":      p.DemurrageIn,
 		}
-		if pm := h.links.Outbox[id]; pm != nil {
-			if mm := pm[h.name]; len(mm) > 0 {
-				for method := range mm {
-					info["pending"] = method
-					break
-				}
+		for _, method := range []string{"set_credit_limit", "set_demurrage", "payment"} {
+			if h.outboxHas(id, method) {
+				info["pending"] = method
+				break
 			}
 		}
 		peers[id] = info
@@ -412,7 +402,7 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []strin
 	if p.Amount < 0 {
 		return nil, nil, fmt.Errorf("credit limit must be non-negative")
 	}
-	if h.outboxEntry(peerID, "set_credit_limit") != nil {
+	if h.outboxHas(peerID, "set_credit_limit") {
 		return nil, nil, fmt.Errorf("credit limit change already pending")
 	}
 	h.send(peerID, "set_credit_limit", "set_credit_limit", Enc(map[string]int64{"amount": p.Amount}))
@@ -435,7 +425,7 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, []string,
 	if p.Rate < 0 {
 		return nil, nil, fmt.Errorf("demurrage rate must be non-negative")
 	}
-	if h.outboxEntry(peerID, "set_demurrage") != nil {
+	if h.outboxHas(peerID, "set_demurrage") {
 		return nil, nil, fmt.Errorf("demurrage change already pending")
 	}
 	h.send(peerID, "set_demurrage", "set_demurrage", Enc(map[string]int64{"rate": p.Rate}))
@@ -455,7 +445,7 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 	if peer == nil {
 		return nil, nil, fmt.Errorf("peer %s has no trustline", peerID)
 	}
-	if h.outboxEntry(peerID, "payment") != nil {
+	if h.outboxHas(peerID, "payment") {
 		return nil, nil, fmt.Errorf("payment already pending")
 	}
 	if p.Amount <= 0 {

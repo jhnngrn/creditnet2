@@ -142,6 +142,26 @@ func (n *Node) outboxDequeue(modName, peer, queueID string) {
 	}
 }
 
+// OutboxHas reports whether the outbox contains an entry for the given
+// peer, module and queueID.
+func (n *Node) OutboxHas(peer, module, queueID string) bool {
+	if byMod := n.Outbox[peer]; byMod != nil {
+		if byQueue := byMod[module]; byQueue != nil {
+			return byQueue[queueID] != nil
+		}
+	}
+	return false
+}
+
+// OutboxHasModule reports whether the outbox contains any entry for the
+// given peer and module, regardless of queueID.
+func (n *Node) OutboxHasModule(peer, module string) bool {
+	if byMod := n.Outbox[peer]; byMod != nil {
+		return len(byMod[module]) > 0
+	}
+	return false
+}
+
 // queuedMsg is a message queued for sending on a link.
 // QueuedAt is a unix-second timestamp of when the message was queued.
 // When multiple modules return a candidate for the same peer, the
@@ -176,10 +196,11 @@ type Link struct {
 }
 
 // anyBusy returns true if any registered module reports being busy with
-// the given peer. Used to defer link.close until all modules are idle.
+// the given peer. Checks both the framework outbox and the module's own
+// Busy method. Used to defer link.close until all modules are idle.
 func (n *Node) anyBusy(peer string) bool {
-	for _, mod := range n.moduleMap {
-		if mod.Busy(peer) {
+	for name, mod := range n.moduleMap {
+		if n.OutboxHasModule(peer, name) || mod.Busy(peer) {
 			return true
 		}
 	}
@@ -187,16 +208,21 @@ func (n *Node) anyBusy(peer string) bool {
 }
 
 // moduleBusy returns true if the named module reports being busy with
-// the given peer. Used to defer module.close until the module is idle.
-// If the module is a root, it also checks all its child modules.
+// the given peer. Checks both the framework outbox and the module's own
+// Busy method. If the module is a root, it also checks all its child modules.
+// Used to defer module.close until the module is idle.
 func (n *Node) moduleBusy(name, peer string) bool {
-	if mod := n.moduleMap[name]; mod != nil {
-		if mod.Busy(peer) {
-			return true
-		}
+	if n.OutboxHasModule(peer, name) {
+		return true
+	}
+	if mod := n.moduleMap[name]; mod != nil && mod.Busy(peer) {
+		return true
 	}
 	if children, ok := n.roots[name]; ok {
 		for _, child := range children {
+			if n.OutboxHasModule(peer, child) {
+				return true
+			}
 			if mod := n.moduleMap[child]; mod != nil && mod.Busy(peer) {
 				return true
 			}
@@ -582,7 +608,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			}
 			return ok, nil, err
 		case "close":
-			ok, err := l.reqModuleClose(peer, payload, n.moduleMap, n.roots)
+			ok, err := l.reqModuleClose(peer, payload, n)
 			return ok, nil, err
 		}
 		return false, nil, fmt.Errorf("unknown module method %q", method)
@@ -808,29 +834,33 @@ func (l *Link) respModule(payload json.RawMessage, ok bool) string {
 	return ""
 }
 
-// reqModuleClose handles an incoming module.close request. It removes the
+// reqModuleClose handles an incoming module.close request. It checks the
+// framework outbox and the module's Busy method before removing the
 // module from the link and fires OnClose if the module was connected.
-func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module, roots map[string][]string) (bool, error) {
+func (l *Link) reqModuleClose(peer string, payload json.RawMessage, n *Node) (bool, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
 		return false, fmt.Errorf("bad payload")
 	}
-	if !isChildModule(p.Name, l.State.Root, roots) {
+	if !isChildModule(p.Name, l.State.Root, n.roots) {
 		return false, nil
 	}
 	mod := l.State.Modules[p.Name]
 	if mod == nil {
 		return true, nil // already gone
 	}
-	if m := modules[p.Name]; m != nil && m.Busy(peer) {
+	if n.OutboxHasModule(peer, p.Name) {
+		return false, errRefsHeld
+	}
+	if m := n.moduleMap[p.Name]; m != nil && m.Busy(peer) {
 		return false, errRefsHeld
 	}
 	wasConnected := mod.Status == Connected
 	delete(l.State.Modules, p.Name)
 	if wasConnected {
-		if m := modules[p.Name]; m != nil {
+		if m := n.moduleMap[p.Name]; m != nil {
 			m.OnClose(peer)
 		}
 	}
