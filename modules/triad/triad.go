@@ -47,25 +47,21 @@ type Triad struct {
 	name           string
 	nodeID         string
 	node           *mimesis.Node
-	schedule       mimesis.ScheduleFunc
-	send           mimesis.SendFunc
-	deleteQueue    mimesis.DeleteQueueFunc
+	api            mimesis.ModuleAPI
 	trustlines     map[string]*creditnet.Trustline
 	bandwidth      creditnet.BandwidthFunc
 	pendingBalance creditnet.PendingBalanceFunc
 }
 
 // NewTriad matches the mimesis.ModuleFactory signature.
-func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, deleteQueue mimesis.DeleteQueueFunc, state json.RawMessage) mimesis.Module {
+func NewTriad(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, state json.RawMessage) mimesis.Module {
 	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Triad{
 		Novations:      map[string]*Novation{},
 		name:           name,
 		nodeID:         nodeID,
 		node:           node,
-		schedule:       schedule,
-		send:           send,
-		deleteQueue:    deleteQueue,
+		api:            api,
 		trustlines:     tl.Trustlines,
 		bandwidth:      tl.Bandwidth,
 		pendingBalance: tl.PendingBalance,
@@ -152,7 +148,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, error) {
 			return false, nil
 		}
 		nov.Side[IN] = peer
-		h.send(nov.Side[OUT], m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
+		h.api.Send(nov.Side[OUT], m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 		return true, nil
 	}
 
@@ -178,7 +174,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, error) {
 		Side:   [2]string{peer, m.Next},
 	}
 	h.addNovation(m.NovationID, nov)
-	h.send(m.Next, m.NovationID, "commit", creditnet.Enc(novCommitMsg{
+	h.api.Send(m.Next, m.NovationID, "commit", creditnet.Enc(novCommitMsg{
 		NovationID: m.NovationID,
 		Amount:     m.Amount,
 		Next:       peer,
@@ -205,7 +201,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, e
 	p.AddBalance(nov.Amount, ts)
 	nov.Side[IN] = ""
 	if nov.Side[OUT] != "" {
-		h.send(nov.Side[OUT], m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
+		h.api.Send(nov.Side[OUT], m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 	}
 	if nov.Side[OUT] == "" {
 		h.removeNovation(m.NovationID)
@@ -231,7 +227,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, error) {
 		h.removeNovation(m.NovationID)
 		return true, nil
 	}
-	h.send(nov.Side[IN], m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
+	h.api.Send(nov.Side[IN], m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
 	return true, nil
 }
 
@@ -276,7 +272,7 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 			h.removeNovation(m.NovationID)
 			return
 		}
-		h.send(nov.Side[IN], m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
+		h.api.Send(nov.Side[IN], m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
 	}
 }
 
@@ -368,7 +364,7 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	} else {
 		msgPayload = creditnet.Enc(map[string]string{"novation_id": m.NovationID})
 	}
-	h.send(nov.Side[side], m.NovationID, msg, msgPayload)
+	h.api.Send(nov.Side[side], m.NovationID, msg, msgPayload)
 	return nil, nil
 }
 
@@ -377,7 +373,7 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 // ---------------------------------------------------------------------------
 
 func (h *Triad) scheduleNovate() {
-	h.schedule(NovateInterval, h.novateAndReschedule)
+	h.api.Schedule(NovateInterval, h.novateAndReschedule)
 }
 
 func (h *Triad) novateAndReschedule() {
@@ -410,7 +406,7 @@ func (h *Triad) tryNovate() {
 			}
 			novID := randomNovationID()
 			h.addNovation(novID, &Novation{Initiator: true})
-			h.send(debtor, novID, "commit", creditnet.Enc(novCommitMsg{
+			h.api.Send(debtor, novID, "commit", creditnet.Enc(novCommitMsg{
 				NovationID: novID,
 				Amount:     amount,
 				Next:       creditor,
@@ -441,7 +437,7 @@ func (h *Triad) removeNovation(id string) {
 	if nov := h.Novations[id]; nov != nil {
 		for s := 0; s < 2; s++ {
 			if nov.Side[s] != "" {
-				h.deleteQueue(nov.Side[s], id)
+				h.api.DeleteQueue(nov.Side[s], id)
 			}
 		}
 	}

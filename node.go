@@ -49,14 +49,13 @@ type Node struct {
 }
 
 // NewNode creates a Node from persisted state.
-func NewNode(name, nodeID string, links *mimesis.Node, send mimesis.SendFunc, deleteQueue mimesis.DeleteQueueFunc, state json.RawMessage) *Node {
-	_ = deleteQueue // trustline has no queues to delete
+func NewNode(name, nodeID string, links *mimesis.Node, api mimesis.ModuleAPI, state json.RawMessage) *Node {
 	h := &Node{
 		Trustlines: map[string]*Trustline{},
 		name:       name,
 		nodeID:     nodeID,
 		links:      links,
-		send:       send,
+		send:       api.Send,
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {

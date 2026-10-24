@@ -23,8 +23,8 @@ var RunAndServe = mimesis.RunAndServe
 // depend on the Node's trustlines and bandwidth.
 // children lists the child module names that run under trustline.
 func RegisterNode(srv *mimesis.Server, children []string) {
-	srv.Register("trustline", func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, deleteQueue mimesis.DeleteQueueFunc, state json.RawMessage) mimesis.Module {
-		return NewNode(name, nodeID, node, send, deleteQueue, state)
+	srv.Register("trustline", func(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, state json.RawMessage) mimesis.Module {
+		return NewNode(name, nodeID, node, api, state)
 	})
 	srv.DeclareRoot("trustline", children)
 }
@@ -33,8 +33,8 @@ func RegisterNode(srv *mimesis.Server, children []string) {
 // If the module implements Reserver, it is automatically registered
 // with the trustline Node.
 func Register(srv *mimesis.Server, name string, factory mimesis.ModuleFactory) {
-	srv.Register(name, func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, deleteQueue mimesis.DeleteQueueFunc, state json.RawMessage) mimesis.Module {
-		m := factory(name, nodeID, node, schedule, send, deleteQueue, state)
+	srv.Register(name, func(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, state json.RawMessage) mimesis.Module {
+		m := factory(name, nodeID, node, api, state)
 		if r, ok := m.(Reserver); ok {
 			mod := node.ModuleMap()["trustline"]
 			if mod == nil {

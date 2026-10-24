@@ -99,6 +99,19 @@ type SendFunc func(peer, queueID, method string, payload json.RawMessage)
 // novation removal, loop clearing).
 type DeleteQueueFunc func(peer, queueID string)
 
+// QueueExistsFunc reports whether any peer has an outbox entry for the
+// given queueID. The module name is captured in the closure.
+type QueueExistsFunc func(queueID string) bool
+
+// ModuleAPI groups the framework callbacks available to a module.
+type ModuleAPI struct {
+	Schedule    ScheduleFunc
+	Send        SendFunc
+	DeleteQueue DeleteQueueFunc
+	QueueHas    func(peer, queueID string) bool
+	QueueExists QueueExistsFunc
+}
+
 // outboxSend enqueues an outgoing message in the framework-managed outbox.
 // Called by the per-module SendFunc closure created in Server.newNode.
 func (n *Node) outboxSend(modName, peer, queueID, method string, payload json.RawMessage) {
@@ -174,6 +187,19 @@ func (n *Node) OutboxHas(peer, module, queueID string) bool {
 	if byMod := n.Outbox[peer]; byMod != nil {
 		if byQueue := byMod[module]; byQueue != nil {
 			return len(byQueue[queueID]) > 0
+		}
+	}
+	return false
+}
+
+// QueueExists reports whether any peer has an outbox entry for the given
+// module and queueID.
+func (n *Node) QueueExists(module, queueID string) bool {
+	for _, byMod := range n.Outbox {
+		if byQueue := byMod[module]; byQueue != nil {
+			if len(byQueue[queueID]) > 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -1012,6 +1038,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		if lk == nil {
 			return nil, fmt.Errorf("no link to %s", p.Peer)
 		}
+		delete(n.Outbox, p.Peer)
 		for name := range lk.State.Modules {
 			if mod := n.moduleMap[name]; mod != nil {
 				mod.ForceRemove(p.Peer)
@@ -1020,7 +1047,6 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		if mod := n.moduleMap[lk.State.Root]; mod != nil {
 			mod.ForceRemove(p.Peer)
 		}
-		delete(n.Outbox, p.Peer)
 		if lk.Sending != nil && lk.Sending.Timer != nil {
 			lk.Sending.Timer.Stop()
 		}

@@ -126,13 +126,12 @@ type Loops struct {
 	name       string
 	nodeID     string
 	node       *mimesis.Node
-	schedule   mimesis.ScheduleFunc
+	api        mimesis.ModuleAPI
 	trustlines map[string]*creditnet.Trustline
 	bandwidth  creditnet.BandwidthFunc
 }
 
-func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, deleteQueue mimesis.DeleteQueueFunc, state json.RawMessage) mimesis.Module {
-	_ = deleteQueue // loops does not currently need deleteQueue
+func NewLoops(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, state json.RawMessage) mimesis.Module {
 	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Loops{
 		Paths:      map[string]*Path{},
@@ -141,7 +140,7 @@ func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 		name:       name,
 		nodeID:     nodeID,
 		node:       node,
-		schedule:   schedule,
+		api:        api,
 		trustlines: tl.Trustlines,
 		bandwidth:  tl.Bandwidth,
 	}
@@ -168,7 +167,7 @@ func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 			remaining = 0
 		}
 		pid := id
-		h.schedule(remaining, func() {
+		h.api.Schedule(remaining, func() {
 			h.expirePath(pid)
 		})
 	}
@@ -578,7 +577,7 @@ func (h *Loops) expirePath(id string) {
 }
 
 func (h *Loops) schedulePathExpiry(id string) {
-	h.schedule(PathTTL, func() {
+	h.api.Schedule(PathTTL, func() {
 		h.expirePath(id)
 	})
 }
@@ -1091,7 +1090,7 @@ func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 			h.removeClearing(m.ID)
 		}
 	} else {
-		h.schedule(CleanupRetry, func() {
+		h.api.Schedule(CleanupRetry, func() {
 			cl := h.Clearings[m.ID]
 			if cl == nil {
 				return
@@ -1110,7 +1109,7 @@ func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 // ---------------------------------------------------------------------------
 
 func (h *Loops) scheduleSearch() {
-	h.schedule(SearchInterval, h.searchAndReschedule)
+	h.api.Schedule(SearchInterval, h.searchAndReschedule)
 }
 
 func (h *Loops) searchAndReschedule() {
@@ -1231,7 +1230,7 @@ func (h *Loops) floodSearchInitiator(searchID string, p *Path) {
 }
 
 func (h *Loops) scheduleDepthIncrease(id string) {
-	h.schedule(RefractoryDelay, func() {
+	h.api.Schedule(RefractoryDelay, func() {
 		p := h.Paths[id]
 		if p == nil || (p.Peer[0] != "" && p.Peer[1] != "") {
 			return
@@ -1279,7 +1278,7 @@ func (h *Loops) startLoop(searchID string) {
 // ---------------------------------------------------------------------------
 
 func (h *Loops) scheduleCancel(id string) {
-	h.schedule(CancelTimeout, func() {
+	h.api.Schedule(CancelTimeout, func() {
 		cl := h.Clearings[id]
 		if cl == nil || cl.Seed == nil || cl.CancelPre == nil {
 			return
@@ -1316,7 +1315,7 @@ func (h *Loops) scheduleCleanup(id string, side int) {
 	if remaining < 0 {
 		remaining = 0
 	}
-	h.schedule(time.Duration(remaining+1)*time.Second, func() {
+	h.api.Schedule(time.Duration(remaining+1)*time.Second, func() {
 		cl := h.Clearings[id]
 		if cl == nil {
 			return
