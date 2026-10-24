@@ -26,14 +26,20 @@ const (
 
 // NovationSide holds per-side state (IN or OUT).
 type NovationSide struct {
-	Peer  string          `json:"peer,omitempty"`
-	Queue creditnet.Queue `json:"queue"`
+	Peer string `json:"peer,omitempty"`
 }
 
 // Novation tracks a single three-party novation in progress.
 type Novation struct {
 	Amount int64           `json:"amount"`
 	Side   [2]NovationSide `json:"side"`
+}
+
+// OutboxEntry is a single queued message keyed by clearing ID (novation ID).
+type OutboxEntry struct {
+	Method  string          `json:"method"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Time    int64           `json:"time,omitempty"`
 }
 
 type novCommitMsg struct {
@@ -48,7 +54,8 @@ type novFinalizeMsg struct {
 
 // Triad implements the link Module interface and creditnet.Reserver for novation.
 type Triad struct {
-	Novations      map[string]*Novation `json:"novations,omitempty"`
+	Novations      map[string]*Novation                `json:"novations,omitempty"`
+	Outbox         map[string]map[string]*OutboxEntry   `json:"outbox,omitempty"` // peer -> novationID -> entry
 	name           string
 	nodeID         string
 	node           *mimesis.Node
@@ -63,6 +70,7 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Triad{
 		Novations:      map[string]*Novation{},
+		Outbox:         map[string]map[string]*OutboxEntry{},
 		name:           name,
 		nodeID:         nodeID,
 		node:           node,
@@ -78,6 +86,9 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 	}
 	if h.Novations == nil {
 		h.Novations = map[string]*Novation{}
+	}
+	if h.Outbox == nil {
+		h.Outbox = map[string]map[string]*OutboxEntry{}
 	}
 	h.scheduleNovate()
 	return h
@@ -104,6 +115,7 @@ func (h *Triad) Reserved(peer string, side int) int64 {
 func (h *Triad) OnConnect(peer string) {}
 func (h *Triad) OnClose(peer string)   {}
 func (h *Triad) ForceRemove(peer string) {
+	delete(h.Outbox, peer)
 	for id, nov := range h.Novations {
 		for s := 0; s < 2; s++ {
 			if nov.Side[s].Peer == peer {
@@ -153,7 +165,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 			return false, nil, nil
 		}
 		nov.Side[IN].Peer = peer
-		nov.Side[OUT].Queue.Enqueue("finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
+		h.outboxPut(nov.Side[OUT].Peer, m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 		return true, []string{nov.Side[OUT].Peer}, nil
 	}
 
@@ -181,12 +193,12 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 			{Peer: m.Next},
 		},
 	}
-	nov.Side[OUT].Queue.Enqueue("commit", creditnet.Enc(novCommitMsg{
+	h.addNovation(m.NovationID, nov)
+	h.outboxPut(m.Next, m.NovationID, "commit", creditnet.Enc(novCommitMsg{
 		NovationID: m.NovationID,
 		Amount:     m.Amount,
 		Next:       peer,
 	}))
-	h.addNovation(m.NovationID, nov)
 	return true, []string{m.Next}, nil
 }
 
@@ -210,7 +222,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	nov.Side[IN] = NovationSide{}
 	var kicks []string
 	if nov.Side[OUT].Peer != "" {
-		nov.Side[OUT].Queue.Enqueue("finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
+		h.outboxPut(nov.Side[OUT].Peer, m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 		kicks = []string{nov.Side[OUT].Peer}
 	}
 	if nov.Side[OUT].Peer == "" {
@@ -237,7 +249,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 		h.removeNovation(m.NovationID)
 		return true, nil, nil
 	}
-	nov.Side[IN].Queue.Enqueue("rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
+	h.outboxPut(nov.Side[IN].Peer, m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
 	return true, []string{nov.Side[IN].Peer}, nil
 }
 
@@ -248,7 +260,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
 	switch method {
 	case "commit":
-		return h.respCommit(payload, ok)
+		return h.respCommit(peer, payload, ok)
 	case "finalize":
 		h.respFinalize(peer, payload, ts)
 	case "rollback":
@@ -257,7 +269,7 @@ func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok 
 	return nil
 }
 
-func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
+func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) []string {
 	var m novCommitMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return nil
@@ -266,13 +278,13 @@ func (h *Triad) respCommit(raw json.RawMessage, ok bool) []string {
 	if nov == nil {
 		return nil
 	}
-	nov.Side[OUT].Queue.Dequeue()
+	h.outboxRemove(peer, m.NovationID)
 	if !ok {
 		if nov.Side[IN].Peer == "" {
 			h.removeNovation(m.NovationID)
 			return nil
 		}
-		nov.Side[IN].Queue.Enqueue("rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
+		h.outboxPut(nov.Side[IN].Peer, m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
 		return []string{nov.Side[IN].Peer}
 	}
 	return nil
@@ -287,7 +299,7 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if nov == nil {
 		return
 	}
-	nov.Side[OUT].Queue.Dequeue()
+	h.outboxRemove(peer, m.NovationID)
 	if p := h.trustlines[peer]; p != nil {
 		p.AddBalance(-nov.Amount, ts)
 	}
@@ -312,24 +324,20 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 // ---------------------------------------------------------------------------
 
 func (h *Triad) NextTx(peer string) (string, json.RawMessage, int64) {
-	var bestNov *Novation
-	var bestSide int
-	var bestTime int64
-	for _, nov := range h.Novations {
-		for s := 0; s < 2; s++ {
-			if nov.Side[s].Peer == peer && !nov.Side[s].Queue.Empty() {
-				t := nov.Side[s].Queue.HeadTime()
-				if bestNov == nil || (t > 0 && (bestTime == 0 || t < bestTime)) {
-					bestNov, bestSide, bestTime = nov, s, t
-				}
-			}
-		}
-	}
-	if bestNov == nil {
+	m := h.Outbox[peer]
+	if len(m) == 0 {
 		return "", nil, 0
 	}
-	q := &bestNov.Side[bestSide].Queue
-	return q.Head(), q.HeadPayload(), q.HeadTime()
+	var best *OutboxEntry
+	for _, e := range m {
+		if best == nil || (e.Time > 0 && (best.Time == 0 || e.Time < best.Time)) {
+			best = e
+		}
+	}
+	if best == nil {
+		return "", nil, 0
+	}
+	return best.Method, best.Payload, best.Time
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +358,9 @@ func (h *Triad) Status() json.RawMessage {
 
 // Busy reports whether this module has active work with the given peer.
 func (h *Triad) Busy(peer string) bool {
+	if len(h.Outbox[peer]) > 0 {
+		return true
+	}
 	for _, nov := range h.Novations {
 		for s := 0; s < 2; s++ {
 			if nov.Side[s].Peer == peer {
@@ -390,7 +401,7 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	} else {
 		msgPayload = creditnet.Enc(map[string]string{"novation_id": m.NovationID})
 	}
-	nov.Side[side].Queue.Enqueue(msg, msgPayload)
+	h.outboxPut(nov.Side[side].Peer, m.NovationID, msg, msgPayload)
 	return nil, []string{nov.Side[side].Peer}, nil
 }
 
@@ -440,12 +451,12 @@ func (h *Triad) tryNovate() []string {
 					{Peer: debtor},
 				},
 			}
-			nov.Side[OUT].Queue.Enqueue("commit", creditnet.Enc(novCommitMsg{
+			h.addNovation(novID, nov)
+			h.outboxPut(debtor, novID, "commit", creditnet.Enc(novCommitMsg{
 				NovationID: novID,
 				Amount:     amount,
 				Next:       creditor,
 			}))
-			h.addNovation(novID, nov)
 			kicks = append(kicks, debtor)
 			avlD -= amount
 			if avlD <= 0 {
@@ -469,9 +480,34 @@ func (h *Triad) addNovation(id string, nov *Novation) {
 	h.Novations[id] = nov
 }
 
-// removeNovation deletes the novation.
+// removeNovation deletes the novation and its outbox entries.
 func (h *Triad) removeNovation(id string) {
+	if nov := h.Novations[id]; nov != nil {
+		for s := 0; s < 2; s++ {
+			if peer := nov.Side[s].Peer; peer != "" {
+				h.outboxRemove(peer, id)
+			}
+		}
+	}
 	delete(h.Novations, id)
+}
+
+func (h *Triad) outboxPut(peer, novID, method string, payload json.RawMessage) {
+	m := h.Outbox[peer]
+	if m == nil {
+		m = map[string]*OutboxEntry{}
+		h.Outbox[peer] = m
+	}
+	m[novID] = &OutboxEntry{Method: method, Payload: payload, Time: time.Now().Unix()}
+}
+
+func (h *Triad) outboxRemove(peer, novID string) {
+	if m := h.Outbox[peer]; m != nil {
+		delete(m, novID)
+		if len(m) == 0 {
+			delete(h.Outbox, peer)
+		}
+	}
 }
 
 func (h *Triad) connectedPeers() []string {
