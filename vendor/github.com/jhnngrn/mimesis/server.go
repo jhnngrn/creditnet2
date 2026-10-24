@@ -67,8 +67,8 @@ func (c *Config) fill() error {
 // ---------------------------------------------------------------------------
 
 // ScheduleFunc schedules a callback to run after a delay.
-// The callback runs under the node's lock; it returns peers to kick.
-type ScheduleFunc func(delay time.Duration, fn func() []string)
+// The callback runs under the node's lock.
+type ScheduleFunc func(delay time.Duration, fn func())
 
 // ModuleFactory creates a module for a newly loaded or created node.
 // The factory receives the node identity, the owning Node, a scheduler
@@ -176,7 +176,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		n.Outbox = map[string]map[string]map[string][]*OutboxEntry{}
 	}
 
-	schedule := func(delay time.Duration, fn func() []string) {
+	schedule := func(delay time.Duration, fn func()) {
 		n.schedule(delay, fn)
 	}
 

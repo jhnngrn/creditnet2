@@ -66,16 +66,14 @@ type LinkState struct {
 }
 
 // Module processes sync methods and account API calls for a namespace.
-// HandleRequest returns (ok, routes, err) where routes is a list of peers
-// that need kicking on other links (cross-link side effects).
-// HandleResponse returns routes for the same purpose.
-// HandleAccount handles user-facing API calls.
+// Kicks are handled automatically by the framework when a module enqueues
+// a message via SendFunc — modules do not need to return kick lists.
 type Module interface {
 	OnConnect(peer string)
 	OnClose(peer string)
-	HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
-	HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string
-	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error)
+	HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, error)
+	HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64)
+	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 	Status() json.RawMessage
 	Busy(peer string) bool
 	ForceRemove(peer string)
@@ -120,6 +118,7 @@ func (n *Node) outboxSend(modName, peer, queueID, method string, payload json.Ra
 		Payload: payload,
 		Time:    time.Now().Unix(),
 	})
+	n.kick(peer)
 }
 
 // outboxDequeue removes the head entry from the named queue.
@@ -538,12 +537,12 @@ func olderQueuedMsg(a, b *queuedMsg) bool {
 // dispatchRequest dispatches an incoming sync request by namespace.
 // Link-level methods are handled inline; registered modules are
 // dispatched by name. Returns (ok, routes, error).
-func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage, ts int64) (bool, error) {
 	ns, method := splitMethod(fullMethod)
 	if ns == "link" {
 		l := n.Get(peer)
 		if l == nil {
-			return false, nil, fmt.Errorf("no link to %s", peer)
+			return false, fmt.Errorf("no link to %s", peer)
 		}
 		switch method {
 		case "connect":
@@ -551,21 +550,21 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				Name string `json:"name"`
 			}
 			if err := json.Unmarshal(payload, &p); err != nil || p.Name == "" {
-				return false, nil, fmt.Errorf("link.connect requires name")
+				return false, fmt.Errorf("link.connect requires name")
 			}
 			if !n.isRoot(p.Name) {
-				return false, nil, fmt.Errorf("unknown root module %q", p.Name)
+				return false, fmt.Errorf("unknown root module %q", p.Name)
 			}
 			if l.State.Status == Connected {
-				return false, nil, fmt.Errorf("link already connected")
+				return false, fmt.Errorf("link already connected")
 			}
 			if l.State.Status == Incoming {
-				return false, nil, fmt.Errorf("link already incoming")
+				return false, fmt.Errorf("link already incoming")
 			}
 			// Root mismatch — NACK. The sender goes to waiting;
 			// force_remove is the way out.
 			if l.State.Root != p.Name {
-				return false, nil, nil
+				return false, nil
 			}
 			// Accept: peer was waiting (mutual add), or we're open.
 			if l.State.Status == waiting || n.InviteMode == inviteModeOpen {
@@ -574,14 +573,14 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				if mod := n.moduleMap[l.State.Root]; mod != nil {
 					mod.OnConnect(peer)
 				}
-				return true, nil, nil
+				return true, nil
 			}
 			// Invite mode — received, not yet accepted. NACK.
 			l.State.Status = Incoming
-			return false, nil, nil
+			return false, nil
 		case "close":
 			if n.anyBusy(peer) {
-				return false, nil, errRefsHeld
+				return false, errRefsHeld
 			}
 			if l.State.Status == Connected {
 				for name, c := range l.State.Modules {
@@ -594,14 +593,14 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				}
 			}
 			n.delete(peer)
-			return true, nil, nil
+			return true, nil
 		}
-		return false, nil, fmt.Errorf("unknown link method %q", method)
+		return false, fmt.Errorf("unknown link method %q", method)
 	}
 	if ns == "module" {
 		l := n.Get(peer)
 		if l == nil {
-			return false, nil, fmt.Errorf("no link to %s", peer)
+			return false, fmt.Errorf("no link to %s", peer)
 		}
 		switch method {
 		case "connect":
@@ -611,31 +610,31 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 					mod.OnConnect(peer)
 				}
 			}
-			return ok, nil, err
+			return ok, err
 		case "close":
 			ok, err := l.reqModuleClose(peer, payload, n)
-			return ok, nil, err
+			return ok, err
 		}
-		return false, nil, fmt.Errorf("unknown module method %q", method)
+		return false, fmt.Errorf("unknown module method %q", method)
 	}
 	lk := n.Get(peer)
 	if lk == nil {
-		return false, nil, fmt.Errorf("no link to %s", peer)
+		return false, fmt.Errorf("no link to %s", peer)
 	}
 	mod := n.moduleMap[ns]
 	if mod == nil || !lk.moduleConnected(ns) {
-		return false, nil, fmt.Errorf("unknown method %q", fullMethod)
+		return false, fmt.Errorf("unknown method %q", fullMethod)
 	}
 	return mod.HandleRequest(peer, method, payload, ts)
 }
 
 // dispatchResponse dispatches a sync response by namespace.
-func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage, ok bool, ts int64) []string {
+func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage, ok bool, ts int64) {
 	ns, method := splitMethod(fullMethod)
 	if ns == "link" {
 		l := n.Get(peer)
 		if l == nil {
-			return nil
+			return
 		}
 		switch method {
 		case "connect":
@@ -669,12 +668,12 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 				l.State.IntentClose = false
 			}
 		}
-		return nil
+		return
 	}
 	if ns == "module" {
 		l := n.Get(peer)
 		if l == nil {
-			return nil
+			return
 		}
 		switch method {
 		case "connect":
@@ -686,13 +685,13 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 		case "close":
 			l.respModuleClose(peer, payload, ok, n.moduleMap)
 		}
-		return nil
+		return
 	}
 	mod := n.moduleMap[ns]
 	if mod == nil {
-		return nil
+		return
 	}
-	return mod.HandleResponse(peer, method, payload, ok, ts)
+	mod.HandleResponse(peer, method, payload, ok, ts)
 }
 
 // nextTx returns the next message to send on a peer link.
@@ -915,7 +914,6 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 	ns, method := splitMethod(fullMethod)
 
 	var result json.RawMessage
-	var kicks []string
 	var err error
 
 	switch {
@@ -949,7 +947,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		}
 		lk.setModules(p.Modules, n.moduleMap, n.roots)
 		result = enc("ok")
-		kicks = []string{p.Peer}
+		n.kick(p.Peer)
 
 	case ns == "link" && method == "accept":
 		var p struct {
@@ -968,7 +966,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		}
 		lk.State.IntentConnect = true
 		result = enc("ok")
-		kicks = []string{p.Peer}
+		n.kick(p.Peer)
 
 	case ns == "link" && method == "force_remove":
 		var p struct {
@@ -996,7 +994,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		}
 		n.delete(p.Peer)
 		result = enc("ok")
-		kicks = []string{p.Peer}
+		n.kick(p.Peer)
 
 	case ns == "link" && method == "reject":
 		var p struct {
@@ -1015,7 +1013,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		}
 		lk.State.IntentClose = true
 		result = enc("ok")
-		kicks = []string{p.Peer}
+		n.kick(p.Peer)
 
 	case ns == "module" && method == "accept":
 		var p struct {
@@ -1034,7 +1032,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 			return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 		}
 		result = enc("ok")
-		kicks = []string{p.Peer}
+		n.kick(p.Peer)
 
 	case ns == "module" && method == "reject":
 		var p struct {
@@ -1053,7 +1051,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 			return nil, fmt.Errorf("no incoming module %s from %s", p.Module, p.Peer)
 		}
 		result = enc("ok")
-		kicks = []string{p.Peer}
+		n.kick(p.Peer)
 
 	case ns == "" && method == "status":
 		result = n.status()
@@ -1069,14 +1067,11 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		if mod == nil {
 			return nil, fmt.Errorf("unknown method %q", fullMethod)
 		}
-		result, kicks, err = mod.HandleAccount(method, payload)
+		result, err = mod.HandleAccount(method, payload)
 	}
 
 	if err == nil {
 		n.commit()
-		for _, k := range kicks {
-			n.kick(k)
-		}
 	}
 	return result, err
 }
@@ -1241,12 +1236,9 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 		if err := lk.ValidateTimestamp(env.Resp.Timestamp, now); err != nil {
 			return nil, err
 		}
-		pbRoutes := n.dispatchResponse(env.From, lk.Pending.Method, lk.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
+		n.dispatchResponse(env.From, lk.Pending.Method, lk.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
 		lk.AcceptResponse(env.Resp.Timestamp)
 		n.commit()
-		for _, r := range pbRoutes {
-			n.kick(r)
-		}
 		n.kick(env.From)
 	}
 
@@ -1271,7 +1263,7 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 	}
 
 	// Dispatch to handler.
-	ok, routes, reqErr := n.dispatchRequest(env.From, env.Method, env.Payload, ts)
+	ok, reqErr := n.dispatchRequest(env.From, env.Method, env.Payload, ts)
 	if reqErr != nil {
 		return nil, reqErr
 	}
@@ -1279,9 +1271,6 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 	resp := lk.AcceptRequest(env.Counter, ok, ts)
 	n.commit()
 	n.kick(env.From)
-	for _, r := range routes {
-		n.kick(r)
-	}
 	return resp, nil
 }
 
@@ -1313,7 +1302,7 @@ func (n *Node) kickAll() {
 // Schedule is called from two contexts: during init (no mutex held)
 // and from within a callback (mutex held). The timer append is safe
 // in both cases — init has no concurrency, callbacks hold the mutex.
-func (n *Node) schedule(delay time.Duration, fn func() []string) {
+func (n *Node) schedule(delay time.Duration, fn func()) {
 	var t *time.Timer
 	t = time.AfterFunc(delay, func() {
 		n.mu.Lock()
@@ -1322,11 +1311,8 @@ func (n *Node) schedule(delay time.Duration, fn func() []string) {
 		if n.stopped {
 			return
 		}
-		routes := fn()
+		fn()
 		n.commit()
-		for _, r := range routes {
-			n.kick(r)
-		}
 	})
 	// No mutex lock here — called under mutex (callback) or during
 	// init (no concurrency). Locking would deadlock in the callback case.
@@ -1436,7 +1422,7 @@ func (n *Node) sendPending(peer string) {
 		return
 	}
 
-	routes := n.dispatchResponse(peer, msg.Method, msg.Payload, resp.OK, resp.Timestamp)
+	n.dispatchResponse(peer, msg.Method, msg.Payload, resp.OK, resp.Timestamp)
 	lk.AcceptResponse(resp.Timestamp)
 
 	var kickPeer bool
@@ -1446,9 +1432,6 @@ func (n *Node) sendPending(peer string) {
 	}
 	n.commit()
 	lk.Sending = nil
-	for _, r := range routes {
-		n.kick(r)
-	}
 	if kickPeer {
 		n.kick(peer)
 	}
