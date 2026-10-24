@@ -24,7 +24,7 @@ var RunAndServe = mimesis.RunAndServe
 // children lists the child module names that run under trustline.
 func RegisterNode(srv *mimesis.Server, children []string) {
 	srv.Register("trustline", func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, dequeue mimesis.DequeueFunc, state json.RawMessage) mimesis.Module {
-		return NewNode(name, nodeID, node, state)
+		return NewNode(name, nodeID, node, send, dequeue, state)
 	})
 	srv.DeclareRoot("trustline", children)
 }
