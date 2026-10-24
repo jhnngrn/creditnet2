@@ -697,17 +697,15 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 	mod.HandleResponse(peer, method, payload, ok, ts)
 }
 
-// nextTx returns the next message to send on a peer link.
-// Link and module-level messages have absolute priority.
-// Among registered modules, the oldest QueuedAt wins.
-// nextTx returns the next message to send on a peer link, plus the
-// module name and queueID when the message comes from the outbox
-// (empty strings for link/module-level messages).
-func (n *Node) nextTx(peer string) (*queuedMsg, string, string) {
+// nextTx returns the next message to send on a peer link, plus a
+// dequeue closure when the message comes from the outbox (nil for
+// link/module-level messages). The closure removes the head entry
+// from the outbox queue after the response is received.
+func (n *Node) nextTx(peer string) (*queuedMsg, func()) {
 	// Link-level messages have absolute priority.
 	lk := n.Get(peer)
 	if lk == nil {
-		return nil, "", ""
+		return nil, nil
 	}
 	// Cancel opposing intents on established links.
 	if lk.State.IntentClose && lk.State.IntentConnect && lk.State.Status != "" {
@@ -715,10 +713,10 @@ func (n *Node) nextTx(peer string) (*queuedMsg, string, string) {
 		lk.State.IntentConnect = false
 	}
 	if lk.State.IntentClose && !n.anyBusy(peer) {
-		return &queuedMsg{Method: "link.close"}, "", ""
+		return &queuedMsg{Method: "link.close"}, nil
 	}
 	if lk.State.IntentConnect {
-		return &queuedMsg{Method: "link.connect", Payload: enc(map[string]string{"name": lk.State.Root})}, "", ""
+		return &queuedMsg{Method: "link.connect", Payload: enc(map[string]string{"name": lk.State.Root})}, nil
 	}
 	if lk.State.Status == Connected {
 		// Module close/connect — root lifecycle is at link level.
@@ -734,7 +732,7 @@ func (n *Node) nextTx(peer string) (*queuedMsg, string, string) {
 				return &queuedMsg{
 					Method:  "module.close",
 					Payload: enc(map[string]string{"name": name}),
-				}, "", ""
+				}, nil
 			}
 		}
 		for name, mod := range lk.State.Modules {
@@ -742,12 +740,12 @@ func (n *Node) nextTx(peer string) (*queuedMsg, string, string) {
 				return &queuedMsg{
 					Method:  "module.connect",
 					Payload: enc(map[string]string{"name": name}),
-				}, "", ""
+				}, nil
 			}
 		}
 	}
 	if lk.State.Status != Connected {
-		return nil, "", ""
+		return nil, nil
 	}
 	var best *queuedMsg
 	var bestMod, bestQueue string
@@ -773,7 +771,12 @@ func (n *Node) nextTx(peer string) (*queuedMsg, string, string) {
 			}
 		}
 	}
-	return best, bestMod, bestQueue
+	if best == nil {
+		return nil, nil
+	}
+	return best, func() {
+		n.outboxDequeue(bestMod, peer, bestQueue)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1375,19 +1378,13 @@ func (n *Node) sendPending(peer string) {
 	}
 	promoted := false
 	if lk.Pending == nil {
-		msg, modName, queueID := n.nextTx(peer)
+		msg, dequeue := n.nextTx(peer)
 		if msg == nil {
 			n.mu.Unlock()
 			return
 		}
 		lk.Pending = msg
-		if modName != "" {
-			lk.pendingDequeue = func() {
-				n.outboxDequeue(modName, peer, queueID)
-			}
-		} else {
-			lk.pendingDequeue = nil
-		}
+		lk.pendingDequeue = dequeue
 		promoted = true
 	}
 	counter := lk.Counter
@@ -1452,15 +1449,9 @@ func (n *Node) sendPending(peer string) {
 
 	var kickPeer bool
 	if n.Get(peer) != nil {
-		nextMsg, modName, queueID := n.nextTx(peer)
+		nextMsg, dequeue := n.nextTx(peer)
 		lk.Pending = nextMsg
-		if modName != "" {
-			lk.pendingDequeue = func() {
-				n.outboxDequeue(modName, peer, queueID)
-			}
-		} else {
-			lk.pendingDequeue = nil
-		}
+		lk.pendingDequeue = dequeue
 		kickPeer = lk.Pending != nil
 	}
 	n.commit()
