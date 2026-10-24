@@ -294,7 +294,7 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 		}
 		h.AddReceipt(peerID, -req.Amount, ok)
 	}
-	h.dequeue(peerID, method)
+	h.dequeue(peerID, "q")
 	return nil
 }
 
@@ -314,11 +314,8 @@ func (h *Node) Status() json.RawMessage {
 			"demurrage":         p.Demurrage,
 			"demurrage_in":      p.DemurrageIn,
 		}
-		for _, method := range []string{"set_credit_limit", "set_demurrage", "payment"} {
-			if h.outboxHas(id, method) {
-				info["pending"] = method
-				break
-			}
+		if h.outboxHas(id, "q") {
+			info["pending"] = true
 		}
 		peers[id] = info
 	}
@@ -402,10 +399,7 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []strin
 	if p.Amount < 0 {
 		return nil, nil, fmt.Errorf("credit limit must be non-negative")
 	}
-	if h.outboxHas(peerID, "set_credit_limit") {
-		return nil, nil, fmt.Errorf("credit limit change already pending")
-	}
-	h.send(peerID, "set_credit_limit", "set_credit_limit", Enc(map[string]int64{"amount": p.Amount}))
+	h.send(peerID, "q", "set_credit_limit", Enc(map[string]int64{"amount": p.Amount}))
 	return Enc("ok"), []string{peerID}, nil
 }
 
@@ -425,10 +419,7 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, []string,
 	if p.Rate < 0 {
 		return nil, nil, fmt.Errorf("demurrage rate must be non-negative")
 	}
-	if h.outboxHas(peerID, "set_demurrage") {
-		return nil, nil, fmt.Errorf("demurrage change already pending")
-	}
-	h.send(peerID, "set_demurrage", "set_demurrage", Enc(map[string]int64{"rate": p.Rate}))
+	h.send(peerID, "q", "set_demurrage", Enc(map[string]int64{"rate": p.Rate}))
 	return Enc("ok"), []string{peerID}, nil
 }
 
@@ -445,15 +436,12 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 	if peer == nil {
 		return nil, nil, fmt.Errorf("peer %s has no trustline", peerID)
 	}
-	if h.outboxHas(peerID, "payment") {
-		return nil, nil, fmt.Errorf("payment already pending")
-	}
 	if p.Amount <= 0 {
 		return nil, nil, fmt.Errorf("amount must be positive")
 	}
 	if p.Amount > h.Bandwidth(peerID, OUT) {
 		return nil, nil, fmt.Errorf("insufficient credit")
 	}
-	h.send(peerID, "payment", "payment", Enc(map[string]int64{"amount": p.Amount}))
+	h.send(peerID, "q", "payment", Enc(map[string]int64{"amount": p.Amount}))
 	return Enc("ok"), []string{peerID}, nil
 }

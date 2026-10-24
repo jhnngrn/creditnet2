@@ -103,26 +103,26 @@ type DequeueFunc func(peer, queueID string)
 // Called by the per-module SendFunc closure created in Server.newNode.
 func (n *Node) outboxSend(modName, peer, queueID, method string, payload json.RawMessage) {
 	if n.Outbox == nil {
-		n.Outbox = map[string]map[string]map[string]*OutboxEntry{}
+		n.Outbox = map[string]map[string]map[string][]*OutboxEntry{}
 	}
 	byMod := n.Outbox[peer]
 	if byMod == nil {
-		byMod = map[string]map[string]*OutboxEntry{}
+		byMod = map[string]map[string][]*OutboxEntry{}
 		n.Outbox[peer] = byMod
 	}
 	byQueue := byMod[modName]
 	if byQueue == nil {
-		byQueue = map[string]*OutboxEntry{}
+		byQueue = map[string][]*OutboxEntry{}
 		byMod[modName] = byQueue
 	}
-	byQueue[queueID] = &OutboxEntry{
+	byQueue[queueID] = append(byQueue[queueID], &OutboxEntry{
 		Method:  method,
 		Payload: payload,
 		Time:    time.Now().Unix(),
-	}
+	})
 }
 
-// outboxDequeue removes an entry from the framework-managed outbox.
+// outboxDequeue removes the head entry from the named queue.
 // Called by the per-module DequeueFunc closure created in Server.newNode.
 func (n *Node) outboxDequeue(modName, peer, queueID string) {
 	byMod := n.Outbox[peer]
@@ -133,7 +133,12 @@ func (n *Node) outboxDequeue(modName, peer, queueID string) {
 	if byQueue == nil {
 		return
 	}
-	delete(byQueue, queueID)
+	q := byQueue[queueID]
+	if len(q) <= 1 {
+		delete(byQueue, queueID)
+	} else {
+		byQueue[queueID] = q[1:]
+	}
 	if len(byQueue) == 0 {
 		delete(byMod, modName)
 	}
@@ -147,7 +152,7 @@ func (n *Node) outboxDequeue(modName, peer, queueID string) {
 func (n *Node) OutboxHas(peer, module, queueID string) bool {
 	if byMod := n.Outbox[peer]; byMod != nil {
 		if byQueue := byMod[module]; byQueue != nil {
-			return byQueue[queueID] != nil
+			return len(byQueue[queueID]) > 0
 		}
 	}
 	return false
@@ -303,7 +308,7 @@ type Node struct {
 	InviteMode inviteMode             `json:"invite_mode,omitempty"`
 	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
 	// Outbox holds queued outgoing messages: peer → module → queueID → entry.
-	Outbox     map[string]map[string]map[string]*OutboxEntry `json:"outbox,omitempty"`
+	Outbox     map[string]map[string]map[string][]*OutboxEntry `json:"outbox,omitempty"`
 	roots      map[string][]string    `json:"-"` // root module name → child module names
 	moduleMap  map[string]Module      `json:"-"`
 	// send delivers a sync message to a peer and returns the response body.
@@ -745,7 +750,11 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 		if !lk.moduleConnected(modName) {
 			continue
 		}
-		for _, entry := range modEntries {
+		for _, q := range modEntries {
+			if len(q) == 0 {
+				continue
+			}
+			entry := q[0]
 			msg := &queuedMsg{
 				Method:   modName + "." + entry.Method,
 				Payload:  entry.Payload,

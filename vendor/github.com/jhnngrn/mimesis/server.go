@@ -173,7 +173,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		n.Outbox = loaded.Outbox
 	}
 	if n.Outbox == nil {
-		n.Outbox = map[string]map[string]map[string]*OutboxEntry{}
+		n.Outbox = map[string]map[string]map[string][]*OutboxEntry{}
 	}
 
 	schedule := func(delay time.Duration, fn func() []string) {
