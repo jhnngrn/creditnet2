@@ -106,7 +106,13 @@ func (h *Triad) ForceRemove(peer string) {
 			}
 		}
 		if nov.Side[IN] == "" && nov.Side[OUT] == "" {
-			h.removeNovation(id)
+			// Keep the novation if there are queued entries to other peers —
+			// respCommit will handle the response when it arrives.
+			peers := h.api.QueuePeers(id)
+			delete(peers, peer)
+			if len(peers) == 0 {
+				h.removeNovation(id)
+			}
 		}
 	}
 }

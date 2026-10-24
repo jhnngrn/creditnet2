@@ -103,6 +103,10 @@ type DeleteQueueFunc func(peer, queueID string)
 // given queueID. The module name is captured in the closure.
 type QueueExistsFunc func(queueID string) bool
 
+// QueuePeersFunc returns the set of peers that have an outbox entry for
+// the given queueID. The module name is captured in the closure.
+type QueuePeersFunc func(queueID string) map[string]bool
+
 // ModuleAPI groups the framework callbacks available to a module.
 type ModuleAPI struct {
 	Schedule    ScheduleFunc
@@ -110,6 +114,7 @@ type ModuleAPI struct {
 	DeleteQueue DeleteQueueFunc
 	QueueHas    func(peer, queueID string) bool
 	QueueExists QueueExistsFunc
+	QueuePeers  QueuePeersFunc
 }
 
 // outboxSend enqueues an outgoing message in the framework-managed outbox.
@@ -203,6 +208,23 @@ func (n *Node) QueueExists(module, queueID string) bool {
 		}
 	}
 	return false
+}
+
+// QueuePeers returns the set of peers that have an outbox entry for the
+// given module and queueID.
+func (n *Node) QueuePeers(module, queueID string) map[string]bool {
+	var out map[string]bool
+	for peer, byMod := range n.Outbox {
+		if byQueue := byMod[module]; byQueue != nil {
+			if len(byQueue[queueID]) > 0 {
+				if out == nil {
+					out = map[string]bool{}
+				}
+				out[peer] = true
+			}
+		}
+	}
+	return out
 }
 
 // OutboxHasModule reports whether the outbox contains any entry for the

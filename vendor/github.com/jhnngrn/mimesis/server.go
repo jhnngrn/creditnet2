@@ -198,6 +198,9 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 			QueueExists: func(queueID string) bool {
 				return n.QueueExists(modName, queueID)
 			},
+			QueuePeers: func(queueID string) map[string]bool {
+				return n.QueuePeers(modName, queueID)
+			},
 		}
 		m := f.factory(f.name, id, n, api, loaded.Handlers[f.name])
 		n.registerModule(f.name, m)
