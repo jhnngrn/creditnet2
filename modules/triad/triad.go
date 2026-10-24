@@ -146,6 +146,12 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 		if nov.Side[IN].Peer != "" {
 			return false, nil, nil // already confirmed
 		}
+		if nov.Side[OUT].Peer == peer {
+			return false, nil, nil // can't confirm own novation
+		}
+		if h.pendingBalance(peer, IN) < nov.Amount {
+			return false, nil, nil
+		}
 		nov.Side[IN].Peer = peer
 		nov.Side[OUT].Queue.Enqueue("finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 		return true, []string{nov.Side[OUT].Peer}, nil
