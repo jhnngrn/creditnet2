@@ -93,11 +93,11 @@ type OutboxEntry struct {
 // entry within the module's outbox for that peer.
 type SendFunc func(peer, queueID, method string, payload json.RawMessage)
 
-// CancelFunc removes a queued outbox entry that is no longer needed.
-// Response-triggered dequeue is automatic — use this only to cancel
-// entries invalidated by incoming state changes (e.g. race resolution,
-// novation removal).
-type CancelFunc func(peer, queueID string)
+// DeleteQueueFunc removes all queued outbox entries for a given peer and
+// queueID. Response-triggered dequeue is automatic — use this only to
+// clean up entries when the thing they belong to is destroyed (e.g.
+// novation removal, loop clearing).
+type DeleteQueueFunc func(peer, queueID string)
 
 // outboxSend enqueues an outgoing message in the framework-managed outbox.
 // Called by the per-module SendFunc closure created in Server.newNode.
@@ -123,8 +123,28 @@ func (n *Node) outboxSend(modName, peer, queueID, method string, payload json.Ra
 	n.kick(peer)
 }
 
+// outboxDeleteQueue removes all entries for the named queue.
+// Called by the per-module DeleteQueueFunc closure.
+func (n *Node) outboxDeleteQueue(modName, peer, queueID string) {
+	byMod := n.Outbox[peer]
+	if byMod == nil {
+		return
+	}
+	byQueue := byMod[modName]
+	if byQueue == nil {
+		return
+	}
+	delete(byQueue, queueID)
+	if len(byQueue) == 0 {
+		delete(byMod, modName)
+	}
+	if len(byMod) == 0 {
+		delete(n.Outbox, peer)
+	}
+}
+
 // outboxDequeue removes the head entry from the named queue.
-// Called by the per-module DequeueFunc closure created in Server.newNode.
+// Used internally by the auto-dequeue closure.
 func (n *Node) outboxDequeue(modName, peer, queueID string) {
 	byMod := n.Outbox[peer]
 	if byMod == nil {

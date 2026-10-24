@@ -48,14 +48,14 @@ type Triad struct {
 	node           *mimesis.Node
 	schedule       mimesis.ScheduleFunc
 	send           mimesis.SendFunc
-	cancel         mimesis.CancelFunc
+	deleteQueue    mimesis.DeleteQueueFunc
 	trustlines     map[string]*creditnet.Trustline
 	bandwidth      creditnet.BandwidthFunc
 	pendingBalance creditnet.PendingBalanceFunc
 }
 
 // NewTriad matches the mimesis.ModuleFactory signature.
-func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, cancel mimesis.CancelFunc, state json.RawMessage) mimesis.Module {
+func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, deleteQueue mimesis.DeleteQueueFunc, state json.RawMessage) mimesis.Module {
 	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Triad{
 		Novations:      map[string]*Novation{},
@@ -64,7 +64,7 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 		node:           node,
 		schedule:       schedule,
 		send:           send,
-		cancel:         cancel,
+		deleteQueue:    deleteQueue,
 		trustlines:     tl.Trustlines,
 		bandwidth:      tl.Bandwidth,
 		pendingBalance: tl.PendingBalance,
@@ -435,7 +435,7 @@ func (h *Triad) removeNovation(id string) {
 	if nov := h.Novations[id]; nov != nil {
 		for s := 0; s < 2; s++ {
 			if nov.Side[s] != "" {
-				h.cancel(nov.Side[s], id)
+				h.deleteQueue(nov.Side[s], id)
 			}
 		}
 	}

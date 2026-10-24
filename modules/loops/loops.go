@@ -131,8 +131,8 @@ type Loops struct {
 	bandwidth  creditnet.BandwidthFunc
 }
 
-func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, cancel mimesis.CancelFunc, state json.RawMessage) mimesis.Module {
-	_ = cancel // loops does not currently need cancel
+func NewLoops(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, send mimesis.SendFunc, deleteQueue mimesis.DeleteQueueFunc, state json.RawMessage) mimesis.Module {
+	_ = deleteQueue // loops does not currently need deleteQueue
 	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Loops{
 		Paths:      map[string]*Path{},
