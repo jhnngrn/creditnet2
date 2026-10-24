@@ -70,20 +70,76 @@ type LinkState struct {
 // that need kicking on other links (cross-link side effects).
 // HandleResponse returns routes for the same purpose.
 // HandleAccount handles user-facing API calls.
-// NextTx returns the next queued message to send on a peer.
-// Returns (method, payload, queuedAt). Empty method means nothing to send.
-// queuedAt is the unix-second timestamp of when the message was first queued;
-// when multiple modules return a candidate for the same peer, the oldest wins.
 type Module interface {
 	OnConnect(peer string)
 	OnClose(peer string)
 	HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
 	HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error)
-	NextTx(peer string) (string, json.RawMessage, int64)
 	Status() json.RawMessage
 	Busy(peer string) bool
 	ForceRemove(peer string)
+}
+
+// OutboxEntry is a queued outgoing message managed by the framework.
+// Modules enqueue entries via SendFunc; the framework picks the oldest
+// entry across all modules for a peer and sends it as the next tx.
+type OutboxEntry struct {
+	Method  string          `json:"method"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Time    int64           `json:"time"`
+}
+
+// SendFunc enqueues an outgoing message for a peer.
+// queueID is a module-chosen key (e.g. a novation ID) that identifies the
+// entry within the module's outbox for that peer.
+type SendFunc func(peer, queueID, method string, payload json.RawMessage)
+
+// DequeueFunc removes a previously enqueued message.
+// Used both when the exchange completes successfully and when it is cancelled.
+type DequeueFunc func(peer, queueID string)
+
+// outboxSend enqueues an outgoing message in the framework-managed outbox.
+// Called by the per-module SendFunc closure created in Server.newNode.
+func (n *Node) outboxSend(modName, peer, queueID, method string, payload json.RawMessage) {
+	if n.Outbox == nil {
+		n.Outbox = map[string]map[string]map[string]*OutboxEntry{}
+	}
+	byMod := n.Outbox[peer]
+	if byMod == nil {
+		byMod = map[string]map[string]*OutboxEntry{}
+		n.Outbox[peer] = byMod
+	}
+	byQueue := byMod[modName]
+	if byQueue == nil {
+		byQueue = map[string]*OutboxEntry{}
+		byMod[modName] = byQueue
+	}
+	byQueue[queueID] = &OutboxEntry{
+		Method:  method,
+		Payload: payload,
+		Time:    time.Now().Unix(),
+	}
+}
+
+// outboxDequeue removes an entry from the framework-managed outbox.
+// Called by the per-module DequeueFunc closure created in Server.newNode.
+func (n *Node) outboxDequeue(modName, peer, queueID string) {
+	byMod := n.Outbox[peer]
+	if byMod == nil {
+		return
+	}
+	byQueue := byMod[modName]
+	if byQueue == nil {
+		return
+	}
+	delete(byQueue, queueID)
+	if len(byQueue) == 0 {
+		delete(byMod, modName)
+	}
+	if len(byMod) == 0 {
+		delete(n.Outbox, peer)
+	}
 }
 
 // queuedMsg is a message queued for sending on a link.
@@ -220,6 +276,8 @@ type Node struct {
 	Links      map[string]*Link       `json:"links"`
 	InviteMode inviteMode             `json:"invite_mode,omitempty"`
 	Handlers   map[string]json.RawMessage `json:"handlers,omitempty"`
+	// Outbox holds queued outgoing messages: peer → module → queueID → entry.
+	Outbox     map[string]map[string]map[string]*OutboxEntry `json:"outbox,omitempty"`
 	roots      map[string][]string    `json:"-"` // root module name → child module names
 	moduleMap  map[string]Module      `json:"-"`
 	// send delivers a sync message to a peer and returns the response body.
@@ -292,31 +350,6 @@ func (n *Node) ModuleAvailable(peer, module string) bool {
 func (n *Node) len() int              { return len(n.Links) }
 func (n *Node) full() bool            { return len(n.Links) >= maxLinks }
 func (n *Node) delete(peer string)    { delete(n.Links, peer) }
-
-// ForceRemove unilaterally removes a link without bilateral consensus.
-// Unlike Close, which goes through the normal req/resp close handshake,
-// ForceRemove deletes the link immediately. Each module's ForceRemove
-// is called to clean up state that would normally be garbage collected
-// through the bilateral close cycle.
-// Must be called under the node lock (from a handler or schedule callback).
-func (n *Node) ForceRemove(peer string) {
-	lk := n.Get(peer)
-	if lk == nil {
-		return
-	}
-	for name := range lk.State.Modules {
-		if mod := n.moduleMap[name]; mod != nil {
-			mod.ForceRemove(peer)
-		}
-	}
-	if mod := n.moduleMap[lk.State.Root]; mod != nil {
-		mod.ForceRemove(peer)
-	}
-	if lk.Sending != nil && lk.Sending.Timer != nil {
-		lk.Sending.Timer.Stop()
-	}
-	n.delete(peer)
-}
 
 // Connect creates a new outgoing link to peer running the named root module.
 // The link is created with IntentConnect set, so the sync loop
@@ -495,14 +528,16 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			if l.State.Status == Connected {
 				return false, nil, fmt.Errorf("link already connected")
 			}
-			if l.State.IntentConnect || l.State.Status == waiting {
-				// Both sides must agree on the root module.
-				if l.State.Root != "" && l.State.Root != p.Name {
-					return false, nil, nil
-				}
-				if l.State.Root == "" {
-					l.State.Root = p.Name
-				}
+			if l.State.Status == Incoming {
+				return false, nil, fmt.Errorf("link already incoming")
+			}
+			// Root mismatch — NACK. The sender goes to waiting;
+			// force_remove is the way out.
+			if l.State.Root != p.Name {
+				return false, nil, nil
+			}
+			// Accept: peer was waiting (mutual add), or we're open.
+			if l.State.Status == waiting || n.InviteMode == inviteModeOpen {
 				l.State.Status = Connected
 				l.State.IntentConnect = false
 				if mod := n.moduleMap[l.State.Root]; mod != nil {
@@ -510,22 +545,16 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				}
 				return true, nil, nil
 			}
-			if n.InviteMode == inviteModeOpen {
-				l.State.Root = p.Name
-				l.State.Status = Connected
-				if mod := n.moduleMap[p.Name]; mod != nil {
-					mod.OnConnect(peer)
-				}
-				return true, nil, nil
-			}
+			// Invite mode — received, not yet accepted. NACK.
+			l.State.Status = Incoming
 			return false, nil, nil
 		case "close":
 			if n.anyBusy(peer) {
 				return false, nil, errRefsHeld
 			}
 			if l.State.Status == Connected {
-				for name := range l.State.Modules {
-					if mod := n.moduleMap[name]; mod != nil {
+				for name, c := range l.State.Modules {
+					if mod := n.moduleMap[name]; mod != nil && c.Status == Connected {
 						mod.OnClose(peer)
 					}
 				}
@@ -553,12 +582,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			}
 			return ok, nil, err
 		case "close":
-			ok, closed, err := l.reqModuleClose(peer, payload, n.moduleMap, n.roots)
-			if closed != "" {
-				if mod := n.moduleMap[closed]; mod != nil {
-					mod.OnClose(peer)
-				}
-			}
+			ok, err := l.reqModuleClose(peer, payload, n.moduleMap, n.roots)
 			return ok, nil, err
 		}
 		return false, nil, fmt.Errorf("unknown module method %q", method)
@@ -585,19 +609,23 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 		switch method {
 		case "connect":
 			if ok {
+				// ACK — peer accepted. Both sides connected.
 				l.State.Status = Connected
+				l.State.IntentConnect = false
 				if mod := n.moduleMap[l.State.Root]; mod != nil {
 					mod.OnConnect(peer)
 				}
 			} else {
+				// NACK — go to waiting. The link stays with its
+				// counter intact; force_remove is the way out.
 				l.State.Status = waiting
+				l.State.IntentConnect = false
 			}
-			l.State.IntentConnect = false
 		case "close":
 			if ok {
 				if l.State.Status == Connected {
-					for name := range l.State.Modules {
-						if mod := n.moduleMap[name]; mod != nil {
+					for name, c := range l.State.Modules {
+						if mod := n.moduleMap[name]; mod != nil && c.Status == Connected {
 							mod.OnClose(peer)
 						}
 					}
@@ -625,11 +653,7 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 				}
 			}
 		case "close":
-			if closed := l.respModuleClose(payload, ok); closed != "" {
-				if mod := n.moduleMap[closed]; mod != nil {
-					mod.OnClose(peer)
-				}
-			}
+			l.respModuleClose(peer, payload, ok, n.moduleMap)
 		}
 		return nil
 	}
@@ -690,16 +714,16 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 		return nil
 	}
 	var best *queuedMsg
-	for name, mod := range n.moduleMap {
-		if !lk.moduleConnected(name) {
+	peerOutbox := n.Outbox[peer]
+	for modName, modEntries := range peerOutbox {
+		if !lk.moduleConnected(modName) {
 			continue
 		}
-		method, payload, queuedAt := mod.NextTx(peer)
-		if method != "" {
+		for _, entry := range modEntries {
 			msg := &queuedMsg{
-				Method:   name + "." + method,
-				Payload:  payload,
-				QueuedAt: queuedAt,
+				Method:   modName + "." + entry.Method,
+				Payload:  entry.Payload,
+				QueuedAt: entry.Time,
 			}
 			if olderQueuedMsg(msg, best) {
 				best = msg
@@ -784,48 +808,59 @@ func (l *Link) respModule(payload json.RawMessage, ok bool) string {
 	return ""
 }
 
-// reqModuleClose returns (ok, closedModule, error). closedModule is non-empty
-// when the module was just removed, so the caller can fire OnClose.
-func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module, roots map[string][]string) (bool, string, error) {
+// reqModuleClose handles an incoming module.close request. It removes the
+// module from the link and fires OnClose if the module was connected.
+func (l *Link) reqModuleClose(peer string, payload json.RawMessage, modules map[string]Module, roots map[string][]string) (bool, error) {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil || p.Name == "" {
-		return false, "", fmt.Errorf("bad payload")
+		return false, fmt.Errorf("bad payload")
 	}
 	if !isChildModule(p.Name, l.State.Root, roots) {
-		return false, "", nil
+		return false, nil
 	}
 	mod := l.State.Modules[p.Name]
 	if mod == nil {
-		return true, "", nil // already gone
+		return true, nil // already gone
 	}
 	if m := modules[p.Name]; m != nil && m.Busy(peer) {
-		return false, "", errRefsHeld
+		return false, errRefsHeld
 	}
+	wasConnected := mod.Status == Connected
 	delete(l.State.Modules, p.Name)
-	return true, p.Name, nil
+	if wasConnected {
+		if m := modules[p.Name]; m != nil {
+			m.OnClose(peer)
+		}
+	}
+	return true, nil
 }
 
-// respModuleClose returns the module name when it was just removed,
-// so the caller can fire OnClose.
-func (l *Link) respModuleClose(payload json.RawMessage, ok bool) string {
+// respModuleClose handles a module.close response. It removes the module
+// from the link and fires OnClose if the module was connected.
+func (l *Link) respModuleClose(peer string, payload json.RawMessage, ok bool, modules map[string]Module) {
 	var p struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(payload, &p) != nil {
-		return ""
+		return
 	}
 	mod := l.State.Modules[p.Name]
 	if mod == nil {
-		return ""
+		return
 	}
 	if ok {
+		wasConnected := mod.Status == Connected
 		delete(l.State.Modules, p.Name)
-		return p.Name
+		if wasConnected {
+			if m := modules[p.Name]; m != nil {
+				m.OnClose(peer)
+			}
+		}
+		return
 	}
 	mod.IntentClose = false
-	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -893,6 +928,34 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 			return nil, fmt.Errorf("link to %s is not incoming", p.Peer)
 		}
 		lk.State.IntentConnect = true
+		result = enc("ok")
+		kicks = []string{p.Peer}
+
+	case ns == "link" && method == "force_remove":
+		var p struct {
+			Peer string `json:"peer"`
+		}
+		if err = json.Unmarshal(payload, &p); err != nil {
+			return nil, fmt.Errorf("bad request")
+		}
+		p.Peer = strings.ToLower(p.Peer)
+		lk := n.Get(p.Peer)
+		if lk == nil {
+			return nil, fmt.Errorf("no link to %s", p.Peer)
+		}
+		for name := range lk.State.Modules {
+			if mod := n.moduleMap[name]; mod != nil {
+				mod.ForceRemove(p.Peer)
+			}
+		}
+		if mod := n.moduleMap[lk.State.Root]; mod != nil {
+			mod.ForceRemove(p.Peer)
+		}
+		delete(n.Outbox, p.Peer)
+		if lk.Sending != nil && lk.Sending.Timer != nil {
+			lk.Sending.Timer.Stop()
+		}
+		n.delete(p.Peer)
 		result = enc("ok")
 		kicks = []string{p.Peer}
 
@@ -1111,7 +1174,7 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 			return nil, errNoLink
 		}
 		if n.InviteMode == inviteModeClosed {
-			return nil, errInvitesDisabled
+			return &txResponse{OK: false, Timestamp: nowSecs()}, nil
 		}
 		if n.full() {
 			return nil, errMaxLinks
@@ -1129,7 +1192,6 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 		}
 		lk = newLink(n.ID, env.From)
 		lk.State.Root = p.Name
-		lk.State.Status = Incoming
 		n.Links[env.From] = lk
 	}
 

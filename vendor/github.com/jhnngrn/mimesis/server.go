@@ -72,10 +72,10 @@ type ScheduleFunc func(delay time.Duration, fn func() []string)
 
 // ModuleFactory creates a module for a newly loaded or created node.
 // The factory receives the node identity, the owning Node, a scheduler
-// for periodic work, and persisted state (nil if new). Module-specific
-// dependencies (e.g. shared data structures between modules) are
-// captured in the closure.
-type ModuleFactory func(name, nodeID string, node *Node, schedule ScheduleFunc, state json.RawMessage) Module
+// for periodic work, send/dequeue functions for the framework-managed
+// outbox, and persisted state (nil if new). Module-specific dependencies
+// (e.g. shared data structures between modules) are captured in the closure.
+type ModuleFactory func(name, nodeID string, node *Node, schedule ScheduleFunc, send SendFunc, dequeue DequeueFunc, state json.RawMessage) Module
 
 type moduleReg struct {
 	name    string
@@ -169,13 +169,26 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	}
 
 	n = newNode(id, loaded.Links, loaded.InviteMode, send, commit)
+	if loaded.Outbox != nil {
+		n.Outbox = loaded.Outbox
+	}
+	if n.Outbox == nil {
+		n.Outbox = map[string]map[string]map[string]*OutboxEntry{}
+	}
 
 	schedule := func(delay time.Duration, fn func() []string) {
 		n.schedule(delay, fn)
 	}
 
 	for _, f := range s.factories {
-		m := f.factory(f.name, id, n, schedule, loaded.Handlers[f.name])
+		modName := f.name
+		modSend := func(peer, queueID, method string, payload json.RawMessage) {
+			n.outboxSend(modName, peer, queueID, method, payload)
+		}
+		modDequeue := func(peer, queueID string) {
+			n.outboxDequeue(modName, peer, queueID)
+		}
+		m := f.factory(f.name, id, n, schedule, modSend, modDequeue, loaded.Handlers[f.name])
 		n.registerModule(f.name, m)
 	}
 	n.roots = s.roots

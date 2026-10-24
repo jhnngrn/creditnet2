@@ -319,21 +319,6 @@ func (h *Node) Status() json.RawMessage {
 	return Enc(map[string]any{"peers": peers, "receipts": h.Receipts})
 }
 
-// link.Module — NextTx
-// ---------------------------------------------------------------------------
-
-func (h *Node) NextTx(peerID string) (string, json.RawMessage, int64) {
-	peer := h.Trustlines[peerID]
-	if peer == nil {
-		return "", nil, 0
-	}
-	method := peer.Queue.Head()
-	if method == "" {
-		return "", nil, 0
-	}
-	return method, peer.Queue.HeadPayload(), peer.Queue.HeadTime()
-}
-
 // ---------------------------------------------------------------------------
 // link.Module — HandleAccount
 // ---------------------------------------------------------------------------
