@@ -104,7 +104,18 @@ func (h *Triad) Reserved(peer string, side int) int64 {
 
 func (h *Triad) OnConnect(peer string)   {}
 func (h *Triad) OnClose(peer string)     {}
-func (h *Triad) ForceRemove(peer string) {}
+func (h *Triad) ForceRemove(peer string) {
+	for id, nov := range h.Novations {
+		for s := 0; s < 2; s++ {
+			if nov.Side[s].Peer == peer {
+				nov.Side[s] = NovationSide{}
+			}
+		}
+		if nov.Side[IN].Peer == "" && nov.Side[OUT].Peer == "" {
+			h.removeNovation(id)
+		}
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Module — HandleRequest
