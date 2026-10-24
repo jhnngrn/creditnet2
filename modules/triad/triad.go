@@ -24,15 +24,10 @@ const (
 	OUT = creditnet.OUT
 )
 
-// NovationSide holds per-side state (IN or OUT).
-type NovationSide struct {
-	Peer string `json:"peer,omitempty"`
-}
-
 // Novation tracks a single three-party novation in progress.
 type Novation struct {
-	Amount int64           `json:"amount"`
-	Side   [2]NovationSide `json:"side"`
+	Amount int64      `json:"amount"`
+	Side   [2]string  `json:"side"` // peer IDs: [IN, OUT]
 }
 
 // OutboxEntry is a single queued message keyed by clearing ID (novation ID).
@@ -101,7 +96,7 @@ func NewTriad(name, nodeID string, node *mimesis.Node, schedule mimesis.Schedule
 func (h *Triad) Reserved(peer string, side int) int64 {
 	var total int64
 	for _, nov := range h.Novations {
-		if nov.Side[side].Peer == peer {
+		if nov.Side[side] == peer {
 			total += nov.Amount
 		}
 	}
@@ -118,11 +113,11 @@ func (h *Triad) ForceRemove(peer string) {
 	delete(h.Outbox, peer)
 	for id, nov := range h.Novations {
 		for s := 0; s < 2; s++ {
-			if nov.Side[s].Peer == peer {
-				nov.Side[s] = NovationSide{}
+			if nov.Side[s] == peer {
+				nov.Side[s] = ""
 			}
 		}
-		if nov.Side[IN].Peer == "" && nov.Side[OUT].Peer == "" {
+		if nov.Side[IN] == "" && nov.Side[OUT] == "" {
 			h.removeNovation(id)
 		}
 	}
@@ -155,18 +150,18 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 
 	// Confirmation back to initiator — novation already exists.
 	if nov := h.Novations[m.NovationID]; nov != nil {
-		if nov.Side[IN].Peer != "" {
+		if nov.Side[IN] != "" {
 			return false, nil, nil // already confirmed
 		}
-		if nov.Side[OUT].Peer == peer {
+		if nov.Side[OUT] == peer {
 			return false, nil, nil // can't confirm own novation
 		}
 		if h.pendingBalance(peer, IN) < nov.Amount {
 			return false, nil, nil
 		}
-		nov.Side[IN].Peer = peer
-		h.outboxPut(nov.Side[OUT].Peer, m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
-		return true, []string{nov.Side[OUT].Peer}, nil
+		nov.Side[IN] = peer
+		h.outboxPut(nov.Side[OUT], m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
+		return true, []string{nov.Side[OUT]}, nil
 	}
 
 	// New commit — verify connectivity, bandwidth, and debt direction.
@@ -188,10 +183,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, []string, err
 
 	nov := &Novation{
 		Amount: m.Amount,
-		Side: [2]NovationSide{
-			{Peer: peer},
-			{Peer: m.Next},
-		},
+		Side:   [2]string{peer, m.Next},
 	}
 	h.addNovation(m.NovationID, nov)
 	h.outboxPut(m.Next, m.NovationID, "commit", creditnet.Enc(novCommitMsg{
@@ -215,17 +207,17 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	if nov == nil {
 		return false, nil, fmt.Errorf("novation %s not found", m.NovationID)
 	}
-	if nov.Side[IN].Peer != peer {
+	if nov.Side[IN] != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(nov.Amount, ts)
-	nov.Side[IN] = NovationSide{}
+	nov.Side[IN] = ""
 	var kicks []string
-	if nov.Side[OUT].Peer != "" {
-		h.outboxPut(nov.Side[OUT].Peer, m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
-		kicks = []string{nov.Side[OUT].Peer}
+	if nov.Side[OUT] != "" {
+		h.outboxPut(nov.Side[OUT], m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
+		kicks = []string{nov.Side[OUT]}
 	}
-	if nov.Side[OUT].Peer == "" {
+	if nov.Side[OUT] == "" {
 		h.removeNovation(m.NovationID)
 	}
 	return true, kicks, nil
@@ -242,15 +234,15 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 	if nov == nil {
 		return false, nil, fmt.Errorf("unknown novation %s", m.NovationID)
 	}
-	if nov.Side[OUT].Peer != peer {
+	if nov.Side[OUT] != peer {
 		return false, nil, fmt.Errorf("wrong peer")
 	}
-	if nov.Side[IN].Peer == "" {
+	if nov.Side[IN] == "" {
 		h.removeNovation(m.NovationID)
 		return true, nil, nil
 	}
-	h.outboxPut(nov.Side[IN].Peer, m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
-	return true, []string{nov.Side[IN].Peer}, nil
+	h.outboxPut(nov.Side[IN], m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
+	return true, []string{nov.Side[IN]}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -274,18 +266,26 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) []string {
 	if json.Unmarshal(raw, &m) != nil {
 		return nil
 	}
+	h.outboxRemove(peer, m.NovationID)
 	nov := h.Novations[m.NovationID]
 	if nov == nil {
+		// tryNovate-originated: no Novation yet.
+		if ok {
+			h.addNovation(m.NovationID, &Novation{
+				Amount: m.Amount,
+				Side:   [2]string{"", peer},
+			})
+		}
 		return nil
 	}
-	h.outboxRemove(peer, m.NovationID)
+	// reqCommit-originated: Novation exists (IN=sender, OUT=peer).
 	if !ok {
-		if nov.Side[IN].Peer == "" {
+		if nov.Side[IN] == "" {
 			h.removeNovation(m.NovationID)
 			return nil
 		}
-		h.outboxPut(nov.Side[IN].Peer, m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
-		return []string{nov.Side[IN].Peer}
+		h.outboxPut(nov.Side[IN], m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
+		return []string{nov.Side[IN]}
 	}
 	return nil
 }
@@ -303,8 +303,8 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if p := h.trustlines[peer]; p != nil {
 		p.AddBalance(-nov.Amount, ts)
 	}
-	nov.Side[OUT] = NovationSide{}
-	if nov.Side[IN].Peer == "" {
+	nov.Side[OUT] = ""
+	if nov.Side[IN] == "" {
 		h.removeNovation(m.NovationID)
 	}
 }
@@ -349,8 +349,8 @@ func (h *Triad) Status() json.RawMessage {
 	for id, nov := range h.Novations {
 		novs[id] = map[string]any{
 			"amount": nov.Amount,
-			"in":     nov.Side[IN].Peer,
-			"out":    nov.Side[OUT].Peer,
+			"in":     nov.Side[IN],
+			"out":    nov.Side[OUT],
 		}
 	}
 	return creditnet.Enc(map[string]any{"novations": novs})
@@ -363,7 +363,7 @@ func (h *Triad) Busy(peer string) bool {
 	}
 	for _, nov := range h.Novations {
 		for s := 0; s < 2; s++ {
-			if nov.Side[s].Peer == peer {
+			if nov.Side[s] == peer {
 				return true
 			}
 		}
@@ -392,7 +392,7 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	if nov == nil {
 		return nil, nil, fmt.Errorf("unknown novation %s", m.NovationID)
 	}
-	if nov.Side[side].Peer == "" {
+	if nov.Side[side] == "" {
 		return nil, nil, fmt.Errorf("no peer on %s side", method)
 	}
 	var msgPayload json.RawMessage
@@ -401,8 +401,8 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	} else {
 		msgPayload = creditnet.Enc(map[string]string{"novation_id": m.NovationID})
 	}
-	h.outboxPut(nov.Side[side].Peer, m.NovationID, msg, msgPayload)
-	return nil, []string{nov.Side[side].Peer}, nil
+	h.outboxPut(nov.Side[side], m.NovationID, msg, msgPayload)
+	return nil, []string{nov.Side[side]}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -444,14 +444,6 @@ func (h *Triad) tryNovate() []string {
 				continue
 			}
 			novID := randomNovationID()
-			nov := &Novation{
-				Amount: amount,
-				Side: [2]NovationSide{
-					{},
-					{Peer: debtor},
-				},
-			}
-			h.addNovation(novID, nov)
 			h.outboxPut(debtor, novID, "commit", creditnet.Enc(novCommitMsg{
 				NovationID: novID,
 				Amount:     amount,
@@ -484,8 +476,8 @@ func (h *Triad) addNovation(id string, nov *Novation) {
 func (h *Triad) removeNovation(id string) {
 	if nov := h.Novations[id]; nov != nil {
 		for s := 0; s < 2; s++ {
-			if peer := nov.Side[s].Peer; peer != "" {
-				h.outboxRemove(peer, id)
+			if nov.Side[s] != "" {
+				h.outboxRemove(nov.Side[s], id)
 			}
 		}
 	}
@@ -524,7 +516,7 @@ func (h *Triad) novLinkCount(peer string) int {
 	c := 0
 	for _, n := range h.Novations {
 		for s := 0; s < 2; s++ {
-			if n.Side[s].Peer == peer {
+			if n.Side[s] == peer {
 				c++
 			}
 		}
