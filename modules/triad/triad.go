@@ -104,6 +104,7 @@ func (h *Triad) OnConnect(peer string) {}
 func (h *Triad) OnClose(peer string)   {}
 func (h *Triad) ForceRemove(peer string) {
 	for id, nov := range h.Novations {
+		h.deleteQueue(peer, id)
 		for s := 0; s < 2; s++ {
 			if nov.Side[s] == peer {
 				nov.Side[s] = ""
