@@ -50,15 +50,15 @@ const (
 // Peer[1] = dir-1 sender (creditor chain).
 // At initiator both start empty and are set when searches bounce back.
 type Path struct {
-	Amount  int64     `json:"amount"`
-	Penalty int64     `json:"penalty"`
-	Gas     uint64    `json:"gas"`
-	Depth   uint8     `json:"depth"`
-	Hops    uint8     `json:"hops"`
-	Peer    [2]string `json:"peer"`
-	Seed    []byte    `json:"seed,omitempty"`
-	Queue   creditnet.Queue  `json:"queue"`
-	Expiry  int64     `json:"expiry"`
+	Amount  int64           `json:"amount"`
+	Penalty int64           `json:"penalty"`
+	Gas     uint64          `json:"gas"`
+	Depth   uint8           `json:"depth"`
+	Hops    uint8           `json:"hops"`
+	Peer    [2]string       `json:"peer"`
+	Seed    []byte          `json:"seed,omitempty"`
+	Queue   creditnet.Queue `json:"queue"`
+	Expiry  int64           `json:"expiry"`
 }
 
 func (p *Path) pendingPeer() string {
@@ -92,20 +92,20 @@ type SearchProbe struct {
 // ---------------------------------------------------------------------------
 
 type Clearing struct {
-	Amount      int64          `json:"amount"`
-	PenaltyRate int64          `json:"penalty_rate"`
+	Amount      int64           `json:"amount"`
+	PenaltyRate int64           `json:"penalty_rate"`
 	Side        [2]ClearingSide `json:"side"`
-	Preimage    []byte         `json:"preimage,omitempty"`
-	CancelPre   []byte         `json:"cancel_pre,omitempty"`
-	Final       bool           `json:"final,omitempty"`
-	Seed        []byte         `json:"seed,omitempty"` // initiator only
-	Step        int            `json:"step,omitempty"` // initiator only
+	Preimage    []byte          `json:"preimage,omitempty"`
+	CancelPre   []byte          `json:"cancel_pre,omitempty"`
+	Final       bool            `json:"final,omitempty"`
+	Seed        []byte          `json:"seed,omitempty"` // initiator only
+	Step        int             `json:"step,omitempty"` // initiator only
 }
 
 type ClearingSide struct {
-	Peer    string   `json:"peer,omitempty"`
-	Time    int64    `json:"time,omitempty"`
-	Penalty int64    `json:"penalty,omitempty"`
+	Peer    string          `json:"peer,omitempty"`
+	Time    int64           `json:"time,omitempty"`
+	Penalty int64           `json:"penalty,omitempty"`
 	Queue   creditnet.Queue `json:"queue"`
 }
 
@@ -195,7 +195,6 @@ func (h *Loops) Reserved(peer string, side int) int64 {
 	return total
 }
 
-
 // ---------------------------------------------------------------------------
 // Module — lifecycle
 // ---------------------------------------------------------------------------
@@ -272,16 +271,17 @@ func (h *Loops) NextTx(peer string) (string, json.RawMessage, int64) {
 		}), 0
 	}
 	// Then paths — found/expire.
-	for id, p := range h.Paths {
+	for _, p := range h.Paths {
 		if !p.Queue.Empty() && p.pendingPeer() == peer {
-			return h.buildPathMsg(id, p)
+			return p.Queue.Head(), p.Queue.HeadPayload(), p.Queue.HeadTime()
 		}
 	}
 	// Then clearings.
-	for id, cl := range h.Clearings {
+	for _, cl := range h.Clearings {
 		for side := 0; side < 2; side++ {
 			if cl.Side[side].Peer == peer && !cl.Side[side].Queue.Empty() {
-				return h.buildClearingMsg(id, cl, side)
+				q := &cl.Side[side].Queue
+				return q.Head(), q.HeadPayload(), q.HeadTime()
 			}
 		}
 	}
@@ -350,7 +350,7 @@ func (h *Loops) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, []s
 		}
 		if p.Peer[0] != "" && p.Peer[1] != "" {
 			// Both sides connected — found!
-			p.Queue.Enqueue("found")
+			p.Queue.Enqueue("found", creditnet.Enc(map[string]any{"clearing_id": m.ID, "hops": p.Hops}))
 			return true, []string{p.Peer[0]}, nil
 		}
 		return true, nil, nil
@@ -484,7 +484,7 @@ func (h *Loops) reqFound(peer string, raw json.RawMessage) (bool, []string, erro
 	}
 	// Intermediate — forward found toward initiator (Peer[0]).
 	if p.Peer[0] != "" {
-		p.Queue.Enqueue("found")
+		p.Queue.Enqueue("found", creditnet.Enc(map[string]any{"clearing_id": m.ID, "hops": p.Hops}))
 		return true, []string{p.Peer[0]}, nil
 	}
 	return true, nil, nil
@@ -503,8 +503,6 @@ func (h *Loops) respFound(raw json.RawMessage, ok bool) {
 	}
 	p.Queue.Dequeue()
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Path — cleanup
@@ -533,13 +531,13 @@ func (h *Loops) reqExpire(peer string, raw json.RawMessage, ts int64) (bool, []s
 	if p.Peer[0] == peer {
 		p.Peer[0] = ""
 		if p.Peer[1] != "" {
-			p.Queue.Enqueue("expire")
+			p.Queue.Enqueue("expire", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 			kicks = []string{p.Peer[1]}
 		}
 	} else {
 		p.Peer[1] = ""
 		if p.Peer[0] != "" {
-			p.Queue.Enqueue("expire")
+			p.Queue.Enqueue("expire", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 			kicks = []string{p.Peer[0]}
 		}
 	}
@@ -577,10 +575,10 @@ func (h *Loops) expirePath(id string) []string {
 	// Send cleanup — Peer[1] first if set, else Peer[0].
 	var kicks []string
 	if p.Peer[1] != "" {
-		p.Queue.Enqueue("expire")
+		p.Queue.Enqueue("expire", creditnet.Enc(map[string]string{"clearing_id": id}))
 		kicks = append(kicks, p.Peer[1])
 	} else if p.Peer[0] != "" {
-		p.Queue.Enqueue("expire")
+		p.Queue.Enqueue("expire", creditnet.Enc(map[string]string{"clearing_id": id}))
 		kicks = append(kicks, p.Peer[0])
 	}
 	if p.Peer[0] == "" && p.Peer[1] == "" {
@@ -596,35 +594,23 @@ func (h *Loops) schedulePathExpiry(id string) {
 }
 
 // ---------------------------------------------------------------------------
-// Path — message builders
-// ---------------------------------------------------------------------------
-
-func (h *Loops) buildPathMsg(id string, p *Path) (string, json.RawMessage, int64) {
-	switch p.Queue.Head() {
-	case "found":
-		return "found", creditnet.Enc(map[string]any{"clearing_id": id, "hops": p.Hops}), 0
-	case "expire":
-		return "expire", creditnet.Enc(map[string]string{"clearing_id": id}), 0
-	}
-	return "", nil, 0
-}
-
-// ---------------------------------------------------------------------------
 // Clearing — commit
 // ---------------------------------------------------------------------------
 
 func (h *Loops) startClearing(id string, amount int64, outPeer string, preimage, cancelPre, seed []byte, step int) {
 	pen := amount * PenaltyRate / 1000
-	h.Clearings[id] = &Clearing{
+	cl := &Clearing{
 		Amount: amount, PenaltyRate: pen,
 		Preimage: preimage, CancelPre: cancelPre,
 		Final: step <= 2,
-		Seed: seed, Step: step,
+		Seed:  seed, Step: step,
 		Side: [2]ClearingSide{
 			{}, // IN — filled when commit comes back
-			{Peer: outPeer, Penalty: pen, Queue: creditnet.Queue{Entries: []creditnet.QueueEntry{{"commit", 0}}}},
+			{Peer: outPeer, Penalty: pen},
 		},
 	}
+	cl.Side[OUT].Queue.Enqueue("commit", creditnet.Enc(map[string]any{"clearing_id": id, "amount": amount, "penalty": pen}))
+	h.Clearings[id] = cl
 }
 
 func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []string, error) {
@@ -656,8 +642,15 @@ func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 			return false, nil, nil
 		}
 		cl.Side[IN] = ClearingSide{Peer: peer, Time: ts, Penalty: inPen}
-			h.scheduleCleanup(m.ID, IN)
-		cl.Side[OUT].Queue.Enqueue("finalize")
+		h.scheduleCleanup(m.ID, IN)
+		fm := map[string]any{"clearing_id": m.ID}
+		if cl.Preimage != nil {
+			fm["preimage"] = hex.EncodeToString(cl.Preimage)
+		}
+		if cl.Final {
+			fm["final"] = true
+		}
+		cl.Side[OUT].Queue.Enqueue("finalize", creditnet.Enc(fm))
 		return true, []string{cl.Side[OUT].Peer}, nil
 	}
 
@@ -687,8 +680,9 @@ func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, []s
 	h.scheduleCleanup(m.ID, IN)
 
 	if outPeer != "" {
-		cl.Side[OUT] = ClearingSide{Peer: outPeer, Penalty: outPen, Queue: creditnet.Queue{Entries: []creditnet.QueueEntry{{"commit", 0}}}}
-			return true, []string{outPeer}, nil
+		cl.Side[OUT] = ClearingSide{Peer: outPeer, Penalty: outPen}
+		cl.Side[OUT].Queue.Enqueue("commit", creditnet.Enc(map[string]any{"clearing_id": m.ID, "amount": m.Amount, "penalty": m.Penalty}))
+		return true, []string{outPeer}, nil
 	}
 	return true, nil, nil
 }
@@ -716,7 +710,7 @@ func (h *Loops) respCommit(raw json.RawMessage, ok bool, ts int64) []string {
 	// Rejected — rollback IN side.
 	cl.Side[OUT] = ClearingSide{}
 	if cl.Side[IN].Peer != "" {
-		cl.Side[IN].Queue.Enqueue("rollback")
+		cl.Side[IN].Queue.Enqueue("rollback", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 		return []string{cl.Side[IN].Peer}
 	}
 	h.removeClearing(m.ID)
@@ -800,12 +794,19 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 				nextCl.CancelPre = chainHash(cl.Seed, nextStep-2)
 			}
 			h.Clearings[nextID] = nextCl
-							h.scheduleCleanup(nextID, IN)
+			h.scheduleCleanup(nextID, IN)
 			h.scheduleCleanup(nextID, OUT)
 			if nextCl.CancelPre != nil {
 				h.scheduleCancel(nextID)
 			}
-			nextCl.Side[OUT].Queue.Enqueue("finalize")
+			nfm := map[string]any{"clearing_id": nextID}
+			if nextCl.Preimage != nil {
+				nfm["preimage"] = hex.EncodeToString(nextCl.Preimage)
+			}
+			if nextCl.Final {
+				nfm["final"] = true
+			}
+			nextCl.Side[OUT].Queue.Enqueue("finalize", creditnet.Enc(nfm))
 			kicks = append(kicks, outPeer)
 		} else if cl.Seed == nil && !forwardFinal {
 			// Intermediary: create with IN side only.
@@ -819,7 +820,7 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 			}
 			if nextCl.Side[IN].Peer == "" {
 				nextCl.Side[IN] = ClearingSide{Peer: peer, Time: ts, Penalty: cl.Side[IN].Penalty}
-							h.scheduleCleanup(nextID, IN)
+				h.scheduleCleanup(nextID, IN)
 			}
 		}
 	}
@@ -827,7 +828,12 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, [
 	// Forward finalize to OUT.
 	cl.Side[IN] = ClearingSide{}
 	if outPeer != "" && cl.Side[OUT].Queue.Empty() {
-		cl.Side[OUT].Queue.Enqueue("finalize")
+		fwm := map[string]any{"clearing_id": m.ID}
+		fwm["preimage"] = hex.EncodeToString(pre)
+		if forwardFinal {
+			fwm["final"] = true
+		}
+		cl.Side[OUT].Queue.Enqueue("finalize", creditnet.Enc(fwm))
 		cl.Preimage = pre
 		cl.Final = forwardFinal
 		kicks = []string{outPeer}
@@ -871,7 +877,7 @@ func (h *Loops) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64
 			}
 			if nextCl.Side[OUT].Peer == "" {
 				nextCl.Side[OUT] = ClearingSide{Peer: outPeer, Penalty: cl.Side[OUT].Penalty}
-							h.scheduleCleanup(nextID, OUT)
+				h.scheduleCleanup(nextID, OUT)
 			}
 		}
 
@@ -883,7 +889,7 @@ func (h *Loops) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64
 	}
 	cl.Side[OUT] = ClearingSide{}
 	if cl.Side[IN].Peer != "" {
-		cl.Side[IN].Queue.Enqueue("rollback")
+		cl.Side[IN].Queue.Enqueue("rollback", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 	} else {
 		h.removeClearing(m.ID)
 	}
@@ -926,7 +932,8 @@ func (h *Loops) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, []s
 	cl.Side[IN] = ClearingSide{}
 	var kicks []string
 	if cl.Side[OUT].Peer != "" {
-		cl.Side[OUT].Queue.Enqueue("cancel")
+		cm := map[string]any{"clearing_id": m.ID, "preimage": hex.EncodeToString(pre)}
+		cl.Side[OUT].Queue.Enqueue("cancel", creditnet.Enc(cm))
 		cl.CancelPre = pre
 		kicks = []string{cl.Side[OUT].Peer}
 	} else {
@@ -983,7 +990,7 @@ func (h *Loops) reqRollback(peer string, raw json.RawMessage) (bool, []string, e
 
 	cl.Side[IN] = ClearingSide{}
 	if cl.Side[OUT].Peer != "" {
-		cl.Side[OUT].Queue.Enqueue("rollback")
+		cl.Side[OUT].Queue.Enqueue("rollback", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 		return true, []string{cl.Side[OUT].Peer}, nil
 	}
 	h.removeClearing(m.ID)
@@ -1048,7 +1055,7 @@ func (h *Loops) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []
 		} else {
 			t.AddBalance(-total, ts)
 		}
-			cl.Side[s] = ClearingSide{}
+		cl.Side[s] = ClearingSide{}
 		settled = true
 		side = s
 	}
@@ -1059,7 +1066,7 @@ func (h *Loops) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, []
 	var kicks []string
 	other := 1 - side
 	if cl.Side[other].Queue.Empty() && cl.Side[other].Peer != "" {
-		cl.Side[other].Queue.Enqueue("cleanup")
+		cl.Side[other].Queue.Enqueue("cleanup", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 		kicks = []string{cl.Side[other].Peer}
 	}
 	if cl.Side[0].Peer == "" && cl.Side[1].Peer == "" {
@@ -1096,7 +1103,7 @@ func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 						t.AddBalance(-total, ts)
 					}
 				}
-							cl.Side[s] = ClearingSide{}
+				cl.Side[s] = ClearingSide{}
 			}
 		}
 		if cl.Side[0].Peer == "" && cl.Side[1].Peer == "" {
@@ -1111,44 +1118,13 @@ func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 			var kicks []string
 			for s := 0; s < 2; s++ {
 				if cl.Side[s].Peer == peer && cl.Side[s].Queue.Empty() {
-					cl.Side[s].Queue.Enqueue("cleanup")
+					cl.Side[s].Queue.Enqueue("cleanup", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 					kicks = append(kicks, peer)
 				}
 			}
 			return kicks
 		})
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Clearing — message builders
-// ---------------------------------------------------------------------------
-
-func (h *Loops) buildClearingMsg(id string, cl *Clearing, side int) (string, json.RawMessage, int64) {
-	switch cl.Side[side].Queue.Head() {
-	case "commit":
-		return "commit", creditnet.Enc(map[string]any{"clearing_id": id, "amount": cl.Amount, "penalty": cl.PenaltyRate}), 0
-	case "finalize":
-		m := map[string]any{"clearing_id": id}
-		if cl.Preimage != nil {
-			m["preimage"] = hex.EncodeToString(cl.Preimage)
-		}
-		if cl.Final {
-			m["final"] = true
-		}
-		return "finalize", creditnet.Enc(m), 0
-	case "cancel":
-		m := map[string]any{"clearing_id": id}
-		if cl.CancelPre != nil {
-			m["preimage"] = hex.EncodeToString(cl.CancelPre)
-		}
-		return "cancel", creditnet.Enc(m), 0
-	case "rollback":
-		return "rollback", creditnet.Enc(map[string]string{"clearing_id": id}), 0
-	case "cleanup":
-		return "cleanup", creditnet.Enc(map[string]string{"clearing_id": id}), 0
-	}
-	return "", nil, 0
 }
 
 // ---------------------------------------------------------------------------
@@ -1346,7 +1322,11 @@ func (h *Loops) scheduleCancel(id string) {
 		if cl.Side[OUT].Peer == "" {
 			return nil
 		}
-		cl.Side[OUT].Queue.Enqueue("cancel")
+		cm := map[string]any{"clearing_id": id}
+		if cl.CancelPre != nil {
+			cm["preimage"] = hex.EncodeToString(cl.CancelPre)
+		}
+		cl.Side[OUT].Queue.Enqueue("cancel", creditnet.Enc(cm))
 		return []string{cl.Side[OUT].Peer}
 	})
 }
@@ -1378,7 +1358,7 @@ func (h *Loops) scheduleCleanup(id string, side int) {
 		if peer == "" {
 			return nil
 		}
-		cl.Side[side].Queue.Enqueue("cleanup")
+		cl.Side[side].Queue.Enqueue("cleanup", creditnet.Enc(map[string]string{"clearing_id": id}))
 		return []string{peer}
 	})
 }

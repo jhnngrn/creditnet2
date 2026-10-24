@@ -15,16 +15,13 @@ import (
 // ---------------------------------------------------------------------------
 
 type Trustline struct {
-	Queue            Queue `json:"queue"`
-	CreditLimit      int64    `json:"credit_limit"`
-	CreditLimitIn    int64    `json:"credit_limit_in"`
-	Balance          int64    `json:"balance"`
-	Demurrage        int64    `json:"demurrage"`        // my rate (promille/year)
-	DemurrageIn      int64    `json:"demurrage_in"`     // peer's rate
-	DemurrageTime    int64    `json:"demurrage_time"`   // last materialized (secs)
-	PendingLimit     *int64   `json:"pending_limit,omitempty"`
-	PendingPayment   *int64   `json:"pending_payment,omitempty"`
-	PendingDemurrage *int64   `json:"pending_demurrage,omitempty"`
+	Queue         Queue `json:"queue"`
+	CreditLimit   int64 `json:"credit_limit"`
+	CreditLimitIn int64 `json:"credit_limit_in"`
+	Balance       int64 `json:"balance"`
+	Demurrage     int64 `json:"demurrage"`      // my rate (promille/year)
+	DemurrageIn   int64 `json:"demurrage_in"`   // peer's rate
+	DemurrageTime int64 `json:"demurrage_time"` // last materialized (secs)
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +98,6 @@ func (h *Node) GetTrustline(peer string) *Trustline {
 	return h.Trustlines[peer]
 }
 
-
 // PendingBalance returns effective balance minus reservations.
 // Positive means debt exists: peer owes us (OUT) or we owe them (IN).
 func (h *Node) PendingBalance(peer string, side int) int64 {
@@ -141,7 +137,6 @@ func (h *Node) Bandwidth(peer string, side int) int64 {
 	}
 	return total
 }
-
 
 // OnConnect is called by the framework when link.connect completes bilaterally.
 func (h *Node) OnConnect(peer string) {
@@ -263,26 +258,36 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok
 	if peer == nil {
 		return nil
 	}
+	sent := peer.Queue.HeadPayload()
 	switch method {
 	case "set_credit_limit":
-		if ok && peer.PendingLimit != nil {
-			peer.CreditLimit = *peer.PendingLimit
-		}
-		peer.PendingLimit = nil
-	case "set_demurrage":
-		if ok && peer.PendingDemurrage != nil {
-			peer.MaterializeDemurrage(ts)
-			peer.Demurrage = *peer.PendingDemurrage
-		}
-		peer.PendingDemurrage = nil
-	case "payment":
-		if peer.PendingPayment != nil {
-			if ok {
-				peer.AddBalance(-*peer.PendingPayment, ts)
+		if ok && sent != nil {
+			var req struct {
+				Amount int64 `json:"amount"`
 			}
-			h.AddReceipt(peerID, -*peer.PendingPayment, ok)
+			json.Unmarshal(sent, &req)
+			peer.CreditLimit = req.Amount
 		}
-		peer.PendingPayment = nil
+	case "set_demurrage":
+		if ok && sent != nil {
+			var req struct {
+				Rate int64 `json:"rate"`
+			}
+			json.Unmarshal(sent, &req)
+			peer.MaterializeDemurrage(ts)
+			peer.Demurrage = req.Rate
+		}
+	case "payment":
+		if sent != nil {
+			var req struct {
+				Amount int64 `json:"amount"`
+			}
+			json.Unmarshal(sent, &req)
+			if ok {
+				peer.AddBalance(-req.Amount, ts)
+			}
+			h.AddReceipt(peerID, -req.Amount, ok)
+		}
 	}
 	if h.Trustlines[peerID] != nil {
 		peer.Queue.Dequeue()
@@ -306,14 +311,8 @@ func (h *Node) Status() json.RawMessage {
 			"demurrage":         p.Demurrage,
 			"demurrage_in":      p.DemurrageIn,
 		}
-		if p.PendingLimit != nil {
-			info["pending_limit"] = *p.PendingLimit
-		}
-		if p.PendingPayment != nil {
-			info["pending_payment"] = *p.PendingPayment
-		}
-		if p.PendingDemurrage != nil {
-			info["pending_demurrage"] = *p.PendingDemurrage
+		if !p.Queue.Empty() {
+			info["pending"] = p.Queue.Head()
 		}
 		peers[id] = info
 	}
@@ -332,25 +331,7 @@ func (h *Node) NextTx(peerID string) (string, json.RawMessage, int64) {
 	if method == "" {
 		return "", nil, 0
 	}
-	ts := peer.Queue.HeadTime()
-	switch method {
-	case "set_credit_limit":
-		if peer.PendingLimit == nil {
-			return "", nil, 0
-		}
-		return "set_credit_limit", Enc(map[string]int64{"amount": *peer.PendingLimit}), ts
-	case "set_demurrage":
-		if peer.PendingDemurrage == nil {
-			return "", nil, 0
-		}
-		return "set_demurrage", Enc(map[string]int64{"rate": *peer.PendingDemurrage}), ts
-	case "payment":
-		if peer.PendingPayment == nil {
-			return "", nil, 0
-		}
-		return "payment", Enc(map[string]int64{"amount": *peer.PendingPayment}), ts
-	}
-	return "", nil, 0
+	return method, peer.Queue.HeadPayload(), peer.Queue.HeadTime()
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +379,6 @@ func (h *Node) addPeer(payload json.RawMessage) (json.RawMessage, []string, erro
 	return Enc("ok"), []string{peerID}, nil
 }
 
-
 func (h *Node) removePeer(payload json.RawMessage) (json.RawMessage, []string, error) {
 	var p struct {
 		Peer string `json:"peer"`
@@ -431,11 +411,10 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, []strin
 	if p.Amount < 0 {
 		return nil, nil, fmt.Errorf("credit limit must be non-negative")
 	}
-	if peer.PendingLimit != nil {
+	if peer.Queue.Has("set_credit_limit") {
 		return nil, nil, fmt.Errorf("credit limit change already pending")
 	}
-	peer.PendingLimit = &p.Amount
-	peer.Queue.Enqueue("set_credit_limit")
+	peer.Queue.Enqueue("set_credit_limit", Enc(map[string]int64{"amount": p.Amount}))
 	return Enc("ok"), []string{peerID}, nil
 }
 
@@ -455,11 +434,10 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, []string,
 	if p.Rate < 0 {
 		return nil, nil, fmt.Errorf("demurrage rate must be non-negative")
 	}
-	if peer.PendingDemurrage != nil {
+	if peer.Queue.Has("set_demurrage") {
 		return nil, nil, fmt.Errorf("demurrage change already pending")
 	}
-	peer.PendingDemurrage = &p.Rate
-	peer.Queue.Enqueue("set_demurrage")
+	peer.Queue.Enqueue("set_demurrage", Enc(map[string]int64{"rate": p.Rate}))
 	return Enc("ok"), []string{peerID}, nil
 }
 
@@ -476,7 +454,7 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 	if peer == nil {
 		return nil, nil, fmt.Errorf("peer %s has no trustline", peerID)
 	}
-	if peer.PendingPayment != nil {
+	if peer.Queue.Has("payment") {
 		return nil, nil, fmt.Errorf("payment already pending")
 	}
 	if p.Amount <= 0 {
@@ -485,8 +463,6 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, []string, erro
 	if p.Amount > h.Bandwidth(peerID, OUT) {
 		return nil, nil, fmt.Errorf("insufficient credit")
 	}
-	peer.PendingPayment = &p.Amount
-	peer.Queue.Enqueue("payment")
+	peer.Queue.Enqueue("payment", Enc(map[string]int64{"amount": p.Amount}))
 	return Enc("ok"), []string{peerID}, nil
 }
-

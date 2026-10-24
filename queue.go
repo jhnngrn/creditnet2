@@ -1,20 +1,24 @@
 package creditnet
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
-// QueueEntry is a single queued method with the time it was queued.
+// QueueEntry is a single queued message with the time it was queued.
 type QueueEntry struct {
-	Method string `json:"method"`
-	Time   int64  `json:"time,omitempty"`
+	Method  string          `json:"method"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Time    int64           `json:"time,omitempty"`
 }
 
-// Queue is an ordered list of pending methods to send to a peer.
+// Queue is an ordered list of pending messages to send to a peer.
 type Queue struct {
 	Entries []QueueEntry `json:"entries,omitempty"`
 }
 
-func (q *Queue) Enqueue(method string) {
-	q.Entries = append(q.Entries, QueueEntry{method, time.Now().Unix()})
+func (q *Queue) Enqueue(method string, payload json.RawMessage) {
+	q.Entries = append(q.Entries, QueueEntry{method, payload, time.Now().Unix()})
 }
 
 func (q *Queue) Dequeue() {
@@ -28,6 +32,13 @@ func (q *Queue) Head() string {
 		return q.Entries[0].Method
 	}
 	return ""
+}
+
+func (q *Queue) HeadPayload() json.RawMessage {
+	if len(q.Entries) > 0 {
+		return q.Entries[0].Payload
+	}
+	return nil
 }
 
 func (q *Queue) HeadTime() int64 {
