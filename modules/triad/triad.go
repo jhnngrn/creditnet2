@@ -26,8 +26,9 @@ const (
 
 // Novation tracks a single three-party novation in progress.
 type Novation struct {
-	Amount int64      `json:"amount"`
-	Side   [2]string  `json:"side"` // peer IDs: [IN, OUT]
+	Amount    int64     `json:"amount"`
+	Side      [2]string `json:"side"`      // peer IDs: [IN, OUT]
+	Initiator bool      `json:"initiator,omitempty"` // true if we initiated via tryNovate
 }
 
 type novCommitMsg struct {
@@ -256,12 +257,16 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 	}
 	nov := h.Novations[m.NovationID]
 	if nov == nil {
-		// tryNovate-originated: no Novation yet.
+		// ForceRemove already cleaned up — do not recreate.
+		return
+	}
+	if nov.Initiator {
+		// tryNovate-originated: novation was created empty.
 		if ok {
-			h.addNovation(m.NovationID, &Novation{
-				Amount: m.Amount,
-				Side:   [2]string{"", peer},
-			})
+			nov.Amount = m.Amount
+			nov.Side[OUT] = peer
+		} else {
+			h.removeNovation(m.NovationID)
 		}
 		return
 	}
@@ -404,6 +409,7 @@ func (h *Triad) tryNovate() {
 				continue
 			}
 			novID := randomNovationID()
+			h.addNovation(novID, &Novation{Initiator: true})
 			h.send(debtor, novID, "commit", creditnet.Enc(novCommitMsg{
 				NovationID: novID,
 				Amount:     amount,
