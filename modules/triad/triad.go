@@ -171,7 +171,7 @@ if h.pendingBalance(peer, IN) < nov.Amount {
 	}
 
 	// New commit — verify connectivity and bandwidth.
-	if !h.isConnected(peer) || m.Next == "" || !h.isConnected(m.Next) {
+	if m.Next == "" || !h.isConnected(m.Next) {
 		return false, nil
 	}
 	if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Next) >= MaxNovPerLink {
