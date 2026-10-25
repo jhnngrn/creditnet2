@@ -270,7 +270,7 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	}
 	nov := h.Novations[m.NovationID]
 	if nov == nil {
-		return
+		log.Fatalf("triad %s: respFinalize for unknown novation %s", h.nodeID, m.NovationID)
 	}
 	if p := h.trustlines[peer]; p != nil {
 		p.AddBalance(-nov.Amount, ts)
