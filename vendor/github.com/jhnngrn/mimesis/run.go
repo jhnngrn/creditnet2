@@ -13,9 +13,10 @@ import (
 
 // Boot parses flags and creates a Server. Call Register on the returned
 // server to add module factories, then RunAndWait.
-func Boot() (*Server, error) {
+func Boot(appName string) (*Server, error) {
+	defaultDir := "/var/lib/" + appName
 	domain := flag.String("domain", "", "Server domain (required)")
-	dataDir := flag.String("data", "/var/lib/mimesis", "Data directory")
+	dataDir := flag.String("data", defaultDir, "Data directory")
 	port := flag.Int("port", 3000, "HTTP port")
 	scheme := flag.String("scheme", "https", "Peer scheme")
 	flag.Parse()

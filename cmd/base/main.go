@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	srv, err := creditnet.Boot()
+	srv, err := creditnet.Boot("creditnet")
 	if err != nil {
 		log.Fatal(err)
 	}

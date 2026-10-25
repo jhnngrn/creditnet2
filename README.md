@@ -24,7 +24,7 @@ Flags:
 
 - `-domain` — server identity (required, or `DOMAIN` env)
 - `-port` — HTTP port (default 3000)
-- `-data` — data directory (default `/var/lib/mimesis`)
+- `-data` — data directory (default `/var/lib/creditnet`)
 - `-scheme` — peer communication scheme, `https` or `http` (default `https`)
 
 ## Architecture
