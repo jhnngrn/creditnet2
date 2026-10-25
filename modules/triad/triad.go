@@ -187,7 +187,7 @@ if h.pendingBalance(peer, IN) < nov.Amount {
 		Amount: m.Amount,
 		Side:   [2]string{peer, ""},
 	}
-	h.addNovation(m.NovationID, nov)
+	h.Novations[m.NovationID] = nov
 	h.api.Send(m.Next, m.NovationID, "commit", creditnet.Enc(novCommitMsg{
 		NovationID: m.NovationID,
 		Amount:     m.Amount,
@@ -407,11 +407,11 @@ func (h *Triad) tryNovate() {
 				continue
 			}
 			novID := randomNovationID()
-			h.addNovation(novID, &Novation{
-					Initiator: true,
-					Amount:    amount,
-					Side:      [2]string{"", debtor},
-				})
+			h.Novations[novID] = &Novation{
+				Initiator: true,
+				Amount:    amount,
+				Side:      [2]string{"", debtor},
+			}
 			h.api.Send(debtor, novID, "commit", creditnet.Enc(novCommitMsg{
 				NovationID: novID,
 				Amount:     amount,
@@ -431,11 +431,6 @@ func (h *Triad) tryNovate() {
 
 func (h *Triad) isConnected(peer string) bool {
 	return h.node.ModuleAvailable(peer, h.name)
-}
-
-// addNovation stores a novation.
-func (h *Triad) addNovation(id string, nov *Novation) {
-	h.Novations[id] = nov
 }
 
 // removeNovation deletes the novation and its outbox entries.
