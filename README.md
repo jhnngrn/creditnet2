@@ -46,7 +46,6 @@ node.go                Node: trustline root module implementing mimesis.Module,
                        OnClose lifecycle, ClosedBalances archive,
                        trustline sync: credit limits, balances, payments
 demurrage.go           demurrage computation (decay over time)
-queue.go               generic enqueue/dequeue helpers
 
 modules/
   triad/               three-party novation for circular debt elimination
