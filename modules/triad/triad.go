@@ -368,6 +368,19 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	if nov.Side[side] == "" {
 		return nil, fmt.Errorf("no peer on %s side", method)
 	}
+	// The opposite side must be fully cleared — no peer reference and
+	// no queued/in-flight messages — otherwise forceRollback could
+	// conflict with a finalize already in flight (or vice versa).
+	other := OUT
+	if side == OUT {
+		other = IN
+	}
+	if nov.Side[other] != "" {
+		return nil, fmt.Errorf("%s: opposite side still has peer %s", method, nov.Side[other])
+	}
+	if h.api.QueueExists(m.NovationID) {
+		return nil, fmt.Errorf("%s: messages still queued for novation", method)
+	}
 	var msgPayload json.RawMessage
 	if msg == "finalize" {
 		msgPayload = creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID})
