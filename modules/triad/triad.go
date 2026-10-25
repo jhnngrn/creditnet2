@@ -259,8 +259,7 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 	}
 	nov := h.Novations[m.NovationID]
 	if nov == nil {
-		// ForceRemove already cleaned up — do not recreate.
-		return
+		log.Fatalf("triad %s: respCommit for unknown novation %s", h.nodeID, m.NovationID)
 	}
 	if nov.Initiator {
 		// tryNovate-originated: novation was created empty.
