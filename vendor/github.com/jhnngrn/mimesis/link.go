@@ -1060,7 +1060,6 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		if lk == nil {
 			return nil, fmt.Errorf("no link to %s", p.Peer)
 		}
-		delete(n.Outbox, p.Peer)
 		for name := range lk.State.Modules {
 			if mod := n.moduleMap[name]; mod != nil {
 				mod.ForceRemove(p.Peer)
@@ -1069,6 +1068,7 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 		if mod := n.moduleMap[lk.State.Root]; mod != nil {
 			mod.ForceRemove(p.Peer)
 		}
+		delete(n.Outbox, p.Peer)
 		if lk.Sending != nil && lk.Sending.Timer != nil {
 			lk.Sending.Timer.Stop()
 		}
