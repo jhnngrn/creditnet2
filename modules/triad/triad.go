@@ -17,7 +17,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	MaxNovPerLink  = 3
+	MaxNovations = 9
 	NovateInterval = 5 * time.Minute
 
 	IN  = creditnet.IN
@@ -174,7 +174,7 @@ if h.pendingBalance(peer, IN) < nov.Amount {
 	if m.Next == "" || !h.isConnected(m.Next) {
 		return false, nil
 	}
-	if h.novLinkCount(peer) >= MaxNovPerLink || h.novLinkCount(m.Next) >= MaxNovPerLink {
+	if len(h.Novations) >= MaxNovations {
 		return false, nil
 	}
 	bwIn := h.bandwidth(peer, IN)
@@ -382,8 +382,11 @@ func (h *Triad) novateAndReschedule() {
 func (h *Triad) tryNovate() {
 	peers := h.connectedPeers()
 	for _, debtor := range peers {
+		if len(h.Novations) >= MaxNovations {
+			return
+		}
 		avlD := h.pendingBalance(debtor, OUT)
-		if avlD <= 0 || h.novLinkCount(debtor) >= MaxNovPerLink {
+		if avlD <= 0 {
 			continue
 		}
 		for _, creditor := range peers {
@@ -391,7 +394,7 @@ func (h *Triad) tryNovate() {
 				continue
 			}
 			avlC := h.pendingBalance(creditor, IN)
-			if avlC <= 0 || h.novLinkCount(creditor) >= MaxNovPerLink {
+			if avlC <= 0 {
 				continue
 			}
 			amount := avlD
@@ -456,17 +459,6 @@ func (h *Triad) connectedPeers() []string {
 	return out
 }
 
-func (h *Triad) novLinkCount(peer string) int {
-	c := 0
-	for _, n := range h.Novations {
-		for s := 0; s < 2; s++ {
-			if n.Side[s] == peer {
-				c++
-			}
-		}
-	}
-	return c
-}
 
 func randomNovationID() string {
 	nonce := make([]byte, 32)
