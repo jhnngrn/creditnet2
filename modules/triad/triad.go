@@ -248,7 +248,9 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, e
 		return false, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(nov.Amount, ts)
+	oldIN := nov.Side[IN]
 	nov.Side[IN] = ""
+	h.api.DeleteQueue(oldIN, m.NovationID)
 	if nov.Side[OUT] != "" {
 		h.api.Send(nov.Side[OUT], m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 	}
