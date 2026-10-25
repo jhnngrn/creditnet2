@@ -162,10 +162,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, error) {
 		if nov.Side[IN] != "" {
 			return false, fmt.Errorf("novation %s already confirmed", m.NovationID)
 		}
-		if nov.Side[OUT] == peer {
-			return false, nil // can't confirm own novation
-		}
-		if h.pendingBalance(peer, IN) < nov.Amount {
+if h.pendingBalance(peer, IN) < nov.Amount {
 			return false, nil
 		}
 		nov.Side[IN] = peer
