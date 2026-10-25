@@ -160,7 +160,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, error) {
 	// Confirmation back to initiator — novation already exists.
 	if nov := h.Novations[m.NovationID]; nov != nil {
 		if nov.Side[IN] != "" {
-			return false, nil // already confirmed
+			return false, fmt.Errorf("novation %s already confirmed", m.NovationID)
 		}
 		if nov.Side[OUT] == peer {
 			return false, nil // can't confirm own novation
