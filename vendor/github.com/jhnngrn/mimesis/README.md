@@ -45,18 +45,14 @@ type myModule struct{ /* ... */ }
 func (m *myModule) OnConnect(peer string)   {}
 func (m *myModule) OnClose(peer string)     {}
 func (m *myModule) ForceRemove(peer string) {}
-func (m *myModule) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error) {
+func (m *myModule) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, error) {
     // handle incoming sync
-    return true, nil, nil
+    return true, nil
 }
-func (m *myModule) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string {
-    return nil
+func (m *myModule) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) {
 }
-func (m *myModule) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error) {
-    return nil, nil, mimesis.ErrBadMethod
-}
-func (m *myModule) NextTx(peer string) (string, json.RawMessage, int64) {
-    return "", nil, 0
+func (m *myModule) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
+    return nil, mimesis.ErrBadMethod
 }
 func (m *myModule) Status() json.RawMessage {
     return nil
@@ -66,11 +62,11 @@ func (m *myModule) Busy(peer string) bool {
 }
 
 func main() {
-    srv, err := mimesis.Boot()
+    srv, err := mimesis.Boot("myapp")
     if err != nil {
         panic(err)
     }
-    srv.Register("myapp", func(name, nodeID string, node *mimesis.Node, schedule mimesis.ScheduleFunc, state json.RawMessage) mimesis.Module {
+    srv.Register("myapp", func(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, state json.RawMessage) mimesis.Module {
         return &myModule{}
     })
     srv.Register("helper", newHelper)
@@ -87,7 +83,7 @@ go run . -domain myapp.example.com -port 3000
 
 ### Server
 
-- `Boot()` — parse flags, create a server
+- `Boot(appName)` — parse flags, create a server (default data dir `/var/lib/<appName>`)
 - `NewServer(Config)` — create with explicit config
 - `srv.Register(name, factory)` — register a module factory
 - `srv.DeclareRoot(name, children)` — declare a module as a root module with optional child modules
@@ -111,10 +107,9 @@ go run . -domain myapp.example.com -port 3000
 type Module interface {
     OnConnect(peer string)
     OnClose(peer string)
-    HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, []string, error)
-    HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) []string
-    HandleAccount(method string, payload json.RawMessage) (json.RawMessage, []string, error)
-    NextTx(peer string) (string, json.RawMessage, int64)
+    HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, error)
+    HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64)
+    HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
     Status() json.RawMessage
     Busy(peer string) bool
     ForceRemove(peer string)
@@ -124,14 +119,16 @@ type Module interface {
 `OnConnect` is called when a module becomes bilaterally connected — on
 `link.connect` for the root module, and on `module.connect` for child
 modules. `OnClose` is called when a module is disconnected — on
-`module.close` for child modules, and on `link.close` for all modules
-(children first, then root), just before the link is deleted. Modules
+`module.close` for child modules, and on `link.close` for all connected
+modules (children first, then root), just before the link is deleted.
+Only modules that received `OnConnect` will receive `OnClose`. Modules
 use these to create and clean up per-peer state. Modules that don't need
 lifecycle hooks provide empty implementations.
 
-The `[]string` return value (routes) lists peers to whom the handler
-routed an outgoing transaction. Routing is committed atomically with the
-originating transaction.
+Modules enqueue outgoing messages via `ModuleAPI.Send`. The framework
+manages the outbox and automatically kicks the peer for delivery when a
+message is enqueued. `ModuleAPI` also provides `DeleteQueue`, `QueueHas`,
+`QueueExists`, `QueuePeers`, and `Schedule`.
 
 `ForceRemove` is called when a link is unilaterally removed without
 bilateral consensus. The module must clean up state that would normally
@@ -178,6 +175,7 @@ Built-in account API commands handled by mimesis directly:
 - `link.reject {peer}` — reject an incoming link
 - `link.set_modules {peer, modules}` — propose modules on a link
 - `link.set_invite_mode {mode}` — set invite mode (open/invite/closed)
+- `link.force_remove {peer}` — unilaterally remove a link
 
 **module.\*** — module-level:
 - `module.accept {peer, module}` — accept an incoming module proposal
