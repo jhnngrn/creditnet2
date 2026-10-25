@@ -185,7 +185,7 @@ if h.pendingBalance(peer, IN) < nov.Amount {
 
 	nov := &Novation{
 		Amount: m.Amount,
-		Side:   [2]string{peer, m.Next},
+		Side:   [2]string{peer, ""},
 	}
 	h.addNovation(m.NovationID, nov)
 	h.api.Send(m.Next, m.NovationID, "commit", creditnet.Enc(novCommitMsg{
@@ -211,7 +211,9 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 			return
 		}
 		h.api.Send(nov.Side[IN], m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
+		return
 	}
+	nov.Side[OUT] = peer
 }
 
 // ---------------------------------------------------------------------------
