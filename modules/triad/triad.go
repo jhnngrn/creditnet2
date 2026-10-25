@@ -212,13 +212,6 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 	if nov == nil {
 		log.Fatalf("triad %s: respCommit for unknown novation %s", h.nodeID, m.NovationID)
 	}
-	if nov.Initiator {
-		if !ok {
-			h.removeNovation(m.NovationID)
-		}
-		return
-	}
-	// reqCommit-originated: Novation exists (IN=sender, OUT=peer).
 	if !ok {
 		if nov.Side[IN] == "" {
 			h.removeNovation(m.NovationID)
