@@ -57,34 +57,7 @@ type Path struct {
 	Hops    uint8           `json:"hops"`
 	Peer    [2]string       `json:"peer"`
 	Seed    []byte          `json:"seed,omitempty"`
-	Queue   creditnet.Queue `json:"queue"`
 	Expiry  int64           `json:"expiry"`
-}
-
-func (p *Path) pendingPeer() string {
-	switch p.Queue.Head() {
-	case "found":
-		return p.Peer[0]
-	case "expire":
-		if p.Peer[1] != "" {
-			return p.Peer[1]
-		}
-		return p.Peer[0]
-	}
-	return ""
-}
-
-// SearchProbe is an outgoing search probe queued for a specific peer.
-// Probes implement flood search: one probe per target peer, each sent
-// independently through that peer's sync channel.
-type SearchProbe struct {
-	SearchID  string `json:"id"`
-	Direction uint8  `json:"dir"`
-	Amount    int64  `json:"amount"`
-	Penalty   int64  `json:"penalty"`
-	Gas       uint64 `json:"gas"`
-	Depth     uint8  `json:"depth"`
-	Hops      uint8  `json:"hops"`
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +79,6 @@ type ClearingSide struct {
 	Peer    string          `json:"peer,omitempty"`
 	Time    int64           `json:"time,omitempty"`
 	Penalty int64           `json:"penalty,omitempty"`
-	Queue   creditnet.Queue `json:"queue"`
 }
 
 const (
@@ -121,8 +93,6 @@ const (
 type Loops struct {
 	Paths     map[string]*Path          `json:"paths,omitempty"`
 	Clearings map[string]*Clearing      `json:"clearings,omitempty"`
-	Probes    map[string][]*SearchProbe `json:"probes,omitempty"` // peer → outgoing search probes
-
 	name       string
 	nodeID     string
 	node       *mimesis.Node
@@ -134,9 +104,8 @@ type Loops struct {
 func NewLoops(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, state json.RawMessage) mimesis.Module {
 	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Loops{
-		Paths:      map[string]*Path{},
-		Clearings:  map[string]*Clearing{},
-		Probes:     map[string][]*SearchProbe{},
+		Paths:     map[string]*Path{},
+		Clearings: map[string]*Clearing{},
 		name:       name,
 		nodeID:     nodeID,
 		node:       node,
@@ -154,9 +123,6 @@ func NewLoops(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, st
 	}
 	if h.Clearings == nil {
 		h.Clearings = map[string]*Clearing{}
-	}
-	if h.Probes == nil {
-		h.Probes = map[string][]*SearchProbe{}
 	}
 	h.scheduleSearch()
 	// Re-schedule path expiry timers.
@@ -242,7 +208,7 @@ func (h *Loops) HandleResponse(peer, method string, payload json.RawMessage, ok 
 	case "found":
 		h.respFound(payload, ok)
 	case "expire":
-		h.respExpire(payload)
+		h.respExpire(peer, payload)
 	case "commit":
 		h.respCommit(payload, ok, ts)
 	case "finalize":
@@ -254,37 +220,6 @@ func (h *Loops) HandleResponse(peer, method string, payload json.RawMessage, ok 
 	case "cleanup":
 		h.respCleanup(peer, payload, ok, ts)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Module — NextTx
-// ---------------------------------------------------------------------------
-
-func (h *Loops) NextTx(peer string) (string, json.RawMessage, int64) {
-	// Probes first — flood search outgoing.
-	if probes := h.Probes[peer]; len(probes) > 0 {
-		probe := probes[0]
-		return "search", creditnet.Enc(searchMsg{
-			ID: probe.SearchID, Amount: probe.Amount, Penalty: probe.Penalty,
-			Depth: probe.Depth, Gas: probe.Gas, Direction: probe.Direction, Hops: probe.Hops,
-		}), 0
-	}
-	// Then paths — found/expire.
-	for _, p := range h.Paths {
-		if !p.Queue.Empty() && p.pendingPeer() == peer {
-			return p.Queue.Head(), p.Queue.HeadPayload(), p.Queue.HeadTime()
-		}
-	}
-	// Then clearings.
-	for _, cl := range h.Clearings {
-		for side := 0; side < 2; side++ {
-			if cl.Side[side].Peer == peer && !cl.Side[side].Queue.Empty() {
-				q := &cl.Side[side].Queue
-				return q.Head(), q.HeadPayload(), q.HeadTime()
-			}
-		}
-	}
-	return "", nil, 0
 }
 
 // ---------------------------------------------------------------------------
@@ -349,7 +284,7 @@ func (h *Loops) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, err
 		}
 		if p.Peer[0] != "" && p.Peer[1] != "" {
 			// Both sides connected — found!
-			p.Queue.Enqueue("found", creditnet.Enc(map[string]any{"clearing_id": m.ID, "hops": p.Hops}))
+			h.api.Send(p.Peer[0], m.ID, "found", creditnet.Enc(map[string]any{"clearing_id": m.ID, "hops": p.Hops}))
 			return true, nil
 		}
 		return true, nil
@@ -379,22 +314,15 @@ func (h *Loops) reqSearch(peer string, raw json.RawMessage, ts int64) (bool, err
 }
 
 func (h *Loops) respSearch(peer string, raw json.RawMessage, ok bool, ts int64) {
+	if !ok {
+		return
+	}
 	var m searchMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return
 	}
-	// Consume the probe.
-	probes := h.Probes[peer]
-	if len(probes) > 0 {
-		h.Probes[peer] = probes[1:]
-		if len(h.Probes[peer]) == 0 {
-			delete(h.Probes, peer)
-		}
-	}
-	if ok {
-		if t := h.trustlines[peer]; t != nil {
-			t.AddBalance(-int64(m.Gas), ts) // sender pays gas
-		}
+	if t := h.trustlines[peer]; t != nil {
+		t.AddBalance(-int64(m.Gas), ts) // sender pays gas
 	}
 }
 
@@ -435,22 +363,14 @@ func (h *Loops) floodForward(searchID string, p *Path, dir uint8, exclude string
 		if g > gas {
 			g = gas
 		}
-		h.addProbe(peerID, &SearchProbe{
-			SearchID:  searchID,
-			Direction: dir,
-			Amount:    p.Amount,
-			Penalty:   p.Penalty,
-			Gas:       g,
-			Depth:     p.Depth,
-			Hops:      p.Hops,
-		})
+		h.api.Send(peerID, searchID, "search", creditnet.Enc(searchMsg{
+			ID: searchID, Amount: p.Amount, Penalty: p.Penalty,
+			Gas: g, Depth: p.Depth, Direction: dir, Hops: p.Hops,
+		}))
 		gas -= g
 	}
 }
 
-func (h *Loops) addProbe(peer string, probe *SearchProbe) {
-	h.Probes[peer] = append(h.Probes[peer], probe)
-}
 
 // ---------------------------------------------------------------------------
 // Path — found request/response
@@ -480,24 +400,13 @@ func (h *Loops) reqFound(peer string, raw json.RawMessage) (bool, error) {
 	}
 	// Intermediate — forward found toward initiator (Peer[0]).
 	if p.Peer[0] != "" {
-		p.Queue.Enqueue("found", creditnet.Enc(map[string]any{"clearing_id": m.ID, "hops": p.Hops}))
+		h.api.Send(p.Peer[0], m.ID, "found", creditnet.Enc(map[string]any{"clearing_id": m.ID, "hops": p.Hops}))
 		return true, nil
 	}
 	return true, nil
 }
 
 func (h *Loops) respFound(raw json.RawMessage, ok bool) {
-	var m struct {
-		ID string `json:"clearing_id"`
-	}
-	if json.Unmarshal(raw, &m) != nil {
-		return
-	}
-	p := h.Paths[m.ID]
-	if p == nil {
-		return
-	}
-	p.Queue.Dequeue()
 }
 
 // ---------------------------------------------------------------------------
@@ -526,12 +435,12 @@ func (h *Loops) reqExpire(peer string, raw json.RawMessage, ts int64) (bool, err
 	if p.Peer[0] == peer {
 		p.Peer[0] = ""
 		if p.Peer[1] != "" {
-			p.Queue.Enqueue("expire", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
+			h.api.Send(p.Peer[1], m.ID, "expire", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 		}
 	} else {
 		p.Peer[1] = ""
 		if p.Peer[0] != "" {
-			p.Queue.Enqueue("expire", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
+			h.api.Send(p.Peer[0], m.ID, "expire", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 		}
 	}
 	if p.Peer[0] == "" && p.Peer[1] == "" {
@@ -540,7 +449,7 @@ func (h *Loops) reqExpire(peer string, raw json.RawMessage, ts int64) (bool, err
 	return true, nil
 }
 
-func (h *Loops) respExpire(raw json.RawMessage) {
+func (h *Loops) respExpire(peer string, raw json.RawMessage) {
 	var m struct {
 		ID string `json:"clearing_id"`
 	}
@@ -551,11 +460,12 @@ func (h *Loops) respExpire(raw json.RawMessage) {
 	if p == nil {
 		return
 	}
-	p.Queue.Dequeue()
-	// Remove the side we cleaned up.
-	head := p.Queue.Head()
-	if head == "" {
-		// Cleanup was the last thing — now remove our side too.
+	for s := 0; s < 2; s++ {
+		if p.Peer[s] == peer {
+			p.Peer[s] = ""
+		}
+	}
+	if p.Peer[0] == "" && p.Peer[1] == "" {
 		delete(h.Paths, m.ID)
 	}
 }
@@ -567,9 +477,9 @@ func (h *Loops) expirePath(id string) {
 	}
 	// Send cleanup — Peer[1] first if set, else Peer[0].
 	if p.Peer[1] != "" {
-		p.Queue.Enqueue("expire", creditnet.Enc(map[string]string{"clearing_id": id}))
+		h.api.Send(p.Peer[1], id, "expire", creditnet.Enc(map[string]string{"clearing_id": id}))
 	} else if p.Peer[0] != "" {
-		p.Queue.Enqueue("expire", creditnet.Enc(map[string]string{"clearing_id": id}))
+		h.api.Send(p.Peer[0], id, "expire", creditnet.Enc(map[string]string{"clearing_id": id}))
 	}
 	if p.Peer[0] == "" && p.Peer[1] == "" {
 		delete(h.Paths, id)
@@ -598,8 +508,8 @@ func (h *Loops) startClearing(id string, amount int64, outPeer string, preimage,
 			{Peer: outPeer, Penalty: pen},
 		},
 	}
-	cl.Side[OUT].Queue.Enqueue("commit", creditnet.Enc(map[string]any{"clearing_id": id, "amount": amount, "penalty": pen}))
 	h.Clearings[id] = cl
+	h.api.Send(outPeer, id, "commit", creditnet.Enc(map[string]any{"clearing_id": id, "amount": amount, "penalty": pen}))
 }
 
 func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, error) {
@@ -639,7 +549,7 @@ func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, err
 		if cl.Final {
 			fm["final"] = true
 		}
-		cl.Side[OUT].Queue.Enqueue("finalize", creditnet.Enc(fm))
+		h.api.Send(cl.Side[OUT].Peer, m.ID, "finalize", creditnet.Enc(fm))
 		return true, nil
 	}
 
@@ -670,7 +580,7 @@ func (h *Loops) reqCommit(peer string, raw json.RawMessage, ts int64) (bool, err
 
 	if outPeer != "" {
 		cl.Side[OUT] = ClearingSide{Peer: outPeer, Penalty: outPen}
-		cl.Side[OUT].Queue.Enqueue("commit", creditnet.Enc(map[string]any{"clearing_id": m.ID, "amount": m.Amount, "penalty": m.Penalty}))
+		h.api.Send(outPeer, m.ID, "commit", creditnet.Enc(map[string]any{"clearing_id": m.ID, "amount": m.Amount, "penalty": m.Penalty}))
 		return true, nil
 	}
 	return true, nil
@@ -687,7 +597,6 @@ func (h *Loops) respCommit(raw json.RawMessage, ok bool, ts int64) {
 	if cl == nil {
 		return
 	}
-	cl.Side[OUT].Queue.Dequeue()
 	if ok {
 		cl.Side[OUT].Time = ts
 		h.scheduleCleanup(m.ID, OUT)
@@ -699,7 +608,7 @@ func (h *Loops) respCommit(raw json.RawMessage, ok bool, ts int64) {
 	// Rejected — rollback IN side.
 	cl.Side[OUT] = ClearingSide{}
 	if cl.Side[IN].Peer != "" {
-		cl.Side[IN].Queue.Enqueue("rollback", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
+		h.api.Send(cl.Side[IN].Peer, m.ID, "rollback", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 	} else {
 		h.removeClearing(m.ID)
 	}
@@ -793,7 +702,7 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, e
 			if nextCl.Final {
 				nfm["final"] = true
 			}
-			nextCl.Side[OUT].Queue.Enqueue("finalize", creditnet.Enc(nfm))
+			h.api.Send(nextCl.Side[OUT].Peer, nextID, "finalize", creditnet.Enc(nfm))
 		} else if cl.Seed == nil && !forwardFinal {
 			// Intermediary: create with IN side only.
 			// OUT side set by respFinalize when OUT peer accepts.
@@ -813,13 +722,13 @@ func (h *Loops) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, e
 
 	// Forward finalize to OUT.
 	cl.Side[IN] = ClearingSide{}
-	if outPeer != "" && cl.Side[OUT].Queue.Empty() {
+	if outPeer != "" && !h.api.QueueHas(outPeer, m.ID) {
 		fwm := map[string]any{"clearing_id": m.ID}
 		fwm["preimage"] = hex.EncodeToString(pre)
 		if forwardFinal {
 			fwm["final"] = true
 		}
-		cl.Side[OUT].Queue.Enqueue("finalize", creditnet.Enc(fwm))
+		h.api.Send(outPeer, m.ID, "finalize", creditnet.Enc(fwm))
 		cl.Preimage = pre
 		cl.Final = forwardFinal
 	}
@@ -841,7 +750,6 @@ func (h *Loops) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64
 		return
 	}
 	outPeer := cl.Side[OUT].Peer
-	cl.Side[OUT].Queue.Dequeue()
 	if ok {
 		penConsumed := penaltyTick(cl.Amount, cl.Side[OUT].Penalty, cl.Side[OUT].Time, ts)
 		if t := h.trustlines[peer]; t != nil {
@@ -874,7 +782,7 @@ func (h *Loops) respFinalize(peer string, raw json.RawMessage, ok bool, ts int64
 	}
 	cl.Side[OUT] = ClearingSide{}
 	if cl.Side[IN].Peer != "" {
-		cl.Side[IN].Queue.Enqueue("rollback", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
+		h.api.Send(cl.Side[IN].Peer, m.ID, "rollback", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 	} else {
 		h.removeClearing(m.ID)
 	}
@@ -916,7 +824,7 @@ func (h *Loops) reqCancel(peer string, raw json.RawMessage, ts int64) (bool, err
 	cl.Side[IN] = ClearingSide{}
 	if cl.Side[OUT].Peer != "" {
 		cm := map[string]any{"clearing_id": m.ID, "preimage": hex.EncodeToString(pre)}
-		cl.Side[OUT].Queue.Enqueue("cancel", creditnet.Enc(cm))
+		h.api.Send(cl.Side[OUT].Peer, m.ID, "cancel", creditnet.Enc(cm))
 		cl.CancelPre = pre
 	} else {
 		h.removeClearing(m.ID)
@@ -935,7 +843,6 @@ func (h *Loops) respCancel(peer string, raw json.RawMessage, ok bool, ts int64) 
 	if cl == nil {
 		return
 	}
-	cl.Side[OUT].Queue.Dequeue()
 	if !ok {
 		return
 	}
@@ -972,7 +879,7 @@ func (h *Loops) reqRollback(peer string, raw json.RawMessage) (bool, error) {
 
 	cl.Side[IN] = ClearingSide{}
 	if cl.Side[OUT].Peer != "" {
-		cl.Side[OUT].Queue.Enqueue("rollback", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
+		h.api.Send(cl.Side[OUT].Peer, m.ID, "rollback", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 		return true, nil
 	}
 	h.removeClearing(m.ID)
@@ -990,7 +897,6 @@ func (h *Loops) respRollback(raw json.RawMessage) {
 	if cl == nil {
 		return
 	}
-	cl.Side[OUT].Queue.Dequeue()
 	cl.Side[OUT] = ClearingSide{}
 	if cl.Side[IN].Peer == "" {
 		h.removeClearing(m.ID)
@@ -1046,8 +952,8 @@ func (h *Loops) reqCleanup(peer string, raw json.RawMessage, ts int64) (bool, er
 	}
 
 	other := 1 - side
-	if cl.Side[other].Queue.Empty() && cl.Side[other].Peer != "" {
-		cl.Side[other].Queue.Enqueue("cleanup", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
+	if cl.Side[other].Peer != "" && !h.api.QueueHas(cl.Side[other].Peer, m.ID) {
+		h.api.Send(cl.Side[other].Peer, m.ID, "cleanup", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
 	}
 	if cl.Side[0].Peer == "" && cl.Side[1].Peer == "" {
 		h.removeClearing(m.ID)
@@ -1065,11 +971,6 @@ func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 	cl := h.Clearings[m.ID]
 	if cl == nil {
 		return
-	}
-	for s := 0; s < 2; s++ {
-		if cl.Side[s].Peer == peer {
-			cl.Side[s].Queue.Dequeue()
-		}
 	}
 	if ok {
 		t := h.trustlines[peer]
@@ -1090,14 +991,15 @@ func (h *Loops) respCleanup(peer string, raw json.RawMessage, ok bool, ts int64)
 			h.removeClearing(m.ID)
 		}
 	} else {
+		clearingID := m.ID
 		h.api.Schedule(CleanupRetry, func() {
-			cl := h.Clearings[m.ID]
+			cl := h.Clearings[clearingID]
 			if cl == nil {
 				return
 			}
 			for s := 0; s < 2; s++ {
-				if cl.Side[s].Peer == peer && cl.Side[s].Queue.Empty() {
-					cl.Side[s].Queue.Enqueue("cleanup", creditnet.Enc(map[string]string{"clearing_id": m.ID}))
+				if cl.Side[s].Peer == peer && !h.api.QueueHas(cl.Side[s].Peer, clearingID) {
+					h.api.Send(cl.Side[s].Peer, clearingID, "cleanup", creditnet.Enc(map[string]string{"clearing_id": clearingID}))
 				}
 			}
 		})
@@ -1194,11 +1096,10 @@ func (h *Loops) floodSearchInitiator(searchID string, p *Path) {
 		if g > remaining {
 			g = remaining
 		}
-		h.addProbe(peerID, &SearchProbe{
-			SearchID: searchID, Direction: 0,
-			Amount: p.Amount, Penalty: p.Penalty,
-			Gas: g, Depth: p.Depth, Hops: 0,
-		})
+		h.api.Send(peerID, searchID, "search", creditnet.Enc(searchMsg{
+			ID: searchID, Amount: p.Amount, Penalty: p.Penalty,
+			Gas: g, Depth: p.Depth, Direction: 0, Hops: 0,
+		}))
 		remaining -= g
 	}
 
@@ -1220,11 +1121,10 @@ func (h *Loops) floodSearchInitiator(searchID string, p *Path) {
 		if g > remaining {
 			g = remaining
 		}
-		h.addProbe(peerID, &SearchProbe{
-			SearchID: searchID, Direction: 1,
-			Amount: p.Amount, Penalty: p.Penalty,
-			Gas: g, Depth: p.Depth, Hops: 0,
-		})
+		h.api.Send(peerID, searchID, "search", creditnet.Enc(searchMsg{
+			ID: searchID, Amount: p.Amount, Penalty: p.Penalty,
+			Gas: g, Depth: p.Depth, Direction: 1, Hops: 0,
+		}))
 		remaining -= g
 	}
 }
@@ -1293,7 +1193,7 @@ func (h *Loops) scheduleCancel(id string) {
 		if cl.CancelPre != nil {
 			cm["preimage"] = hex.EncodeToString(cl.CancelPre)
 		}
-		cl.Side[OUT].Queue.Enqueue("cancel", creditnet.Enc(cm))
+		h.api.Send(cl.Side[OUT].Peer, id, "cancel", creditnet.Enc(cm))
 	})
 }
 
@@ -1324,7 +1224,7 @@ func (h *Loops) scheduleCleanup(id string, side int) {
 		if peer == "" {
 			return
 		}
-		cl.Side[side].Queue.Enqueue("cleanup", creditnet.Enc(map[string]string{"clearing_id": id}))
+		h.api.Send(cl.Side[side].Peer, id, "cleanup", creditnet.Enc(map[string]string{"clearing_id": id}))
 	})
 }
 
