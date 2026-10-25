@@ -104,7 +104,7 @@ func (h *Triad) ForceRemove(peer string) {
 			// OUT peer removed — safe to rollback: we haven't finalized
 			// with OUT, so no balance was changed on that side. Send
 			// rollback upstream to reverse any finalize we received.
-			nov.Side[OUT] = ""
+			h.clearSide(nov, OUT, id)
 			if nov.Side[IN] != "" {
 				h.api.Send(nov.Side[IN], id, "rollback", creditnet.Enc(map[string]string{"novation_id": id}))
 			} else {
@@ -116,7 +116,7 @@ func (h *Triad) ForceRemove(peer string) {
 			// IN peer removed — unsafe to auto-rollback because finalize
 			// may already have propagated downstream. Clear the reference;
 			// the operator can use forceRollback/forceFinalize to resolve.
-			nov.Side[IN] = ""
+			h.clearSide(nov, IN, id)
 			if nov.Side[OUT] == "" {
 				peers := h.api.QueuePeers(id)
 				delete(peers, peer)
@@ -248,9 +248,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, e
 		return false, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(nov.Amount, ts)
-	oldIN := nov.Side[IN]
-	nov.Side[IN] = ""
-	h.api.DeleteQueue(oldIN, m.NovationID)
+	h.clearSide(nov, IN, m.NovationID)
 	if nov.Side[OUT] != "" {
 		h.api.Send(nov.Side[OUT], m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 	}
@@ -274,7 +272,7 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 		log.Fatalf("triad %s: respFinalize for unknown trustline %s", h.nodeID, peer)
 	}
 	p.AddBalance(-nov.Amount, ts)
-	nov.Side[OUT] = ""
+	h.clearSide(nov, OUT, m.NovationID)
 	if nov.Side[IN] == "" {
 		h.removeNovation(m.NovationID)
 	}
@@ -298,8 +296,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, error) {
 	if nov.Side[OUT] != peer {
 		return false, fmt.Errorf("wrong peer")
 	}
-	nov.Side[OUT] = ""
-	h.api.DeleteQueue(peer, m.NovationID)
+	h.clearSide(nov, OUT, m.NovationID)
 	if nov.Side[IN] == "" {
 		h.removeNovation(m.NovationID)
 		return true, nil
@@ -461,15 +458,16 @@ func (h *Triad) isConnected(peer string) bool {
 	return h.node.ModuleAvailable(peer, h.name)
 }
 
-// removeNovation deletes the novation and its outbox entries.
-func (h *Triad) removeNovation(id string) {
-	if nov := h.Novations[id]; nov != nil {
-		for s := 0; s < 2; s++ {
-			if nov.Side[s] != "" {
-				h.api.DeleteQueue(nov.Side[s], id)
-			}
-		}
+// clearSide clears a novation side and deletes any queued messages to that peer.
+func (h *Triad) clearSide(nov *Novation, side int, id string) {
+	if nov.Side[side] != "" {
+		h.api.DeleteQueue(nov.Side[side], id)
+		nov.Side[side] = ""
 	}
+}
+
+// removeNovation deletes the novation.
+func (h *Triad) removeNovation(id string) {
 	delete(h.Novations, id)
 }
 
