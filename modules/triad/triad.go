@@ -261,9 +261,11 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if nov == nil {
 		log.Fatalf("triad %s: respFinalize for unknown novation %s", h.nodeID, m.NovationID)
 	}
-	if p := h.trustlines[peer]; p != nil {
-		p.AddBalance(-nov.Amount, ts)
+	p := h.trustlines[peer]
+	if p == nil {
+		log.Fatalf("triad %s: respFinalize for unknown trustline %s", h.nodeID, peer)
 	}
+	p.AddBalance(-nov.Amount, ts)
 	nov.Side[OUT] = ""
 	if nov.Side[IN] == "" {
 		h.removeNovation(m.NovationID)
