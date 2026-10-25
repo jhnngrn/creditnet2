@@ -310,9 +310,15 @@ func (n *Node) moduleBusy(name, peer string) bool {
 // Closing returns true if this link is closing (IntentClose is set).
 func (l *Link) Closing() bool { return l.State.IntentClose }
 
-// Close marks this link for closing. The sync loop defers sending
-// link.close until no module reports Busy.
-func (l *Link) Close() { l.State.IntentClose = true }
+// Close marks the link to peer for closing and kicks the peer so the
+// sync loop picks up the intent. The close is deferred until no module
+// reports Busy.
+func (n *Node) Close(peer string) {
+	if lk := n.Links[peer]; lk != nil {
+		lk.State.IntentClose = true
+		n.kick(peer)
+	}
+}
 
 // isChildModule returns true if name is a declared child module of the
 // given root. The root name itself is never a valid child module.
@@ -437,6 +443,7 @@ func (n *Node) ConnectModules(peer string, modules []string) {
 		return
 	}
 	lk.connectModules(modules, n.moduleMap, n.roots)
+	n.kick(peer)
 }
 
 func (n *Node) Get(peer string) *Link { return n.Links[peer] }
@@ -475,6 +482,7 @@ func (n *Node) Connect(peer, root string) (*Link, error) {
 	lk.State.Root = root
 	lk.State.IntentConnect = true
 	n.Links[peer] = lk
+	n.kick(peer)
 	return lk, nil
 }
 

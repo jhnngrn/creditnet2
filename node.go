@@ -372,7 +372,7 @@ func (h *Node) removePeer(payload json.RawMessage) (json.RawMessage, error) {
 	if lk == nil {
 		return nil, fmt.Errorf("no peer %s", peerID)
 	}
-	lk.Close()
+	h.links.Close(peerID)
 	return Enc("ok"), nil
 }
 
