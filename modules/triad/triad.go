@@ -299,6 +299,7 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, error) {
 		return false, fmt.Errorf("wrong peer")
 	}
 	nov.Side[OUT] = ""
+	h.api.DeleteQueue(peer, m.NovationID)
 	if nov.Side[IN] == "" {
 		h.removeNovation(m.NovationID)
 		return true, nil
