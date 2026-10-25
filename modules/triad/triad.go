@@ -213,11 +213,7 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 		log.Fatalf("triad %s: respCommit for unknown novation %s", h.nodeID, m.NovationID)
 	}
 	if nov.Initiator {
-		// tryNovate-originated: novation was created empty.
-		if ok {
-			nov.Amount = m.Amount
-			nov.Side[OUT] = peer
-		} else {
+		if !ok {
 			h.removeNovation(m.NovationID)
 		}
 		return
@@ -418,7 +414,11 @@ func (h *Triad) tryNovate() {
 				continue
 			}
 			novID := randomNovationID()
-			h.addNovation(novID, &Novation{Initiator: true})
+			h.addNovation(novID, &Novation{
+					Initiator: true,
+					Amount:    amount,
+					Side:      [2]string{"", debtor},
+				})
 			h.api.Send(debtor, novID, "commit", creditnet.Enc(novCommitMsg{
 				NovationID: novID,
 				Amount:     amount,
