@@ -100,18 +100,29 @@ func (h *Triad) OnConnect(peer string) {}
 func (h *Triad) OnClose(peer string)   {}
 func (h *Triad) ForceRemove(peer string) {
 	for id, nov := range h.Novations {
-		for s := 0; s < 2; s++ {
-			if nov.Side[s] == peer {
-				nov.Side[s] = ""
-			}
-		}
-		if nov.Side[IN] == "" && nov.Side[OUT] == "" {
-			// Keep the novation if there are queued entries to other peers —
-			// respCommit will handle the response when it arrives.
-			peers := h.api.QueuePeers(id)
-			delete(peers, peer)
-			if len(peers) == 0 {
+		if nov.Side[OUT] == peer {
+			// OUT peer removed — safe to rollback: we haven't finalized
+			// with OUT, so no balance was changed on that side. Send
+			// rollback upstream to reverse any finalize we received.
+			nov.Side[OUT] = ""
+			if nov.Side[IN] != "" {
+				h.api.Send(nov.Side[IN], id, "rollback", creditnet.Enc(map[string]string{"novation_id": id}))
+			} else {
 				h.removeNovation(id)
+			}
+			continue
+		}
+		if nov.Side[IN] == peer {
+			// IN peer removed — unsafe to auto-rollback because finalize
+			// may already have propagated downstream. Clear the reference;
+			// the operator can use forceRollback/forceFinalize to resolve.
+			nov.Side[IN] = ""
+			if nov.Side[OUT] == "" {
+				peers := h.api.QueuePeers(id)
+				delete(peers, peer)
+				if len(peers) == 0 {
+					h.removeNovation(id)
+				}
 			}
 		}
 	}
