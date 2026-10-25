@@ -104,11 +104,11 @@ func (h *Triad) ForceRemove(peer string) {
 			// OUT peer removed — safe to rollback: we haven't finalized
 			// with OUT, so no balance was changed on that side. Send
 			// rollback upstream to reverse any finalize we received.
-			h.clearSide(nov, OUT, id)
+			h.removeSide(nov, OUT, id)
 			if nov.Side[IN] != "" {
 				h.api.Send(nov.Side[IN], id, "rollback", creditnet.Enc(map[string]string{"novation_id": id}))
 			} else {
-				h.removeNovation(id)
+				delete(h.Novations, id)
 			}
 			continue
 		}
@@ -116,12 +116,12 @@ func (h *Triad) ForceRemove(peer string) {
 			// IN peer removed — unsafe to auto-rollback because finalize
 			// may already have propagated downstream. Clear the reference;
 			// the operator can use forceRollback/forceFinalize to resolve.
-			h.clearSide(nov, IN, id)
+			h.removeSide(nov, IN, id)
 			if nov.Side[OUT] == "" {
 				peers := h.api.QueuePeers(id)
 				delete(peers, peer)
 				if len(peers) == 0 {
-					h.removeNovation(id)
+					delete(h.Novations, id)
 				}
 			}
 		}
@@ -218,7 +218,7 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 	}
 	if !ok {
 		if nov.Side[IN] == "" {
-			h.removeNovation(m.NovationID)
+			delete(h.Novations, m.NovationID)
 			return
 		}
 		h.api.Send(nov.Side[IN], m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
@@ -248,12 +248,12 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, e
 		return false, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(nov.Amount, ts)
-	h.clearSide(nov, IN, m.NovationID)
+	h.removeSide(nov, IN, m.NovationID)
 	if nov.Side[OUT] != "" {
 		h.api.Send(nov.Side[OUT], m.NovationID, "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 	}
 	if nov.Side[OUT] == "" {
-		h.removeNovation(m.NovationID)
+		delete(h.Novations, m.NovationID)
 	}
 	return true, nil
 }
@@ -272,9 +272,9 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 		log.Fatalf("triad %s: respFinalize for unknown trustline %s", h.nodeID, peer)
 	}
 	p.AddBalance(-nov.Amount, ts)
-	h.clearSide(nov, OUT, m.NovationID)
+	h.removeSide(nov, OUT, m.NovationID)
 	if nov.Side[IN] == "" {
-		h.removeNovation(m.NovationID)
+		delete(h.Novations, m.NovationID)
 	}
 }
 
@@ -296,9 +296,9 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, error) {
 	if nov.Side[OUT] != peer {
 		return false, fmt.Errorf("wrong peer")
 	}
-	h.clearSide(nov, OUT, m.NovationID)
+	h.removeSide(nov, OUT, m.NovationID)
 	if nov.Side[IN] == "" {
-		h.removeNovation(m.NovationID)
+		delete(h.Novations, m.NovationID)
 		return true, nil
 	}
 	h.api.Send(nov.Side[IN], m.NovationID, "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
@@ -312,7 +312,7 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 	if json.Unmarshal(raw, &m) != nil {
 		return
 	}
-	h.removeNovation(m.NovationID)
+	delete(h.Novations, m.NovationID)
 }
 
 // ---------------------------------------------------------------------------
@@ -458,18 +458,14 @@ func (h *Triad) isConnected(peer string) bool {
 	return h.node.ModuleAvailable(peer, h.name)
 }
 
-// clearSide clears a novation side and deletes any queued messages to that peer.
-func (h *Triad) clearSide(nov *Novation, side int, id string) {
+// removeSide clears a novation side and deletes any queued messages to that peer.
+func (h *Triad) removeSide(nov *Novation, side int, id string) {
 	if nov.Side[side] != "" {
 		h.api.DeleteQueue(nov.Side[side], id)
 		nov.Side[side] = ""
 	}
 }
 
-// removeNovation deletes the novation.
-func (h *Triad) removeNovation(id string) {
-	delete(h.Novations, id)
-}
 
 
 func (h *Triad) connectedPeers() []string {
