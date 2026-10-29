@@ -41,10 +41,10 @@ type Node struct {
 	Trustlines     map[string]*Trustline `json:"trustlines"`
 	ClosedBalances []ClosedBalance       `json:"closed_balances,omitempty"`
 	Receipts       []Receipt             `json:"receipts,omitempty"`
+	Queue          mimesis.SyncObject    `json:"queue"`
 	name           string
 	nodeID         string
 	links          *mimesis.Node
-	send           mimesis.SendFunc
 	reservers      []Reserver
 }
 
@@ -55,7 +55,6 @@ func NewNode(name, nodeID string, links *mimesis.Node, api mimesis.ModuleAPI, st
 		name:       name,
 		nodeID:     nodeID,
 		links:      links,
-		send:       api.Send,
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {
@@ -65,12 +64,18 @@ func NewNode(name, nodeID string, links *mimesis.Node, api mimesis.ModuleAPI, st
 	if h.Trustlines == nil {
 		h.Trustlines = map[string]*Trustline{}
 	}
+	// Create or reattach the module's single SyncObject queue.
+	if h.Queue.QID == 0 {
+		h.Queue = api.NewQueue()
+	} else {
+		api.Reattach(&h.Queue)
+	}
 	return h
 }
 
-// outboxHas reports whether an outbox entry exists for this module, peer and queueID.
-func (h *Node) outboxHas(peer, queueID string) bool {
-	return h.links.OutboxHas(peer, h.name, queueID)
+// outboxHas reports whether an outbox entry exists for this module and peer.
+func (h *Node) outboxHas(peer string) bool {
+	return h.Queue.HasPending(peer)
 }
 
 // AddReceipt logs a completed payment.
@@ -307,7 +312,7 @@ func (h *Node) Status() json.RawMessage {
 			"demurrage":         p.Demurrage,
 			"demurrage_in":      p.DemurrageIn,
 		}
-		if h.outboxHas(id, "") {
+		if h.outboxHas(id) {
 			info["pending"] = true
 		}
 		peers[id] = info
@@ -392,7 +397,7 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, error) 
 	if p.Amount < 0 {
 		return nil, fmt.Errorf("credit limit must be non-negative")
 	}
-	h.send(peerID, "", "set_credit_limit", Enc(map[string]int64{"amount": p.Amount}))
+	h.Queue.Send(peerID, "set_credit_limit", Enc(map[string]int64{"amount": p.Amount}))
 	return Enc("ok"), nil
 }
 
@@ -412,7 +417,7 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, error) {
 	if p.Rate < 0 {
 		return nil, fmt.Errorf("demurrage rate must be non-negative")
 	}
-	h.send(peerID, "", "set_demurrage", Enc(map[string]int64{"rate": p.Rate}))
+	h.Queue.Send(peerID, "set_demurrage", Enc(map[string]int64{"rate": p.Rate}))
 	return Enc("ok"), nil
 }
 
@@ -435,6 +440,6 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, error) {
 	if p.Amount > h.Bandwidth(peerID, OUT) {
 		return nil, fmt.Errorf("insufficient credit")
 	}
-	h.send(peerID, "", "payment", Enc(map[string]int64{"amount": p.Amount}))
+	h.Queue.Send(peerID, "payment", Enc(map[string]int64{"amount": p.Amount}))
 	return Enc("ok"), nil
 }

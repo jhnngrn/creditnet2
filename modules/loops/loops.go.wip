@@ -93,6 +93,7 @@ const (
 type Loops struct {
 	Paths     map[string]*Path          `json:"paths,omitempty"`
 	Clearings map[string]*Clearing      `json:"clearings,omitempty"`
+	Queue     mimesis.SyncObject        `json:"queue"`
 	name       string
 	nodeID     string
 	node       *mimesis.Node
@@ -123,6 +124,12 @@ func NewLoops(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, st
 	}
 	if h.Clearings == nil {
 		h.Clearings = map[string]*Clearing{}
+	}
+	// Create or reattach the module's single SyncObject queue.
+	if h.Queue.QID == 0 {
+		h.Queue = api.NewQueue()
+	} else {
+		api.Reattach(&h.Queue)
 	}
 	h.scheduleSearch()
 	// Re-schedule path expiry timers.

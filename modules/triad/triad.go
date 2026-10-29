@@ -26,6 +26,7 @@ const (
 
 // Novation tracks a single three-party novation in progress.
 type Novation struct {
+	mimesis.SyncObject
 	Amount    int64     `json:"amount"`
 	Side      [2]string `json:"side"`      // peer IDs: [IN, OUT]
 	Initiator bool      `json:"initiator,omitempty"` // true if we initiated via tryNovate
@@ -43,7 +44,7 @@ type novFinalizeMsg struct {
 
 // Triad implements the link Module interface and creditnet.Reserver for novation.
 type Triad struct {
-	Novations      map[string]*mimesis.SyncObject[Novation] `json:"novations,omitempty"`
+	Novations      map[string]*Novation `json:"novations,omitempty"`
 	name           string
 	nodeID         string
 	node           *mimesis.Node
@@ -57,7 +58,7 @@ type Triad struct {
 func NewTriad(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, state json.RawMessage) mimesis.Module {
 	tl := node.ModuleMap()["trustline"].(*creditnet.Node)
 	h := &Triad{
-		Novations:      map[string]*mimesis.SyncObject[Novation]{},
+		Novations:      map[string]*Novation{},
 		name:           name,
 		nodeID:         nodeID,
 		node:           node,
@@ -72,11 +73,11 @@ func NewTriad(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, st
 		}
 	}
 	if h.Novations == nil {
-		h.Novations = map[string]*mimesis.SyncObject[Novation]{}
+		h.Novations = map[string]*Novation{}
 	}
 	// Reattach SyncObjects to the API after deserialization.
-	for id, so := range h.Novations {
-		so.Reattach(id, &h.api)
+	for _, nov := range h.Novations {
+		h.api.Reattach(&nov.SyncObject)
 	}
 	h.scheduleNovate()
 	return h
@@ -88,9 +89,9 @@ func NewTriad(name, nodeID string, node *mimesis.Node, api mimesis.ModuleAPI, st
 
 func (h *Triad) Reserved(peer string, side int) int64 {
 	var total int64
-	for _, so := range h.Novations {
-		if so.Data.Side[side] == peer {
-			total += so.Data.Amount
+	for _, nov := range h.Novations {
+		if nov.Side[side] == peer {
+			total += nov.Amount
 		}
 	}
 	return total
@@ -103,15 +104,14 @@ func (h *Triad) Reserved(peer string, side int) int64 {
 func (h *Triad) OnConnect(peer string) {}
 func (h *Triad) OnClose(peer string)   {}
 func (h *Triad) ForceRemove(peer string) {
-	for id, so := range h.Novations {
-		nov := &so.Data
+	for id, nov := range h.Novations {
 		if nov.Side[OUT] == peer {
 			// OUT peer removed — safe to rollback: we haven't finalized
 			// with OUT, so no balance was changed on that side. Send
 			// rollback upstream to reverse any finalize we received.
-			h.removeSide(so, OUT)
+			h.removeSide(nov, OUT)
 			if nov.Side[IN] != "" {
-				so.Send(nov.Side[IN], "rollback", creditnet.Enc(map[string]string{"novation_id": id}))
+				nov.Send(nov.Side[IN], "rollback", creditnet.Enc(map[string]string{"novation_id": id}))
 			} else {
 				delete(h.Novations, id)
 			}
@@ -121,9 +121,9 @@ func (h *Triad) ForceRemove(peer string) {
 			// IN peer removed — unsafe to auto-rollback because finalize
 			// may already have propagated downstream. Clear the reference;
 			// the operator can use forceRollback/forceFinalize to resolve.
-			h.removeSide(so, IN)
+			h.removeSide(nov, IN)
 			if nov.Side[OUT] == "" {
-				peers := so.QueuePeers()
+				peers := nov.QueuePeers()
 				delete(peers, peer)
 				if len(peers) == 0 {
 					delete(h.Novations, id)
@@ -174,8 +174,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, error) {
 	}
 
 	// Confirmation back to initiator — novation already exists.
-	if so := h.Novations[m.NovationID]; so != nil {
-		nov := &so.Data
+	if nov := h.Novations[m.NovationID]; nov != nil {
 		if nov.Side[IN] != "" {
 			return false, fmt.Errorf("novation %s already confirmed", m.NovationID)
 		}
@@ -183,7 +182,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, error) {
 			return false, nil
 		}
 		nov.Side[IN] = peer
-		so.Send(nov.Side[OUT], "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
+		nov.Send(nov.Side[OUT], "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 		return true, nil
 	}
 
@@ -200,12 +199,12 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, error) {
 		return false, nil
 	}
 
-	so := mimesis.NewSyncObject(Novation{
+	nov := h.newNovation(Novation{
 		Amount: m.Amount,
 		Side:   [2]string{peer, ""},
-	}, m.NovationID, &h.api)
-	h.Novations[m.NovationID] = so
-	so.Send(m.Next, "commit", creditnet.Enc(novCommitMsg{
+	})
+	h.Novations[m.NovationID] = nov
+	nov.Send(m.Next, "commit", creditnet.Enc(novCommitMsg{
 		NovationID: m.NovationID,
 		Amount:     m.Amount,
 		Next:       peer,
@@ -218,17 +217,16 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 	if json.Unmarshal(raw, &m) != nil {
 		return
 	}
-	so := h.Novations[m.NovationID]
-	if so == nil {
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
 		log.Fatalf("triad %s: respCommit for unknown novation %s", h.nodeID, m.NovationID)
 	}
-	nov := &so.Data
 	if !ok {
 		if nov.Side[IN] == "" {
 			delete(h.Novations, m.NovationID)
 			return
 		}
-		so.Send(nov.Side[IN], "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
+		nov.Send(nov.Side[IN], "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
 		return
 	}
 	nov.Side[OUT] = peer
@@ -247,18 +245,17 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, e
 	if json.Unmarshal(raw, &m) != nil {
 		return false, fmt.Errorf("bad payload")
 	}
-	so := h.Novations[m.NovationID]
-	if so == nil {
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
 		return false, fmt.Errorf("novation %s not found", m.NovationID)
 	}
-	nov := &so.Data
 	if nov.Side[IN] != peer {
 		return false, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(nov.Amount, ts)
-	h.removeSide(so, IN)
+	h.removeSide(nov, IN)
 	if nov.Side[OUT] != "" {
-		so.Send(nov.Side[OUT], "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
+		nov.Send(nov.Side[OUT], "finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
 	}
 	if nov.Side[OUT] == "" {
 		delete(h.Novations, m.NovationID)
@@ -271,17 +268,16 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if json.Unmarshal(raw, &m) != nil {
 		return
 	}
-	so := h.Novations[m.NovationID]
-	if so == nil {
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
 		log.Fatalf("triad %s: respFinalize for unknown novation %s", h.nodeID, m.NovationID)
 	}
-	nov := &so.Data
 	p := h.trustlines[peer]
 	if p == nil {
 		log.Fatalf("triad %s: respFinalize for unknown trustline %s", h.nodeID, peer)
 	}
 	p.AddBalance(-nov.Amount, ts)
-	h.removeSide(so, OUT)
+	h.removeSide(nov, OUT)
 	if nov.Side[IN] == "" {
 		delete(h.Novations, m.NovationID)
 	}
@@ -298,20 +294,19 @@ func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, error) {
 	if json.Unmarshal(raw, &m) != nil {
 		return false, fmt.Errorf("bad payload")
 	}
-	so := h.Novations[m.NovationID]
-	if so == nil {
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
 		return false, fmt.Errorf("unknown novation %s", m.NovationID)
 	}
-	nov := &so.Data
 	if nov.Side[OUT] != peer {
 		return false, fmt.Errorf("wrong peer")
 	}
-	h.removeSide(so, OUT)
+	h.removeSide(nov, OUT)
 	if nov.Side[IN] == "" {
 		delete(h.Novations, m.NovationID)
 		return true, nil
 	}
-	so.Send(nov.Side[IN], "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
+	nov.Send(nov.Side[IN], "rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
 	return true, nil
 }
 
@@ -331,11 +326,11 @@ func (h *Triad) respRollback(raw json.RawMessage) {
 
 func (h *Triad) Status() json.RawMessage {
 	novs := make(map[string]any, len(h.Novations))
-	for id, so := range h.Novations {
+	for id, nov := range h.Novations {
 		novs[id] = map[string]any{
-			"amount": so.Data.Amount,
-			"in":     so.Data.Side[IN],
-			"out":    so.Data.Side[OUT],
+			"amount": nov.Amount,
+			"in":     nov.Side[IN],
+			"out":    nov.Side[OUT],
 		}
 	}
 	return creditnet.Enc(map[string]any{"novations": novs})
@@ -345,9 +340,9 @@ func (h *Triad) Status() json.RawMessage {
 // The framework checks the outbox separately, so this only checks
 // module-internal state (in-flight novations).
 func (h *Triad) Busy(peer string) bool {
-	for _, so := range h.Novations {
+	for _, nov := range h.Novations {
 		for s := 0; s < 2; s++ {
-			if so.Data.Side[s] == peer {
+			if nov.Side[s] == peer {
 				return true
 			}
 		}
@@ -372,11 +367,10 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	if json.Unmarshal(payload, &m) != nil {
 		return nil, fmt.Errorf("bad payload")
 	}
-	so := h.Novations[m.NovationID]
-	if so == nil {
+	nov := h.Novations[m.NovationID]
+	if nov == nil {
 		return nil, fmt.Errorf("unknown novation %s", m.NovationID)
 	}
-	nov := &so.Data
 	if nov.Side[side] == "" {
 		return nil, fmt.Errorf("no peer on %s side", method)
 	}
@@ -390,7 +384,7 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	if nov.Side[other] != "" {
 		return nil, fmt.Errorf("%s: opposite side still has peer %s", method, nov.Side[other])
 	}
-	if so.QueueExists() {
+	if nov.QueueExists() {
 		return nil, fmt.Errorf("%s: messages still queued for novation", method)
 	}
 	var msgPayload json.RawMessage
@@ -399,7 +393,7 @@ func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawM
 	} else {
 		msgPayload = creditnet.Enc(map[string]string{"novation_id": m.NovationID})
 	}
-	so.Send(nov.Side[side], msg, msgPayload)
+	nov.Send(nov.Side[side], msg, msgPayload)
 	return nil, nil
 }
 
@@ -443,13 +437,13 @@ func (h *Triad) tryNovate() {
 				continue
 			}
 			novID := randomNovationID()
-			so := mimesis.NewSyncObject(Novation{
+			nov := h.newNovation(Novation{
 				Initiator: true,
 				Amount:    amount,
 				Side:      [2]string{"", debtor},
-			}, novID, &h.api)
-			h.Novations[novID] = so
-			so.Send(debtor, "commit", creditnet.Enc(novCommitMsg{
+			})
+			h.Novations[novID] = nov
+			nov.Send(debtor, "commit", creditnet.Enc(novCommitMsg{
 				NovationID: novID,
 				Amount:     amount,
 				Next:       creditor,
@@ -470,15 +464,19 @@ func (h *Triad) isConnected(peer string) bool {
 	return h.node.ModuleAvailable(peer, h.name)
 }
 
-// removeSide clears a novation side and deletes any queued messages to that peer.
-func (h *Triad) removeSide(so *mimesis.SyncObject[Novation], side int) {
-	if so.Data.Side[side] != "" {
-		so.DeleteQueue(so.Data.Side[side])
-		so.Data.Side[side] = ""
-	}
+// newNovation creates a Novation with a framework-assigned SyncObject.
+func (h *Triad) newNovation(data Novation) *Novation {
+	data.SyncObject = h.api.NewQueue()
+	return &data
 }
 
-
+// removeSide clears a novation side and deletes any queued messages to that peer.
+func (h *Triad) removeSide(nov *Novation, side int) {
+	if nov.Side[side] != "" {
+		nov.DeleteQueue(nov.Side[side])
+		nov.Side[side] = ""
+	}
+}
 
 func (h *Triad) connectedPeers() []string {
 	out := make([]string, 0, len(h.trustlines))
@@ -489,7 +487,6 @@ func (h *Triad) connectedPeers() []string {
 	}
 	return out
 }
-
 
 func randomNovationID() string {
 	nonce := make([]byte, 32)

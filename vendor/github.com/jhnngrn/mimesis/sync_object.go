@@ -2,75 +2,75 @@ package mimesis
 
 import "encoding/json"
 
-// SyncObject wraps module-owned data with a framework-managed outbox queue.
+// SyncObject is embedded in module-owned structs to give them a
+// framework-managed outbox queue. The framework assigns an internal
+// uint64 queue ID — modules never see or manage queue IDs.
 //
-// Each SyncObject has a queue ID (chosen by the module, e.g. a novation ID)
-// and delegates Send/DeleteQueue/HasPending to the framework via ModuleAPI.
-// The module never sees raw queue IDs in its handlers — they are internal
-// to the SyncObject.
+//	type Novation struct {
+//	    mimesis.SyncObject
+//	    Amount int64     `json:"amount"`
+//	    Side   [2]string `json:"side"`
+//	}
 //
-// Go has no destructors, so the module must call Close() when removing a
-// SyncObject to clean up any remaining outbox entries.
-type SyncObject[T any] struct {
-	Data    T      `json:"data"`
-	queueID string
-	api     *ModuleAPI
-}
+// The embedded SyncObject provides Send, DeleteQueue, HasPending,
+// QueueExists, QueuePeers, and Close methods directly on the struct.
+//
+// Go has no destructors, so the module must call Close() before
+// removing a SyncObject to clean up any remaining outbox entries.
+type SyncObject struct {
+	QID uint64 `json:"_qid,omitempty"`
 
-// NewSyncObject creates a SyncObject with the given data, queue ID, and API.
-// The queue ID is typically the key used to store this object in the module's
-// map (e.g. the novation ID).
-func NewSyncObject[T any](data T, queueID string, api *ModuleAPI) *SyncObject[T] {
-	return &SyncObject[T]{
-		Data:    data,
-		queueID: queueID,
-		api:     api,
-	}
-}
-
-// QueueID returns the queue identifier for this SyncObject.
-func (so *SyncObject[T]) QueueID() string {
-	return so.queueID
+	// Closures — set by NewQueue/Reattach, capture module name + node.
+	send        func(peer, method string, payload json.RawMessage)
+	deleteQueue func(peer string)
+	hasPending  func(peer string) bool
+	queueExists func() bool
+	queuePeers  func() map[string]bool
 }
 
 // Send enqueues an outgoing message for the given peer.
-func (so *SyncObject[T]) Send(peer, method string, payload json.RawMessage) {
-	so.api.Send(peer, so.queueID, method, payload)
-}
-
-// DeleteQueue removes all queued outbox entries for the given peer.
-func (so *SyncObject[T]) DeleteQueue(peer string) {
-	so.api.DeleteQueue(peer, so.queueID)
-}
-
-// HasPending reports whether the outbox has an entry for this queue and peer.
-func (so *SyncObject[T]) HasPending(peer string) bool {
-	return so.api.QueueHas(peer, so.queueID)
-}
-
-// QueueExists reports whether any peer has an outbox entry for this queue.
-func (so *SyncObject[T]) QueueExists() bool {
-	return so.api.QueueExists(so.queueID)
-}
-
-// QueuePeers returns the set of peers that have an outbox entry for this queue.
-func (so *SyncObject[T]) QueuePeers() map[string]bool {
-	return so.api.QueuePeers(so.queueID)
-}
-
-// Close cleans up outbox entries for all peers that have entries for this
-// queue. Call this before removing the SyncObject from the module's map.
-// Go has no destructors, so this must be called explicitly.
-func (so *SyncObject[T]) Close() {
-	peers := so.api.QueuePeers(so.queueID)
-	for peer := range peers {
-		so.api.DeleteQueue(peer, so.queueID)
+func (so *SyncObject) Send(peer, method string, payload json.RawMessage) {
+	if so.send != nil {
+		so.send(peer, method, payload)
 	}
 }
 
-// Reattach reconnects the SyncObject to a ModuleAPI after deserialization.
-// Called by the module's reattach/reload logic.
-func (so *SyncObject[T]) Reattach(queueID string, api *ModuleAPI) {
-	so.queueID = queueID
-	so.api = api
+// DeleteQueue removes all queued outbox entries for the given peer.
+func (so *SyncObject) DeleteQueue(peer string) {
+	if so.deleteQueue != nil {
+		so.deleteQueue(peer)
+	}
+}
+
+// HasPending reports whether the outbox has an entry for this queue and peer.
+func (so *SyncObject) HasPending(peer string) bool {
+	if so.hasPending != nil {
+		return so.hasPending(peer)
+	}
+	return false
+}
+
+// QueueExists reports whether any peer has an outbox entry for this queue.
+func (so *SyncObject) QueueExists() bool {
+	if so.queueExists != nil {
+		return so.queueExists()
+	}
+	return false
+}
+
+// QueuePeers returns the set of peers that have an outbox entry for this queue.
+func (so *SyncObject) QueuePeers() map[string]bool {
+	if so.queuePeers != nil {
+		return so.queuePeers()
+	}
+	return nil
+}
+
+// Close cleans up outbox entries for all peers. Call before removing
+// the struct from the module's map.
+func (so *SyncObject) Close() {
+	peers := so.QueuePeers()
+	for peer := range peers {
+		so.DeleteQueue(peer)
+	}
 }

@@ -175,7 +175,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		n.Outbox = loaded.Outbox
 	}
 	if n.Outbox == nil {
-		n.Outbox = map[string]map[string]map[string][]*OutboxEntry{}
+		n.Outbox = map[string]map[string]map[uint64][]*OutboxEntry{}
 	}
 
 	schedule := func(delay time.Duration, fn func()) {
@@ -184,22 +184,36 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 
 	for _, f := range s.factories {
 		modName := f.name
+		// makeSyncObjectClosures wires a SyncObject to this node's outbox.
+		makeSyncObjectClosures := func(so *SyncObject, qid uint64) {
+			so.QID = qid
+			so.send = func(peer, method string, payload json.RawMessage) {
+				n.outboxSend(modName, peer, qid, method, payload)
+			}
+			so.deleteQueue = func(peer string) {
+				n.outboxDeleteQueue(modName, peer, qid)
+			}
+			so.hasPending = func(peer string) bool {
+				return n.outboxHas(modName, peer, qid)
+			}
+			so.queueExists = func() bool {
+				return n.outboxQueueExists(modName, qid)
+			}
+			so.queuePeers = func() map[string]bool {
+				return n.outboxQueuePeers(modName, qid)
+			}
+		}
+
 		api := ModuleAPI{
 			Schedule: schedule,
-			Send: func(peer, queueID, method string, payload json.RawMessage) {
-				n.outboxSend(modName, peer, queueID, method, payload)
+			NewQueue: func() SyncObject {
+				n.NextQueueID++
+				var so SyncObject
+				makeSyncObjectClosures(&so, n.NextQueueID)
+				return so
 			},
-			DeleteQueue: func(peer, queueID string) {
-				n.outboxDeleteQueue(modName, peer, queueID)
-			},
-			QueueHas: func(peer, queueID string) bool {
-				return n.OutboxHas(peer, modName, queueID)
-			},
-			QueueExists: func(queueID string) bool {
-				return n.QueueExists(modName, queueID)
-			},
-			QueuePeers: func(queueID string) map[string]bool {
-				return n.QueuePeers(modName, queueID)
+			Reattach: func(so *SyncObject) {
+				makeSyncObjectClosures(so, so.QID)
 			},
 		}
 		m := f.factory(f.name, id, n, api, loaded.Handlers[f.name])
