@@ -466,7 +466,7 @@ func (h *Triad) isConnected(peer string) bool {
 
 // newNovation creates a Novation with a framework-assigned SyncObject.
 func (h *Triad) newNovation(data Novation) *Novation {
-	data.SyncObject = h.api.NewQueue()
+	data.SyncObject = h.api.NewSyncObject()
 	return &data
 }
 

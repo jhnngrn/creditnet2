@@ -66,7 +66,7 @@ func NewNode(name, nodeID string, links *mimesis.Node, api mimesis.ModuleAPI, st
 	}
 	// Create or reattach the module's single SyncObject queue.
 	if h.Queue.QID == 0 {
-		h.Queue = api.NewQueue()
+		h.Queue = api.NewSyncObject()
 	} else {
 		api.Reattach(&h.Queue)
 	}

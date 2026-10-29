@@ -94,9 +94,9 @@ type OutboxEntry struct {
 type ModuleAPI struct {
 	Schedule ScheduleFunc
 
-	// NewQueue creates a SyncObject with an assigned queue ID and
+	// NewSyncObject creates a SyncObject with an assigned queue ID and
 	// connected closures. The module embeds the returned value.
-	NewQueue func() SyncObject
+	NewSyncObject func() SyncObject
 
 	// Reattach reconnects a deserialized SyncObject's closures.
 	// The QID field is preserved from serialization.

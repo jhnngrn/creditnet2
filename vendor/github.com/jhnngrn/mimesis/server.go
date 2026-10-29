@@ -206,7 +206,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 
 		api := ModuleAPI{
 			Schedule: schedule,
-			NewQueue: func() SyncObject {
+			NewSyncObject: func() SyncObject {
 				n.NextQueueID++
 				var so SyncObject
 				makeSyncObjectClosures(&so, n.NextQueueID)
