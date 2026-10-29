@@ -184,13 +184,15 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 
 	for _, f := range s.factories {
 		modName := f.name
-		// makeSyncObjectClosures wires a SyncObject to this node's outbox.
+		// makeSyncObjectClosures wires a SyncObject to this node's outbox
+		// and ref counting.
 		makeSyncObjectClosures := func(so *SyncObject, qid uint64) {
 			so.ID = qid
 			so.send = func(method string, payload json.RawMessage) {
 				n.outboxSend(qid, modName, so.Peer, method, payload)
 			}
 			so.deleteQueue = func() {
+				n.syncObjectUnref(modName, so.Peer)
 				n.outboxDeleteQueue(qid)
 			}
 			so.hasPending = func() bool {
@@ -204,10 +206,12 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 				n.NextSyncObjectID++
 				so := SyncObject{Peer: peer}
 				makeSyncObjectClosures(&so, n.NextSyncObjectID)
+				n.syncObjectRef(modName, peer)
 				return so
 			},
 			Reattach: func(so *SyncObject) {
 				makeSyncObjectClosures(so, so.ID)
+				n.syncObjectRef(modName, so.Peer)
 			},
 		}
 		m := f.factory(f.name, id, n, api, loaded.Handlers[f.name])

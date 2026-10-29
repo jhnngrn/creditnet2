@@ -339,19 +339,6 @@ func (h *Triad) Status() json.RawMessage {
 	return creditnet.Enc(map[string]any{"novations": novs})
 }
 
-// Busy reports whether this module has active work with the given peer.
-// The framework checks the outbox separately, so this only checks
-// module-internal state (in-flight novations).
-func (h *Triad) Busy(peer string) bool {
-	for _, nov := range h.Novations {
-		for s := 0; s < 2; s++ {
-			if nov.Side[s].Peer == peer {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 func (h *Triad) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
 	var side int

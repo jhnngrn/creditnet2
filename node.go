@@ -178,12 +178,6 @@ func (h *Node) ForceRemove(peer string) {
 	h.OnClose(peer)
 }
 
-// Busy reports whether this module has active bilateral state with the peer.
-// The creditnet app itself is never busy — child modules hold their own Busy,
-// and trustline state is archived unconditionally in OnClose.
-func (h *Node) Busy(peer string) bool {
-	return false
-}
 
 // ---------------------------------------------------------------------------
 // link.Module — HandleRequest

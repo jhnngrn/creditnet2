@@ -55,6 +55,7 @@ type ConnectionState struct {
 	Status        ConnectionStatus `json:"status,omitempty"`
 	IntentConnect bool             `json:"intent_connect,omitempty"`
 	IntentClose   bool             `json:"intent_close,omitempty"`
+	RefCount      int              `json:"ref_count,omitempty"`
 }
 
 
@@ -75,7 +76,6 @@ type Module interface {
 	HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64)
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 	Status() json.RawMessage
-	Busy(peer string) bool
 	ForceRemove(peer string)
 }
 
@@ -109,6 +109,28 @@ type ModuleAPI struct {
 	// Reattach reconnects a deserialized SyncObject's closures.
 	// The ID and Peer fields are preserved from serialization.
 	Reattach func(so *SyncObject)
+}
+
+// syncObjectRef increments the RefCount on the ConnectionState for
+// the given module and peer. Called when a SyncObject is created.
+func (n *Node) syncObjectRef(module, peer string) {
+	if lk := n.Links[peer]; lk != nil {
+		if cs := lk.connectionState(module); cs != nil {
+			cs.RefCount++
+		}
+	}
+}
+
+// syncObjectUnref decrements the RefCount on the ConnectionState for
+// the given module and peer. Called when a SyncObject is closed.
+func (n *Node) syncObjectUnref(module, peer string) {
+	if lk := n.Links[peer]; lk != nil {
+		if cs := lk.connectionState(module); cs != nil {
+			if cs.RefCount > 0 {
+				cs.RefCount--
+			}
+		}
+	}
 }
 
 // outboxSend enqueues an outgoing message in the framework-managed outbox.
@@ -202,35 +224,57 @@ type Link struct {
 	Sending        *peerSend     `json:"-"`
 }
 
-// anyBusy returns true if any registered module reports being busy with
-// the given peer. Checks both the framework outbox and the module's own
-// Busy method. Used to defer link.close until all modules are idle.
+// connectionState returns the ConnectionState for a module on a link.
+// For the root module it returns the link's own ConnectionState;
+// for a child module it returns the entry in Modules.
+func (l *Link) connectionState(module string) *ConnectionState {
+	if module == l.State.Root {
+		return &l.State.ConnectionState
+	}
+	return l.State.Modules[module]
+}
+
+// anyBusy returns true if any module has active SyncObjects or pending
+// outbox entries for the given peer. Used to defer link.close until
+// all modules are idle.
 func (n *Node) anyBusy(peer string) bool {
-	for name, mod := range n.moduleMap {
-		if n.OutboxHasModule(peer, name) || mod.Busy(peer) {
+	lk := n.Links[peer]
+	if lk == nil {
+		return false
+	}
+	// Check root module.
+	if lk.State.RefCount > 0 || n.OutboxHasModule(peer, lk.State.Root) {
+		return true
+	}
+	// Check child modules.
+	for name, mod := range lk.State.Modules {
+		if mod.RefCount > 0 || n.OutboxHasModule(peer, name) {
 			return true
 		}
 	}
 	return false
 }
 
-// moduleBusy returns true if the named module reports being busy with
-// the given peer. Checks both the framework outbox and the module's own
-// Busy method. If the module is a root, it also checks all its child modules.
+// moduleBusy returns true if the named module (or its children, if it's
+// a root) has active SyncObjects or pending outbox entries for the peer.
 // Used to defer module.close until the module is idle.
 func (n *Node) moduleBusy(name, peer string) bool {
-	if n.OutboxHasModule(peer, name) {
+	lk := n.Links[peer]
+	if lk == nil {
+		return false
+	}
+	if cs := lk.connectionState(name); cs != nil && cs.RefCount > 0 {
 		return true
 	}
-	if mod := n.moduleMap[name]; mod != nil && mod.Busy(peer) {
+	if n.OutboxHasModule(peer, name) {
 		return true
 	}
 	if children, ok := n.roots[name]; ok {
 		for _, child := range children {
-			if n.OutboxHasModule(peer, child) {
+			if cs := lk.connectionState(child); cs != nil && cs.RefCount > 0 {
 				return true
 			}
-			if mod := n.moduleMap[child]; mod != nil && mod.Busy(peer) {
+			if n.OutboxHasModule(peer, child) {
 				return true
 			}
 		}
@@ -857,7 +901,7 @@ func (l *Link) respModule(payload json.RawMessage, ok bool) string {
 }
 
 // reqModuleClose handles an incoming module.close request. It checks the
-// framework outbox and the module's Busy method before removing the
+// framework outbox and the module's RefCount before removing the
 // module from the link and fires OnClose if the module was connected.
 func (l *Link) reqModuleClose(peer string, payload json.RawMessage, n *Node) (bool, error) {
 	var p struct {
@@ -873,10 +917,7 @@ func (l *Link) reqModuleClose(peer string, payload json.RawMessage, n *Node) (bo
 	if mod == nil {
 		return true, nil // already gone
 	}
-	if n.OutboxHasModule(peer, p.Name) {
-		return false, errRefsHeld
-	}
-	if m := n.moduleMap[p.Name]; m != nil && m.Busy(peer) {
+	if mod.RefCount > 0 || n.OutboxHasModule(peer, p.Name) {
 		return false, errRefsHeld
 	}
 	wasConnected := mod.Status == Connected
