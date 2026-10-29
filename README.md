@@ -101,9 +101,10 @@ There is no separate trustline state machine — link existence is the
 sole source of truth. If `node.Get(peer)` is non-nil and
 `link.State.Root == "trustline"`, the peer is connected.
 
-The trustline module's `Busy(peer)` always returns false — child modules
-hold their own Busy, and trustline state is archived unconditionally
-in `OnClose`.
+Trustline state is archived unconditionally in `OnClose` — there is no
+trustline-level ref counting. Child modules (triad, loops) hold their
+own SyncObjects, and the framework defers closing until their RefCounts
+reach zero.
 
 ### Sync protocol
 
@@ -121,13 +122,13 @@ Sync methods are namespace-routed: `namespace.method`. Node dispatches by namesp
 
 `link.connect` — establish bilateral connection. Mutual add → instant `connected`. Incoming from unknown → `incoming` (NACKed, awaiting accept/reject). In `open` mode, auto-ACKed.
 
-`link.close` — close a connection. Deferred until modules report not `Busy`. If the peer has no link, a synthetic ACK is returned.
+`link.close` — close a connection. Child modules are closed individually first, each deferred until its RefCount reaches zero. The link itself closes once all children are closed and the root module's RefCount is zero. If the peer has no link, a synthetic ACK is returned.
 
 **module namespace:**
 
 `module.connect` — bilateral module negotiation. Sent automatically after a link connects. Payload carries `{"name": "triad"}`. Peer ACKs if it supports the module, enabling it on the link. In `open` mode, supported modules are auto-ACKed.
 
-`module.close` — close a child module on a link. Deferred until the module reports not Busy.
+`module.close` — close a child module on a link. Deferred until the module's RefCount reaches zero.
 
 **trustline namespace:**
 
