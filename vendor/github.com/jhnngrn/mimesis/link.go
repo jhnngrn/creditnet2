@@ -177,7 +177,7 @@ type queuedMsg struct {
 	Method   string          `json:"method"`
 	Payload  json.RawMessage `json:"payload,omitempty"`
 	QueuedAt int64           `json:"queued_at,omitempty"`
-	QueueID  uint64          `json:"queue_id,omitempty"`  // originating sync object (for dequeue after restart)
+	SyncObjectID uint64 `json:"sync_object_id,omitempty"` // originating sync object (for dequeue after restart)
 }
 
 // peerSend tracks the outgoing send lifecycle for a link at a given counter.
@@ -708,7 +708,7 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 }
 
 // nextTx returns the next message to send on a peer link.
-// Outbox messages carry Module and QueueID so the head entry can be
+// Outbox messages carry Module and SyncObjectID so the head entry can be
 // dequeued after the response — even across a restart.
 func (n *Node) nextTx(peer string) *queuedMsg {
 	// Link-level messages have absolute priority.
@@ -772,7 +772,7 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 			Method:   sq.Module + "." + entry.Method,
 			Payload:  entry.Payload,
 			QueuedAt: entry.Time,
-			QueueID:  queueID,
+			SyncObjectID:  queueID,
 		}
 		if olderQueuedMsg(msg, best) {
 			best = msg
@@ -1255,8 +1255,8 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 			return nil, err
 		}
 		n.dispatchResponse(env.From, lk.Pending.Method, lk.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
-		if lk.Pending.QueueID != 0 {
-			n.outboxDequeue(lk.Pending.QueueID)
+		if lk.Pending.SyncObjectID != 0 {
+			n.outboxDequeue(lk.Pending.SyncObjectID)
 		}
 		lk.AcceptResponse(env.Resp.Timestamp)
 		n.commit()
@@ -1445,8 +1445,8 @@ func (n *Node) sendPending(peer string) {
 	}
 
 	n.dispatchResponse(peer, msg.Method, msg.Payload, resp.OK, resp.Timestamp)
-	if lk.Pending.QueueID != 0 {
-		n.outboxDequeue(lk.Pending.QueueID)
+	if lk.Pending.SyncObjectID != 0 {
+		n.outboxDequeue(lk.Pending.SyncObjectID)
 	}
 	lk.AcceptResponse(resp.Timestamp)
 
