@@ -3,74 +3,51 @@ package mimesis
 import "encoding/json"
 
 // SyncObject is embedded in module-owned structs to give them a
-// framework-managed outbox queue. The framework assigns an internal
-// uint64 ID — modules never see or manage IDs.
+// framework-managed outbox queue. Each SyncObject is a 1:1 relationship
+// with a peer — the Peer field identifies who this object syncs with,
+// and Send() uses it automatically.
 //
-//	type Novation struct {
+//	type Trustline struct {
 //	    mimesis.SyncObject
-//	    Amount int64     `json:"amount"`
-//	    Side   [2]string `json:"side"`
+//	    CreditLimit int64 `json:"credit_limit"`
 //	}
 //
-// The embedded SyncObject provides Send, DeleteQueue, HasPending,
-// QueueExists, QueuePeers, and Close methods directly on the struct.
-//
-// Go has no destructors, so the module must call Close() before
-// removing a SyncObject to clean up any remaining outbox entries.
+// The framework assigns an internal uint64 ID — modules never manage IDs.
+// Go has no destructors, so the module must call Close() before removing
+// a SyncObject to clean up any remaining outbox entries.
 type SyncObject struct {
-	ID uint64 `json:"_id,omitempty"`
+	ID   uint64 `json:"_id,omitempty"`
+	Peer string `json:"peer,omitempty"`
 
 	// Closures — set by NewSyncObject/Reattach, capture module name + node.
-	send        func(peer, method string, payload json.RawMessage)
-	deleteQueue func(peer string)
-	hasPending  func(peer string) bool
-	queueExists func() bool
-	queuePeers  func() map[string]bool
+	send        func(method string, payload json.RawMessage)
+	deleteQueue func()
+	hasPending  func() bool
 }
 
-// Send enqueues an outgoing message for the given peer.
-func (so *SyncObject) Send(peer, method string, payload json.RawMessage) {
+// Send enqueues an outgoing message to this object's peer.
+func (so *SyncObject) Send(method string, payload json.RawMessage) {
 	if so.send != nil {
-		so.send(peer, method, payload)
+		so.send(method, payload)
 	}
 }
 
-// DeleteQueue removes all queued outbox entries for the given peer.
-func (so *SyncObject) DeleteQueue(peer string) {
+// DeleteQueue removes all queued outbox entries for this sync object.
+func (so *SyncObject) DeleteQueue() {
 	if so.deleteQueue != nil {
-		so.deleteQueue(peer)
+		so.deleteQueue()
 	}
 }
 
-// HasPending reports whether the outbox has an entry for this queue and peer.
-func (so *SyncObject) HasPending(peer string) bool {
+// HasPending reports whether the outbox has entries for this sync object.
+func (so *SyncObject) HasPending() bool {
 	if so.hasPending != nil {
-		return so.hasPending(peer)
+		return so.hasPending()
 	}
 	return false
 }
 
-// QueueExists reports whether any peer has an outbox entry for this queue.
-func (so *SyncObject) QueueExists() bool {
-	if so.queueExists != nil {
-		return so.queueExists()
-	}
-	return false
-}
-
-// QueuePeers returns the set of peers that have an outbox entry for this queue.
-func (so *SyncObject) QueuePeers() map[string]bool {
-	if so.queuePeers != nil {
-		return so.queuePeers()
-	}
-	return nil
-}
-
-// Close cleans up outbox entries for all peers. Call before removing
-// the struct from the module's map.
+// Close cleans up outbox entries. Call before removing the struct.
 func (so *SyncObject) Close() {
-	peers := so.QueuePeers()
-	for peer := range peers {
-		so.DeleteQueue(peer)
-	}
+	so.DeleteQueue()
 }

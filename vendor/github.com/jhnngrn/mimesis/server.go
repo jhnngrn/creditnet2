@@ -175,7 +175,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		n.Outbox = loaded.Outbox
 	}
 	if n.Outbox == nil {
-		n.Outbox = map[string]map[string]map[uint64][]*OutboxEntry{}
+		n.Outbox = map[uint64]*SyncQueue{}
 	}
 
 	schedule := func(delay time.Duration, fn func()) {
@@ -187,28 +187,22 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		// makeSyncObjectClosures wires a SyncObject to this node's outbox.
 		makeSyncObjectClosures := func(so *SyncObject, qid uint64) {
 			so.ID = qid
-			so.send = func(peer, method string, payload json.RawMessage) {
-				n.outboxSend(modName, peer, qid, method, payload)
+			so.send = func(method string, payload json.RawMessage) {
+				n.outboxSend(qid, modName, so.Peer, method, payload)
 			}
-			so.deleteQueue = func(peer string) {
-				n.outboxDeleteQueue(modName, peer, qid)
+			so.deleteQueue = func() {
+				n.outboxDeleteQueue(qid)
 			}
-			so.hasPending = func(peer string) bool {
-				return n.outboxHas(modName, peer, qid)
-			}
-			so.queueExists = func() bool {
-				return n.outboxQueueExists(modName, qid)
-			}
-			so.queuePeers = func() map[string]bool {
-				return n.outboxQueuePeers(modName, qid)
+			so.hasPending = func() bool {
+				return n.outboxHas(qid)
 			}
 		}
 
 		api := ModuleAPI{
 			Schedule: schedule,
-			NewSyncObject: func() SyncObject {
+			NewSyncObject: func(peer string) SyncObject {
 				n.NextSyncObjectID++
-				var so SyncObject
+				so := SyncObject{Peer: peer}
 				makeSyncObjectClosures(&so, n.NextSyncObjectID)
 				return so
 			},

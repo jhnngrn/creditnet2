@@ -15,6 +15,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type Trustline struct {
+	mimesis.SyncObject
 	CreditLimit   int64 `json:"credit_limit"`
 	CreditLimitIn int64 `json:"credit_limit_in"`
 	Balance       int64 `json:"balance"`
@@ -41,10 +42,10 @@ type Node struct {
 	Trustlines     map[string]*Trustline `json:"trustlines"`
 	ClosedBalances []ClosedBalance       `json:"closed_balances,omitempty"`
 	Receipts       []Receipt             `json:"receipts,omitempty"`
-	Queue          mimesis.SyncObject    `json:"queue"`
 	name           string
 	nodeID         string
 	links          *mimesis.Node
+	api            mimesis.ModuleAPI
 	reservers      []Reserver
 }
 
@@ -55,6 +56,7 @@ func NewNode(name, nodeID string, links *mimesis.Node, api mimesis.ModuleAPI, st
 		name:       name,
 		nodeID:     nodeID,
 		links:      links,
+		api:        api,
 	}
 	if state != nil {
 		if err := json.Unmarshal(state, h); err != nil {
@@ -64,19 +66,15 @@ func NewNode(name, nodeID string, links *mimesis.Node, api mimesis.ModuleAPI, st
 	if h.Trustlines == nil {
 		h.Trustlines = map[string]*Trustline{}
 	}
-	// Create or reattach the module's single SyncObject queue.
-	if h.Queue.ID == 0 {
-		h.Queue = api.NewSyncObject()
-	} else {
-		api.Reattach(&h.Queue)
+	// Reattach SyncObjects for all persisted trustlines.
+	for _, tl := range h.Trustlines {
+		if tl.ID != 0 {
+			api.Reattach(&tl.SyncObject)
+		}
 	}
 	return h
 }
 
-// outboxHas reports whether an outbox entry exists for this module and peer.
-func (h *Node) outboxHas(peer string) bool {
-	return h.Queue.HasPending(peer)
-}
 
 // AddReceipt logs a completed payment.
 func (h *Node) AddReceipt(peer string, amount int64, ok bool) {
@@ -152,7 +150,9 @@ func (h *Node) Bandwidth(peer string, side int) int64 {
 // OnConnect is called by the framework when link.connect completes bilaterally.
 func (h *Node) OnConnect(peer string) {
 	if h.Trustlines[peer] == nil {
-		h.Trustlines[peer] = &Trustline{}
+		tl := &Trustline{}
+		tl.SyncObject = h.api.NewSyncObject(peer)
+		h.Trustlines[peer] = tl
 	}
 }
 
@@ -160,12 +160,15 @@ func (h *Node) OnConnect(peer string) {
 // The link is about to be removed. Archive balance and clean up.
 func (h *Node) OnClose(peer string) {
 	p := h.Trustlines[peer]
-	if p != nil && p.Balance != 0 {
-		h.ClosedBalances = append(h.ClosedBalances, ClosedBalance{
-			Peer:    peer,
-			Balance: p.Balance,
-			Time:    time.Now().Unix(),
-		})
+	if p != nil {
+		if p.Balance != 0 {
+			h.ClosedBalances = append(h.ClosedBalances, ClosedBalance{
+				Peer:    peer,
+				Balance: p.Balance,
+				Time:    time.Now().Unix(),
+			})
+		}
+		p.Close()
 	}
 	delete(h.Trustlines, peer)
 }
@@ -312,7 +315,7 @@ func (h *Node) Status() json.RawMessage {
 			"demurrage":         p.Demurrage,
 			"demurrage_in":      p.DemurrageIn,
 		}
-		if h.outboxHas(id) {
+		if p.HasPending() {
 			info["pending"] = true
 		}
 		peers[id] = info
@@ -397,7 +400,7 @@ func (h *Node) setCreditLimit(payload json.RawMessage) (json.RawMessage, error) 
 	if p.Amount < 0 {
 		return nil, fmt.Errorf("credit limit must be non-negative")
 	}
-	h.Queue.Send(peerID, "set_credit_limit", Enc(map[string]int64{"amount": p.Amount}))
+	peer.Send("set_credit_limit", Enc(map[string]int64{"amount": p.Amount}))
 	return Enc("ok"), nil
 }
 
@@ -417,7 +420,7 @@ func (h *Node) setDemurrage(payload json.RawMessage) (json.RawMessage, error) {
 	if p.Rate < 0 {
 		return nil, fmt.Errorf("demurrage rate must be non-negative")
 	}
-	h.Queue.Send(peerID, "set_demurrage", Enc(map[string]int64{"rate": p.Rate}))
+	peer.Send("set_demurrage", Enc(map[string]int64{"rate": p.Rate}))
 	return Enc("ok"), nil
 }
 
@@ -440,6 +443,6 @@ func (h *Node) payment(payload json.RawMessage) (json.RawMessage, error) {
 	if p.Amount > h.Bandwidth(peerID, OUT) {
 		return nil, fmt.Errorf("insufficient credit")
 	}
-	h.Queue.Send(peerID, "payment", Enc(map[string]int64{"amount": p.Amount}))
+	peer.Send("payment", Enc(map[string]int64{"amount": p.Amount}))
 	return Enc("ok"), nil
 }
