@@ -234,21 +234,18 @@ func (l *Link) connectionState(module string) *ConnectionState {
 	return l.State.Modules[module]
 }
 
-// anyBusy returns true if any module has active SyncObjects or pending
-// outbox entries for the given peer. Used to defer link.close until
-// all modules are idle.
+// anyBusy returns true if any module has active SyncObjects for the
+// given peer. Used to defer link.close until all modules are idle.
 func (n *Node) anyBusy(peer string) bool {
 	lk := n.Links[peer]
 	if lk == nil {
 		return false
 	}
-	// Check root module.
-	if lk.State.RefCount > 0 || n.OutboxHasModule(peer, lk.State.Root) {
+	if lk.State.RefCount > 0 {
 		return true
 	}
-	// Check child modules.
-	for name, mod := range lk.State.Modules {
-		if mod.RefCount > 0 || n.OutboxHasModule(peer, name) {
+	for _, mod := range lk.State.Modules {
+		if mod.RefCount > 0 {
 			return true
 		}
 	}
@@ -256,7 +253,7 @@ func (n *Node) anyBusy(peer string) bool {
 }
 
 // moduleBusy returns true if the named module (or its children, if it's
-// a root) has active SyncObjects or pending outbox entries for the peer.
+// a root) has active SyncObjects for the peer.
 // Used to defer module.close until the module is idle.
 func (n *Node) moduleBusy(name, peer string) bool {
 	lk := n.Links[peer]
@@ -266,15 +263,9 @@ func (n *Node) moduleBusy(name, peer string) bool {
 	if cs := lk.connectionState(name); cs != nil && cs.RefCount > 0 {
 		return true
 	}
-	if n.OutboxHasModule(peer, name) {
-		return true
-	}
 	if children, ok := n.roots[name]; ok {
 		for _, child := range children {
 			if cs := lk.connectionState(child); cs != nil && cs.RefCount > 0 {
-				return true
-			}
-			if n.OutboxHasModule(peer, child) {
 				return true
 			}
 		}
@@ -286,8 +277,8 @@ func (n *Node) moduleBusy(name, peer string) bool {
 func (l *Link) Closing() bool { return l.State.IntentClose }
 
 // Close marks the link to peer for closing and kicks the peer so the
-// sync loop picks up the intent. The close is deferred until no module
-// reports Busy.
+// sync loop picks up the intent. The close is deferred until all
+// modules have RefCount == 0.
 func (n *Node) Close(peer string) {
 	if lk := n.Links[peer]; lk != nil {
 		lk.State.IntentClose = true
@@ -901,8 +892,8 @@ func (l *Link) respModule(payload json.RawMessage, ok bool) string {
 }
 
 // reqModuleClose handles an incoming module.close request. It checks the
-// framework outbox and the module's RefCount before removing the
-// module from the link and fires OnClose if the module was connected.
+// module's RefCount before removing the module from the link and fires
+// OnClose if the module was connected.
 func (l *Link) reqModuleClose(peer string, payload json.RawMessage, n *Node) (bool, error) {
 	var p struct {
 		Name string `json:"name"`
@@ -917,7 +908,7 @@ func (l *Link) reqModuleClose(peer string, payload json.RawMessage, n *Node) (bo
 	if mod == nil {
 		return true, nil // already gone
 	}
-	if mod.RefCount > 0 || n.OutboxHasModule(peer, p.Name) {
+	if mod.RefCount > 0 {
 		return false, errRefsHeld
 	}
 	wasConnected := mod.Status == Connected
