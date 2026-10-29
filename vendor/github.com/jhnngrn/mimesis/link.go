@@ -234,9 +234,9 @@ func (l *Link) connectionState(module string) *ConnectionState {
 	return l.State.Modules[module]
 }
 
-// anyBusy returns true if any module has active SyncObjects for the
-// given peer. Used to defer link.close until all modules are idle.
-func (n *Node) anyBusy(peer string) bool {
+// hasActiveRefs returns true if any module has active SyncObjects for the
+// given peer. Used to NACK an incoming link.close when we still hold refs.
+func (n *Node) hasActiveRefs(peer string) bool {
 	lk := n.Links[peer]
 	if lk == nil {
 		return false
@@ -252,33 +252,12 @@ func (n *Node) anyBusy(peer string) bool {
 	return false
 }
 
-// moduleBusy returns true if the named module (or its children, if it's
-// a root) has active SyncObjects for the peer.
-// Used to defer module.close until the module is idle.
-func (n *Node) moduleBusy(name, peer string) bool {
-	lk := n.Links[peer]
-	if lk == nil {
-		return false
-	}
-	if cs := lk.connectionState(name); cs != nil && cs.RefCount > 0 {
-		return true
-	}
-	if children, ok := n.roots[name]; ok {
-		for _, child := range children {
-			if cs := lk.connectionState(child); cs != nil && cs.RefCount > 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // Closing returns true if this link is closing (IntentClose is set).
 func (l *Link) Closing() bool { return l.State.IntentClose }
 
 // Close marks the link to peer for closing and kicks the peer so the
-// sync loop picks up the intent. The close is deferred until all
-// modules have RefCount == 0.
+// sync loop picks up the intent. Child modules are closed first via
+// module.close, then link.close is sent when root RefCount == 0.
 func (n *Node) Close(peer string) {
 	if lk := n.Links[peer]; lk != nil {
 		lk.State.IntentClose = true
@@ -627,7 +606,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			l.State.Status = Incoming
 			return false, nil
 		case "close":
-			if n.anyBusy(peer) {
+			if n.hasActiveRefs(peer) {
 				return false, errRefsHeld
 			}
 			if l.State.Status == Connected {
@@ -756,15 +735,38 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 		lk.State.IntentClose = false
 		lk.State.IntentConnect = false
 	}
-	if lk.State.IntentClose && !n.anyBusy(peer) {
+	if lk.State.IntentClose && lk.State.IntentConnect && lk.State.Status != "" {
+		// Link-level: opposing intents cancel on established links.
+		// (already handled above, but guard the close path below.)
+	} else if lk.State.IntentClose && lk.State.Status == Connected {
+		// Graceful shutdown: close all child modules first, then the link.
+		for name, mod := range lk.State.Modules {
+			if mod.Status == Connected && mod.RefCount == 0 {
+				return &queuedMsg{
+					Method:  "module.close",
+					Payload: enc(map[string]string{"name": name}),
+				}
+			}
+			// Child still has refs — wait.
+			if mod.Status == Connected {
+				return nil
+			}
+		}
+		// All children closed. Close link when root RefCount == 0.
+		if lk.State.RefCount == 0 {
+			return &queuedMsg{Method: "link.close"}
+		}
+		return nil
+	}
+	if lk.State.IntentClose && lk.State.Status != Connected {
+		// Not yet connected — close immediately.
 		return &queuedMsg{Method: "link.close"}
 	}
 	if lk.State.IntentConnect {
 		return &queuedMsg{Method: "link.connect", Payload: enc(map[string]string{"name": lk.State.Root})}
 	}
 	if lk.State.Status == Connected {
-		// Module close/connect — root lifecycle is at link level.
-		// Close modules first, then connect.
+		// Module close/connect — independent of link close.
 		for _, mod := range lk.State.Modules {
 			if mod.IntentClose && mod.IntentConnect && mod.Status != "" {
 				mod.IntentClose = false
@@ -772,7 +774,7 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 			}
 		}
 		for name, mod := range lk.State.Modules {
-			if mod.IntentClose && !n.moduleBusy(name, peer) {
+			if mod.IntentClose && mod.RefCount == 0 {
 				return &queuedMsg{
 					Method:  "module.close",
 					Payload: enc(map[string]string{"name": name}),
