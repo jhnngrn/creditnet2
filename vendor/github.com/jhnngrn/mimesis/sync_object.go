@@ -4,7 +4,7 @@ import "encoding/json"
 
 // SyncObject is embedded in module-owned structs to give them a
 // framework-managed outbox queue. The framework assigns an internal
-// uint64 queue ID — modules never see or manage queue IDs.
+// uint64 ID — modules never see or manage IDs.
 //
 //	type Novation struct {
 //	    mimesis.SyncObject
@@ -18,9 +18,9 @@ import "encoding/json"
 // Go has no destructors, so the module must call Close() before
 // removing a SyncObject to clean up any remaining outbox entries.
 type SyncObject struct {
-	QID uint64 `json:"_qid,omitempty"`
+	ID uint64 `json:"_id,omitempty"`
 
-	// Closures — set by NewQueue/Reattach, capture module name + node.
+	// Closures — set by NewSyncObject/Reattach, capture module name + node.
 	send        func(peer, method string, payload json.RawMessage)
 	deleteQueue func(peer string)
 	hasPending  func(peer string) bool

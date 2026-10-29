@@ -186,7 +186,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		modName := f.name
 		// makeSyncObjectClosures wires a SyncObject to this node's outbox.
 		makeSyncObjectClosures := func(so *SyncObject, qid uint64) {
-			so.QID = qid
+			so.ID = qid
 			so.send = func(peer, method string, payload json.RawMessage) {
 				n.outboxSend(modName, peer, qid, method, payload)
 			}
@@ -207,13 +207,13 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		api := ModuleAPI{
 			Schedule: schedule,
 			NewSyncObject: func() SyncObject {
-				n.NextQueueID++
+				n.NextSyncObjectID++
 				var so SyncObject
-				makeSyncObjectClosures(&so, n.NextQueueID)
+				makeSyncObjectClosures(&so, n.NextSyncObjectID)
 				return so
 			},
 			Reattach: func(so *SyncObject) {
-				makeSyncObjectClosures(so, so.QID)
+				makeSyncObjectClosures(so, so.ID)
 			},
 		}
 		m := f.factory(f.name, id, n, api, loaded.Handlers[f.name])

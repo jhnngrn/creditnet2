@@ -372,7 +372,7 @@ type Node struct {
 	// Outbox holds queued outgoing messages: peer → module → queueID → entries.
 	// Queue IDs are framework-assigned uint64s, not module-chosen strings.
 	Outbox      map[string]map[string]map[uint64][]*OutboxEntry `json:"outbox,omitempty"`
-	NextQueueID uint64 `json:"next_qid,omitempty"`
+	NextSyncObjectID uint64 `json:"next_soid,omitempty"`
 	roots      map[string][]string    `json:"-"` // root module name → child module names
 	moduleMap  map[string]Module      `json:"-"`
 	// send delivers a sync message to a peer and returns the response body.
