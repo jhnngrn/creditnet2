@@ -97,6 +97,7 @@ type Server struct {
 	mux       *http.ServeMux
 	factories []moduleReg
 	roots     map[string][]string // root module name → child module names
+	moduleSO  map[string]bool     // modules that get a framework-managed SO
 
 	nmu   sync.RWMutex
 	nodes map[string]*Node
@@ -127,6 +128,16 @@ func (s *Server) DeclareRoot(name string, children []string) {
 		s.roots = map[string][]string{}
 	}
 	s.roots[name] = children
+}
+
+// ModuleSO marks a module as needing a framework-managed SyncObject
+// per peer (modul-SO). The SO is created before OnConnect and destroyed
+// after OnClose. Call before Init.
+func (s *Server) ModuleSO(name string) {
+	if s.moduleSO == nil {
+		s.moduleSO = map[string]bool{}
+	}
+	s.moduleSO[name] = true
 }
 
 // Send posts a signed sync message to a peer's domain.
@@ -218,6 +229,7 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 		n.registerModule(f.name, m)
 	}
 	n.roots = s.roots
+	n.moduleSO = s.moduleSO
 
 	// Reattach framework-managed modul-SOs after deserialization.
 	// The framework rewires closures and calls OnConnect so the module

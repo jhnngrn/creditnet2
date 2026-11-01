@@ -69,14 +69,6 @@ type LinkState struct {
 	Modules map[string]*ConnectionState `json:"modules,omitempty"`
 }
 
-// ModuleSOHandler is optionally implemented by modules that need a
-// framework-managed SyncObject per peer (modul-SO). The modul-SO is
-// created before OnConnect and destroyed after OnClose. Unlike regular
-// SyncObjects, it does not take a RefCount — it never blocks link or
-// module closure. Modules that don't implement this get a zero-value
-// SyncObject in OnConnect (ID 0, nil closures — safe to ignore).
-type ModuleSOHandler interface{}
-
 // Module processes sync methods and account API calls for a namespace.
 // Kicks are handled automatically by the framework when a module enqueues
 // a message via SendFunc — modules do not need to return kick lists.
@@ -171,15 +163,15 @@ func (n *Node) reattachModuleSO(module, peer string, cs *ConnectionState) SyncOb
 }
 
 // fireOnConnect calls OnConnect on the module. If the module implements
-// ModuleSOHandler, the framework creates a modul-SO and passes it;
-// otherwise a zero-value SyncObject is passed.
+// registered with srv.ModuleSO, the framework creates a modul-SO and
+// passes it; otherwise a zero-value SyncObject is passed.
 func (n *Node) fireOnConnect(module, peer string) {
 	mod := n.moduleMap[module]
 	if mod == nil {
 		return
 	}
 	var so SyncObject
-	if _, ok := mod.(ModuleSOHandler); ok {
+	if n.moduleSO[module] {
 		lk := n.Links[peer]
 		if lk != nil {
 			if cs := lk.connectionState(module); cs != nil && cs.ModuleSoID == 0 {
@@ -439,6 +431,7 @@ type Node struct {
 	Outbox      map[uint64]*SyncQueue `json:"outbox,omitempty"`
 	NextSyncObjectID uint64 `json:"next_soid,omitempty"`
 	roots      map[string][]string    `json:"-"` // root module name → child module names
+	moduleSO   map[string]bool        `json:"-"` // modules with framework-managed SO
 	moduleMap  map[string]Module      `json:"-"`
 	// send delivers a sync message to a peer and returns the response body.
 	send   func(peer string, msg txRequest) ([]byte, error) `json:"-"`

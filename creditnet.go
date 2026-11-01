@@ -27,6 +27,7 @@ func RegisterNode(srv *mimesis.Server, children []string) {
 		return NewNode(name, nodeID, node, api, state)
 	})
 	srv.DeclareRoot("trustline", children)
+	srv.ModuleSO("trustline")
 }
 
 // Register registers a module factory on the server.
