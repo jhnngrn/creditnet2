@@ -69,11 +69,21 @@ type LinkState struct {
 // Module processes sync methods and account API calls for a namespace.
 // Kicks are handled automatically by the framework when a module enqueues
 // a message via SendFunc — modules do not need to return kick lists.
+//
+// HandleRequest returns a tristate int8:
+//
+//	1 = ack (accept the request)
+//	0 = nack (reject the request, app-level)
+//
+// An error return is a framework-level error (-1) — the counter still
+// advances but the app was not meaningfully involved.
+//
+// HandleResponse receives the peer's tristate result.
 type Module interface {
 	OnConnect(peer string)
 	OnClose(peer string)
-	HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, error)
-	HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64)
+	HandleRequest(peer, method string, payload json.RawMessage, ts int64) (int8, error)
+	HandleResponse(peer, method string, payload json.RawMessage, result int8, ts int64)
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 	Status() json.RawMessage
 	ForceRemove(peer string)
@@ -473,9 +483,10 @@ func (l *Link) ValidateTimestamp(ts, now int64) error {
 }
 
 // AcceptRequest finalizes an incoming request. Call after the handler
-// has processed the request. Returns the response to send back.
-func (l *Link) AcceptRequest(reqCounter uint64, ok bool, ts int64) *txResponse {
-	resp := txResponse{OK: ok, Timestamp: ts}
+// has processed the request. result is the tristate: -1/0/1.
+// Returns the response to send back.
+func (l *Link) AcceptRequest(reqCounter uint64, result int8, ts int64) *txResponse {
+	resp := txResponse{Result: result, Timestamp: ts}
 	l.CachedResponse = &resp
 	l.Counter++
 	l.Timestamp = ts
@@ -509,8 +520,10 @@ type txRequest struct {
 }
 
 // txResponse is the wire envelope for a transaction response.
+// Result is a tristate: -1 = framework error (counter++, app not called),
+// 0 = app nack (counter++, app called), 1 = app ack (counter++, app called).
 type txResponse struct {
-	OK        bool  `json:"ok"`
+	Result    int8  `json:"result"`
 	Timestamp int64 `json:"timestamp"`
 }
 
@@ -563,13 +576,14 @@ func olderQueuedMsg(a, b *queuedMsg) bool {
 
 // dispatchRequest dispatches an incoming sync request by namespace.
 // Link-level methods are handled inline; registered modules are
-// dispatched by name. Returns (ok, routes, error).
-func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage, ts int64) (bool, error) {
+// dispatched by name. Returns (result int8, error).
+// result: 1 = ack, 0 = nack. error → framework error (-1).
+func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage, ts int64) (int8, error) {
 	ns, method := splitMethod(fullMethod)
 	if ns == "link" {
 		l := n.Get(peer)
 		if l == nil {
-			return false, fmt.Errorf("no link to %s", peer)
+			return 0, fmt.Errorf("no link to %s", peer)
 		}
 		switch method {
 		case "connect":
@@ -577,21 +591,21 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				Name string `json:"name"`
 			}
 			if err := json.Unmarshal(payload, &p); err != nil || p.Name == "" {
-				return false, fmt.Errorf("link.connect requires name")
+				return 0, fmt.Errorf("link.connect requires name")
 			}
 			if !n.isRoot(p.Name) {
-				return false, fmt.Errorf("unknown root module %q", p.Name)
+				return 0, fmt.Errorf("unknown root module %q", p.Name)
 			}
 			if l.State.Status == Connected {
-				return false, fmt.Errorf("link already connected")
+				return 0, fmt.Errorf("link already connected")
 			}
 			if l.State.Status == Incoming {
-				return false, fmt.Errorf("link already incoming")
+				return 0, fmt.Errorf("link already incoming")
 			}
 			// Root mismatch — NACK. The sender goes to waiting;
 			// force_remove is the way out.
 			if l.State.Root != p.Name {
-				return false, nil
+				return 0, nil
 			}
 			// Accept: peer was waiting (mutual add), or we're open.
 			if l.State.Status == waiting || n.InviteMode == inviteModeOpen {
@@ -600,14 +614,14 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				if mod := n.moduleMap[l.State.Root]; mod != nil {
 					mod.OnConnect(peer)
 				}
-				return true, nil
+				return 1, nil
 			}
 			// Invite mode — received, not yet accepted. NACK.
 			l.State.Status = Incoming
-			return false, nil
+			return 0, nil
 		case "close":
 			if n.hasActiveRefs(peer) {
-				return false, errRefsHeld
+				return 0, errRefsHeld
 			}
 			if l.State.Status == Connected {
 				for name, c := range l.State.Modules {
@@ -620,14 +634,14 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				}
 			}
 			n.delete(peer)
-			return true, nil
+			return 1, nil
 		}
-		return false, fmt.Errorf("unknown link method %q", method)
+		return 0, fmt.Errorf("unknown link method %q", method)
 	}
 	if ns == "module" {
 		l := n.Get(peer)
 		if l == nil {
-			return false, fmt.Errorf("no link to %s", peer)
+			return 0, fmt.Errorf("no link to %s", peer)
 		}
 		switch method {
 		case "connect":
@@ -637,27 +651,41 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 					mod.OnConnect(peer)
 				}
 			}
-			return ok, err
+			if err != nil {
+				return 0, err
+			}
+			if ok {
+				return 1, nil
+			}
+			return 0, nil
 		case "close":
 			ok, err := l.reqModuleClose(peer, payload, n)
-			return ok, err
+			if err != nil {
+				return 0, err
+			}
+			if ok {
+				return 1, nil
+			}
+			return 0, nil
 		}
-		return false, fmt.Errorf("unknown module method %q", method)
+		return 0, fmt.Errorf("unknown module method %q", method)
 	}
 	lk := n.Get(peer)
 	if lk == nil {
-		return false, fmt.Errorf("no link to %s", peer)
+		return 0, fmt.Errorf("no link to %s", peer)
 	}
 	mod := n.moduleMap[ns]
 	if mod == nil || !lk.moduleConnected(ns) {
-		return false, fmt.Errorf("unknown method %q", fullMethod)
+		return 0, fmt.Errorf("unknown method %q", fullMethod)
 	}
 	return mod.HandleRequest(peer, method, payload, ts)
 }
 
 // dispatchResponse dispatches a sync response by namespace.
-func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage, ok bool, ts int64) {
+// result is the tristate: -1 (framework error), 0 (nack), 1 (ack).
+func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage, result int8, ts int64) {
 	ns, method := splitMethod(fullMethod)
+	ok := result > 0
 	if ns == "link" {
 		l := n.Get(peer)
 		if l == nil {
@@ -673,8 +701,8 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 					mod.OnConnect(peer)
 				}
 			} else {
-				// NACK — go to waiting. The link stays with its
-				// counter intact; force_remove is the way out.
+				// NACK or framework error — go to waiting. The link stays
+				// with its counter intact; force_remove is the way out.
 				l.State.Status = waiting
 				l.State.IntentConnect = false
 			}
@@ -718,7 +746,7 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 	if mod == nil {
 		return
 	}
-	mod.HandleResponse(peer, method, payload, ok, ts)
+	mod.HandleResponse(peer, method, payload, result, ts)
 }
 
 // nextTx returns the next message to send on a peer link.
@@ -1254,13 +1282,13 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 	lk := n.Get(env.From)
 	if lk == nil {
 		if env.Method == "link.close" {
-			return &txResponse{OK: true, Timestamp: nowSecs()}, nil
+			return &txResponse{Result: 1, Timestamp: nowSecs()}, nil
 		}
 		if env.Method != "link.connect" {
 			return nil, errNoLink
 		}
 		if n.InviteMode == inviteModeClosed {
-			return &txResponse{OK: false, Timestamp: nowSecs()}, nil
+			return &txResponse{Result: 0, Timestamp: nowSecs()}, nil
 		}
 		if n.full() {
 			return nil, errMaxLinks
@@ -1288,7 +1316,7 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 		if err := lk.ValidateTimestamp(env.Resp.Timestamp, now); err != nil {
 			return nil, err
 		}
-		n.dispatchResponse(env.From, lk.Pending.Method, lk.Pending.Payload, env.Resp.OK, env.Resp.Timestamp)
+		n.dispatchResponse(env.From, lk.Pending.Method, lk.Pending.Payload, env.Resp.Result, env.Resp.Timestamp)
 		if lk.Pending.SyncObjectID != 0 {
 			n.outboxDequeue(lk.Pending.SyncObjectID)
 		}
@@ -1297,7 +1325,8 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 		n.kick(env.From)
 	}
 
-	// Validate counter and collision.
+	// Validate counter and collision — these are HTTP-level errors
+	// (no state change, counter does not advance).
 	if cached, err := lk.ValidateRequest(env.Counter); err != nil {
 		return nil, err
 	} else if cached != nil {
@@ -1313,17 +1342,23 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 	}
 
 	// Validate peer timestamp (monotonicity + forward cap).
+	// Timestamp errors are framework errors: counter advances, result = -1.
 	if err := lk.ValidateTimestamp(ts, now); err != nil {
-		return nil, err
+		resp := lk.AcceptRequest(env.Counter, -1, ts)
+		n.commit()
+		n.kick(env.From)
+		return resp, nil
 	}
 
 	// Dispatch to handler.
-	ok, reqErr := n.dispatchRequest(env.From, env.Method, env.Payload, ts)
+	result, reqErr := n.dispatchRequest(env.From, env.Method, env.Payload, ts)
 	if reqErr != nil {
+		// Dispatch errors (unknown method, bad payload, etc.) are HTTP
+		// errors — counter does not advance. Only timestamp uses -1.
 		return nil, reqErr
 	}
 
-	resp := lk.AcceptRequest(env.Counter, ok, ts)
+	resp := lk.AcceptRequest(env.Counter, result, ts)
 	n.commit()
 	n.kick(env.From)
 	return resp, nil
@@ -1478,7 +1513,7 @@ func (n *Node) sendPending(peer string) {
 		return
 	}
 
-	n.dispatchResponse(peer, msg.Method, msg.Payload, resp.OK, resp.Timestamp)
+	n.dispatchResponse(peer, msg.Method, msg.Payload, resp.Result, resp.Timestamp)
 	if lk.Pending.SyncObjectID != 0 {
 		n.outboxDequeue(lk.Pending.SyncObjectID)
 	}

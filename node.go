@@ -183,7 +183,7 @@ func (h *Node) ForceRemove(peer string) {
 // link.Module — HandleRequest
 // ---------------------------------------------------------------------------
 
-func (h *Node) HandleRequest(peerID, method string, payload json.RawMessage, ts int64) (bool, error) {
+func (h *Node) HandleRequest(peerID, method string, payload json.RawMessage, ts int64) (int8, error) {
 	switch method {
 	case "set_credit_limit":
 		return h.onSetCreditLimit(peerID, payload)
@@ -192,77 +192,78 @@ func (h *Node) HandleRequest(peerID, method string, payload json.RawMessage, ts 
 	case "payment":
 		return h.onPayment(peerID, payload, ts)
 	}
-	return false, ErrBadMethod
+	return 0, ErrBadMethod
 }
 
-func (h *Node) onSetCreditLimit(peerID string, payload json.RawMessage) (bool, error) {
+func (h *Node) onSetCreditLimit(peerID string, payload json.RawMessage) (int8, error) {
 	var p struct {
 		Amount int64 `json:"amount"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return false, err
+		return 0, err
 	}
 	peer := h.Trustlines[peerID]
 	if peer == nil {
-		return false, fmt.Errorf("peer not connected")
+		return 0, fmt.Errorf("peer not connected")
 	}
 	if p.Amount < 0 {
-		return false, nil
+		return 0, nil
 	}
 	peer.CreditLimitIn = p.Amount
-	return true, nil
+	return 1, nil
 }
 
-func (h *Node) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) (bool, error) {
+func (h *Node) onSetDemurrage(peerID string, payload json.RawMessage, ts int64) (int8, error) {
 	var p struct {
 		Rate int64 `json:"rate"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return false, err
+		return 0, err
 	}
 	peer := h.Trustlines[peerID]
 	if peer == nil {
-		return false, fmt.Errorf("peer not connected")
+		return 0, fmt.Errorf("peer not connected")
 	}
 	if p.Rate < 0 {
-		return false, nil
+		return 0, nil
 	}
 	peer.MaterializeDemurrage(ts)
 	peer.DemurrageIn = p.Rate
-	return true, nil
+	return 1, nil
 }
 
-func (h *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (bool, error) {
+func (h *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (int8, error) {
 	var p struct {
 		Amount int64 `json:"amount"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return false, err
+		return 0, err
 	}
 	if p.Amount <= 0 {
-		return false, nil
+		return 0, nil
 	}
 	peer := h.Trustlines[peerID]
 	if peer == nil {
-		return false, fmt.Errorf("no trustline")
+		return 0, fmt.Errorf("no trustline")
 	}
 	if p.Amount > h.Bandwidth(peerID, IN) {
-		return false, nil
+		return 0, nil
 	}
 	peer.AddBalance(p.Amount, ts)
 	h.AddReceipt(peerID, p.Amount, true)
-	return true, nil
+	return 1, nil
 }
 
 // ---------------------------------------------------------------------------
 // link.Module — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, ok bool, ts int64) {
+func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, result int8, ts int64) {
 	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return
 	}
+	ok := result > 0
 	switch method {
 	case "set_credit_limit":
 		if ok {

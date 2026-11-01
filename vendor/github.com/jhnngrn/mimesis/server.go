@@ -382,6 +382,9 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 
 	resp, syncErr := n.handleIncoming(env)
 	if syncErr != nil {
+		// Only counter/transport-level errors reach here now.
+		// Timestamp and dispatch errors are handled as -1 responses
+		// (counter advances) inside handleIncoming.
 		switch {
 		case errors.Is(syncErr, errNoLink):
 			httpError(w, http.StatusNotFound, "no link")
@@ -392,9 +395,8 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(syncErr, errStaleCounter), errors.Is(syncErr, errCounterAhead), errors.Is(syncErr, errCollision):
 			httpError(w, http.StatusConflict, syncErr.Error())
 		case errors.Is(syncErr, errTimestamp):
+			// Piggybacked response timestamp — still HTTP error.
 			httpError(w, http.StatusConflict, syncErr.Error())
-		case errors.Is(syncErr, ErrBadMethod):
-			httpError(w, http.StatusBadRequest, syncErr.Error())
 		default:
 			httpError(w, http.StatusBadRequest, syncErr.Error())
 		}

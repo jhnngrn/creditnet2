@@ -45,11 +45,11 @@ type myModule struct{ /* ... */ }
 func (m *myModule) OnConnect(peer string)   {}
 func (m *myModule) OnClose(peer string)     {}
 func (m *myModule) ForceRemove(peer string) {}
-func (m *myModule) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, error) {
-    // handle incoming sync
-    return true, nil
+func (m *myModule) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (int8, error) {
+    // handle incoming sync — return 1 (ack), 0 (nack), or error (-1 framework error)
+    return 1, nil
 }
-func (m *myModule) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) {
+func (m *myModule) HandleResponse(peer, method string, payload json.RawMessage, result int8, ts int64) {
 }
 func (m *myModule) HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error) {
     return nil, mimesis.ErrBadMethod

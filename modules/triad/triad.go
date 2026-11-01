@@ -137,7 +137,7 @@ func (h *Triad) ForceRemove(peer string) {
 // Module — HandleRequest / HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (bool, error) {
+func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts int64) (int8, error) {
 	switch method {
 	case "commit":
 		return h.reqCommit(peer, payload)
@@ -146,10 +146,11 @@ func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts i
 	case "rollback":
 		return h.reqRollback(peer, payload)
 	}
-	return false, mimesis.ErrBadMethod
+	return 0, mimesis.ErrBadMethod
 }
 
-func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok bool, ts int64) {
+func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, result int8, ts int64) {
+	ok := result > 0
 	switch method {
 	case "commit":
 		h.respCommit(peer, payload, ok)
@@ -164,39 +165,39 @@ func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, ok 
 // commit
 // ---------------------------------------------------------------------------
 
-func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, error) {
+func (h *Triad) reqCommit(peer string, raw json.RawMessage) (int8, error) {
 	var m novCommitMsg
 	if json.Unmarshal(raw, &m) != nil {
-		return false, fmt.Errorf("bad payload")
+		return 0, fmt.Errorf("bad payload")
 	}
 	if m.Amount <= 0 {
-		return false, nil
+		return 0, nil
 	}
 
 	// Confirmation back to initiator — novation already exists.
 	if nov := h.Novations[m.NovationID]; nov != nil {
 		if nov.Side[IN].Peer != "" {
-			return false, fmt.Errorf("novation %s already confirmed", m.NovationID)
+			return 0, fmt.Errorf("novation %s already confirmed", m.NovationID)
 		}
 		if h.pendingBalance(peer, IN) < nov.Amount {
-			return false, nil
+			return 0, nil
 		}
 		nov.Side[IN] = h.api.NewSyncObject(peer)
 		nov.Side[OUT].Send("finalize", creditnet.Enc(novFinalizeMsg{NovationID: m.NovationID}))
-		return true, nil
+		return 1, nil
 	}
 
 	// New commit — verify connectivity and bandwidth.
 	if m.Next == "" || !h.isConnected(m.Next) {
-		return false, nil
+		return 0, nil
 	}
 	if len(h.Novations) >= MaxNovations {
-		return false, nil
+		return 0, nil
 	}
 	bwIn := h.bandwidth(peer, IN)
 	bwOut := h.bandwidth(m.Next, OUT)
 	if bwIn < m.Amount || bwOut < m.Amount {
-		return false, nil
+		return 0, nil
 	}
 
 	nov := &Novation{Amount: m.Amount}
@@ -208,7 +209,7 @@ func (h *Triad) reqCommit(peer string, raw json.RawMessage) (bool, error) {
 		Amount:     m.Amount,
 		Next:       peer,
 	}))
-	return true, nil
+	return 1, nil
 }
 
 func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
@@ -236,21 +237,21 @@ func (h *Triad) respCommit(peer string, raw json.RawMessage, ok bool) {
 // finalize
 // ---------------------------------------------------------------------------
 
-func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, error) {
+func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (int8, error) {
 	p := h.trustlines[peer]
 	if p == nil {
-		return false, fmt.Errorf("trustline not connected")
+		return 0, fmt.Errorf("trustline not connected")
 	}
 	var m novFinalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
-		return false, fmt.Errorf("bad payload")
+		return 0, fmt.Errorf("bad payload")
 	}
 	nov := h.Novations[m.NovationID]
 	if nov == nil {
-		return false, fmt.Errorf("novation %s not found", m.NovationID)
+		return 0, fmt.Errorf("novation %s not found", m.NovationID)
 	}
 	if nov.Side[IN].Peer != peer {
-		return false, fmt.Errorf("wrong peer")
+		return 0, fmt.Errorf("wrong peer")
 	}
 	p.AddBalance(nov.Amount, ts)
 	h.removeSide(nov, IN)
@@ -260,7 +261,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (bool, e
 	if nov.Side[OUT].Peer == "" {
 		delete(h.Novations, m.NovationID)
 	}
-	return true, nil
+	return 1, nil
 }
 
 func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
@@ -287,27 +288,27 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 // rollback
 // ---------------------------------------------------------------------------
 
-func (h *Triad) reqRollback(peer string, raw json.RawMessage) (bool, error) {
+func (h *Triad) reqRollback(peer string, raw json.RawMessage) (int8, error) {
 	var m struct {
 		NovationID string `json:"novation_id"`
 	}
 	if json.Unmarshal(raw, &m) != nil {
-		return false, fmt.Errorf("bad payload")
+		return 0, fmt.Errorf("bad payload")
 	}
 	nov := h.Novations[m.NovationID]
 	if nov == nil {
-		return false, fmt.Errorf("unknown novation %s", m.NovationID)
+		return 0, fmt.Errorf("unknown novation %s", m.NovationID)
 	}
 	if nov.Side[OUT].Peer != peer {
-		return false, fmt.Errorf("wrong peer")
+		return 0, fmt.Errorf("wrong peer")
 	}
 	h.removeSide(nov, OUT)
 	if nov.Side[IN].Peer == "" {
 		delete(h.Novations, m.NovationID)
-		return true, nil
+		return 1, nil
 	}
 	nov.Side[IN].Send("rollback", creditnet.Enc(map[string]string{"novation_id": m.NovationID}))
-	return true, nil
+	return 1, nil
 }
 
 func (h *Triad) respRollback(raw json.RawMessage) {
