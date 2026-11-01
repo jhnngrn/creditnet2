@@ -162,7 +162,6 @@ func (h *Node) OnClose(peer string) {
 				Time:    time.Now().Unix(),
 			})
 		}
-		p.Close()
 	}
 	delete(h.Trustlines, peer)
 }
