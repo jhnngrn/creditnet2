@@ -219,6 +219,30 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	}
 	n.roots = s.roots
 
+	// Reattach framework-managed modul-SOs after deserialization.
+	// These are not owned by the module — the framework restores them
+	// and calls ConstructSO so the module gets its SyncObject back.
+	for peer, lk := range n.Links {
+		// Root module modul-SO.
+		if cs := lk.connectionState(lk.State.Root); cs != nil && cs.ModuleSoID != 0 {
+			if handler, ok := n.moduleMap[lk.State.Root].(ModuleSOHandler); ok {
+				so := SyncObject{Peer: peer}
+				n.makeModuleSoClosures(&so, cs.ModuleSoID, lk.State.Root)
+				handler.ConstructSO(peer, so)
+			}
+		}
+		// Child module modul-SOs.
+		for name, ms := range lk.State.Modules {
+			if ms.ModuleSoID != 0 {
+				if handler, ok := n.moduleMap[name].(ModuleSOHandler); ok {
+					so := SyncObject{Peer: peer}
+					n.makeModuleSoClosures(&so, ms.ModuleSoID, name)
+					handler.ConstructSO(peer, so)
+				}
+			}
+		}
+	}
+
 	// Validate that declared root modules are registered.
 	for name := range s.roots {
 		if n.moduleMap[name] == nil {

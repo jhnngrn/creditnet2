@@ -56,6 +56,9 @@ type ConnectionState struct {
 	IntentConnect bool             `json:"intent_connect,omitempty"`
 	IntentClose   bool             `json:"intent_close,omitempty"`
 	RefCount      int              `json:"ref_count,omitempty"`
+	// ModuleSoID is the queue ID of the framework-managed modul-SO.
+	// Zero means no modul-SO (module doesn't implement ModuleSOHandler).
+	ModuleSoID    uint64           `json:"module_so_id,omitempty"`
 }
 
 
@@ -64,6 +67,22 @@ type LinkState struct {
 	ConnectionState
 	Root    string                      `json:"root,omitempty"`
 	Modules map[string]*ConnectionState `json:"modules,omitempty"`
+}
+
+// ModuleSOHandler is optionally implemented by modules that need a
+// framework-managed SyncObject per peer (modul-SO). The modul-SO is
+// created at connect time and destroyed at close time. Unlike regular
+// SyncObjects, it does not take a RefCount — it never blocks link or
+// module closure.
+//
+// ConstructSO is called after OnConnect with the framework-created SO.
+// The module stores it and uses it to send messages to the peer.
+//
+// DestructSO is called before OnClose. The module should release its
+// reference to the SO. The framework destroys the queue afterward.
+type ModuleSOHandler interface {
+	ConstructSO(peer string, so SyncObject)
+	DestructSO(peer string)
 }
 
 // Module processes sync methods and account API calls for a namespace.
@@ -119,6 +138,76 @@ type ModuleAPI struct {
 	// Reattach reconnects a deserialized SyncObject's closures.
 	// The ID and Peer fields are preserved from serialization.
 	Reattach func(so *SyncObject)
+}
+
+// constructModuleSO creates a framework-managed modul-SO for the given
+// module and peer, and calls ConstructSO on the module. The modul-SO
+// does not take a RefCount. Called after OnConnect.
+func (n *Node) constructModuleSO(module, peer string) {
+	mod := n.moduleMap[module]
+	if mod == nil {
+		return
+	}
+	handler, ok := mod.(ModuleSOHandler)
+	if !ok {
+		return
+	}
+	lk := n.Links[peer]
+	if lk == nil {
+		return
+	}
+	cs := lk.connectionState(module)
+	if cs == nil {
+		return
+	}
+	if cs.ModuleSoID != 0 {
+		return // already has one
+	}
+	n.NextSyncObjectID++
+	qid := n.NextSyncObjectID
+	so := SyncObject{Peer: peer}
+	n.makeModuleSoClosures(&so, qid, module)
+	cs.ModuleSoID = qid
+	handler.ConstructSO(peer, so)
+}
+
+// destructModuleSO calls DestructSO on the module and destroys the
+// framework-managed modul-SO. Called before OnClose.
+func (n *Node) destructModuleSO(module, peer string) {
+	mod := n.moduleMap[module]
+	if mod == nil {
+		return
+	}
+	handler, ok := mod.(ModuleSOHandler)
+	if !ok {
+		return
+	}
+	lk := n.Links[peer]
+	if lk == nil {
+		return
+	}
+	cs := lk.connectionState(module)
+	if cs == nil || cs.ModuleSoID == 0 {
+		return
+	}
+	handler.DestructSO(peer)
+	n.outboxDeleteQueue(cs.ModuleSoID)
+	cs.ModuleSoID = 0
+}
+
+// makeModuleSoClosures wires a modul-SO to this node's outbox.
+// Unlike regular SyncObject closures, deleteQueue does NOT touch RefCount.
+func (n *Node) makeModuleSoClosures(so *SyncObject, qid uint64, module string) {
+	so.ID = qid
+	so.send = func(method string, payload json.RawMessage) {
+		n.outboxSend(qid, module, so.Peer, method, payload)
+	}
+	so.deleteQueue = func() {
+		n.outboxDeleteQueue(qid)
+	}
+	so.hasPending = func() bool {
+		return n.outboxHas(qid)
+	}
 }
 
 // syncObjectRef increments the RefCount on the ConnectionState for
@@ -613,6 +702,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 				l.State.IntentConnect = false
 				if mod := n.moduleMap[l.State.Root]; mod != nil {
 					mod.OnConnect(peer)
+					n.constructModuleSO(l.State.Root, peer)
 				}
 				return 1, nil
 			}
@@ -626,10 +716,12 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			if l.State.Status == Connected {
 				for name, c := range l.State.Modules {
 					if mod := n.moduleMap[name]; mod != nil && c.Status == Connected {
+						n.destructModuleSO(name, peer)
 						mod.OnClose(peer)
 					}
 				}
 				if mod := n.moduleMap[l.State.Root]; mod != nil {
+					n.destructModuleSO(l.State.Root, peer)
 					mod.OnClose(peer)
 				}
 			}
@@ -649,6 +741,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 			if connected != "" {
 				if mod := n.moduleMap[connected]; mod != nil {
 					mod.OnConnect(peer)
+					n.constructModuleSO(connected, peer)
 				}
 			}
 			if err != nil {
@@ -699,6 +792,7 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 				l.State.IntentConnect = false
 				if mod := n.moduleMap[l.State.Root]; mod != nil {
 					mod.OnConnect(peer)
+					n.constructModuleSO(l.State.Root, peer)
 				}
 			} else {
 				// NACK or framework error — go to waiting. The link stays
@@ -711,9 +805,11 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 				if l.State.Status == Connected {
 					for name, c := range l.State.Modules {
 						if mod := n.moduleMap[name]; mod != nil && c.Status == Connected {
+							n.destructModuleSO(name, peer)
 							mod.OnClose(peer)
 						}
 					}
+					n.destructModuleSO(l.State.Root, peer)
 					if mod := n.moduleMap[l.State.Root]; mod != nil {
 						mod.OnClose(peer)
 					}
@@ -735,10 +831,11 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 			if connected := l.respModule(payload, ok); connected != "" {
 				if mod := n.moduleMap[connected]; mod != nil {
 					mod.OnConnect(peer)
+					n.constructModuleSO(connected, peer)
 				}
 			}
 		case "close":
-			l.respModuleClose(peer, payload, ok, n.moduleMap)
+			l.respModuleClose(peer, payload, ok, n)
 		}
 		return
 	}
@@ -942,6 +1039,9 @@ func (l *Link) reqModuleClose(peer string, payload json.RawMessage, n *Node) (bo
 		return false, errRefsHeld
 	}
 	wasConnected := mod.Status == Connected
+	if wasConnected {
+		n.destructModuleSO(p.Name, peer)
+	}
 	delete(l.State.Modules, p.Name)
 	if wasConnected {
 		if m := n.moduleMap[p.Name]; m != nil {
@@ -953,7 +1053,7 @@ func (l *Link) reqModuleClose(peer string, payload json.RawMessage, n *Node) (bo
 
 // respModuleClose handles a module.close response. It removes the module
 // from the link and fires OnClose if the module was connected.
-func (l *Link) respModuleClose(peer string, payload json.RawMessage, ok bool, modules map[string]Module) {
+func (l *Link) respModuleClose(peer string, payload json.RawMessage, ok bool, n *Node) {
 	var p struct {
 		Name string `json:"name"`
 	}
@@ -966,9 +1066,12 @@ func (l *Link) respModuleClose(peer string, payload json.RawMessage, ok bool, mo
 	}
 	if ok {
 		wasConnected := mod.Status == Connected
+		if wasConnected {
+			n.destructModuleSO(p.Name, peer)
+		}
 		delete(l.State.Modules, p.Name)
 		if wasConnected {
-			if m := modules[p.Name]; m != nil {
+			if m := n.moduleMap[p.Name]; m != nil {
 				m.OnClose(peer)
 			}
 		}
@@ -1057,10 +1160,12 @@ func (n *Node) handleAccount(fullMethod string, payload json.RawMessage) (json.R
 			return nil, fmt.Errorf("no link to %s", p.Peer)
 		}
 		for name := range lk.State.Modules {
+			n.destructModuleSO(name, p.Peer)
 			if mod := n.moduleMap[name]; mod != nil {
 				mod.ForceRemove(p.Peer)
 			}
 		}
+		n.destructModuleSO(lk.State.Root, p.Peer)
 		if mod := n.moduleMap[lk.State.Root]; mod != nil {
 			mod.ForceRemove(p.Peer)
 		}
