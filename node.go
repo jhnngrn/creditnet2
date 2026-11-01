@@ -66,12 +66,6 @@ func NewNode(name, nodeID string, links *mimesis.Node, api mimesis.ModuleAPI, st
 	if h.Trustlines == nil {
 		h.Trustlines = map[string]*Trustline{}
 	}
-	// Reattach SyncObjects for all persisted trustlines.
-	for _, tl := range h.Trustlines {
-		if tl.ID != 0 {
-			api.Reattach(&tl.SyncObject)
-		}
-	}
 	return h
 }
 
@@ -148,12 +142,12 @@ func (h *Node) Bandwidth(peer string, side int) int64 {
 }
 
 // OnConnect is called by the framework when link.connect completes bilaterally.
-func (h *Node) OnConnect(peer string) {
+// The framework creates the modul-SO and passes it for the module to embed.
+func (h *Node) OnConnect(peer string, so mimesis.SyncObject) {
 	if h.Trustlines[peer] == nil {
-		tl := &Trustline{}
-		tl.SyncObject = h.api.NewSyncObject(peer)
-		h.Trustlines[peer] = tl
+		h.Trustlines[peer] = &Trustline{}
 	}
+	h.Trustlines[peer].SyncObject = so
 }
 
 // OnClose is called by the framework when link.close completes bilaterally.
