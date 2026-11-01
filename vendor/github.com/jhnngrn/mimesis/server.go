@@ -224,18 +224,18 @@ func (s *Server) newNode(id string, raw json.RawMessage) *Node {
 	// gets its SyncObject back.
 	for peer, lk := range n.Links {
 		// Root module modul-SO.
-		if cs := lk.connectionState(lk.State.Root); cs != nil && cs.ModuleSoID != 0 {
-			if handler, ok := n.moduleMap[lk.State.Root].(ModuleSOHandler); ok {
+		if mod := n.moduleMap[lk.State.Root]; mod != nil {
+			if cs := lk.connectionState(lk.State.Root); cs != nil && cs.ModuleSoID != 0 {
 				so := n.reattachModuleSO(lk.State.Root, peer, cs)
-				handler.OnConnect(peer, so)
+				mod.OnConnect(peer, so)
 			}
 		}
 		// Child module modul-SOs.
 		for name, ms := range lk.State.Modules {
 			if ms.ModuleSoID != 0 {
-				if handler, ok := n.moduleMap[name].(ModuleSOHandler); ok {
+				if mod := n.moduleMap[name]; mod != nil {
 					so := n.reattachModuleSO(name, peer, ms)
-					handler.OnConnect(peer, so)
+					mod.OnConnect(peer, so)
 				}
 			}
 		}

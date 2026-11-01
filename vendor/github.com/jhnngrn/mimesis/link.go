@@ -73,22 +73,20 @@ type LinkState struct {
 // framework-managed SyncObject per peer (modul-SO). The modul-SO is
 // created before OnConnect and destroyed after OnClose. Unlike regular
 // SyncObjects, it does not take a RefCount — it never blocks link or
-// module closure.
-//
-// OnConnect is called when the module becomes bilaterally connected.
-// The framework creates the SO and passes it — the module embeds it
-// in its per-peer state however it wants.
-//
-// OnClose is called when the module is disconnected. The module cleans
-// up its per-peer state. The framework destroys the SO queue afterward.
-type ModuleSOHandler interface {
-	OnConnect(peer string, so SyncObject)
-	OnClose(peer string)
-}
+// module closure. Modules that don't implement this get a zero-value
+// SyncObject in OnConnect (ID 0, nil closures — safe to ignore).
+type ModuleSOHandler interface{}
 
 // Module processes sync methods and account API calls for a namespace.
 // Kicks are handled automatically by the framework when a module enqueues
 // a message via SendFunc — modules do not need to return kick lists.
+//
+// OnConnect is called when the module becomes bilaterally connected.
+// If the module implements ModuleSOHandler, the framework creates a
+// modul-SO and passes it; otherwise so is a zero-value SyncObject.
+//
+// OnClose is called when the module is disconnected. The framework
+// destroys the modul-SO queue (if any) after OnClose returns.
 //
 // HandleRequest returns a tristate int8:
 //
@@ -100,6 +98,8 @@ type ModuleSOHandler interface {
 //
 // HandleResponse receives the peer's tristate result.
 type Module interface {
+	OnConnect(peer string, so SyncObject)
+	OnClose(peer string)
 	HandleRequest(peer, method string, payload json.RawMessage, ts int64) (int8, error)
 	HandleResponse(peer, method string, payload json.RawMessage, result int8, ts int64)
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
@@ -170,33 +170,34 @@ func (n *Node) reattachModuleSO(module, peer string, cs *ConnectionState) SyncOb
 	return so
 }
 
-// fireOnConnect creates a modul-SO and calls OnConnect on the module
-// if it implements ModuleSOHandler.
+// fireOnConnect calls OnConnect on the module. If the module implements
+// ModuleSOHandler, the framework creates a modul-SO and passes it;
+// otherwise a zero-value SyncObject is passed.
 func (n *Node) fireOnConnect(module, peer string) {
-	handler, ok := n.moduleMap[module].(ModuleSOHandler)
-	if !ok {
+	mod := n.moduleMap[module]
+	if mod == nil {
 		return
 	}
-	lk := n.Links[peer]
-	if lk == nil {
-		return
+	var so SyncObject
+	if _, ok := mod.(ModuleSOHandler); ok {
+		lk := n.Links[peer]
+		if lk != nil {
+			if cs := lk.connectionState(module); cs != nil && cs.ModuleSoID == 0 {
+				so = n.newModuleSO(module, peer, cs)
+			}
+		}
 	}
-	cs := lk.connectionState(module)
-	if cs == nil || cs.ModuleSoID != 0 {
-		return
-	}
-	so := n.newModuleSO(module, peer, cs)
-	handler.OnConnect(peer, so)
+	mod.OnConnect(peer, so)
 }
 
 // fireOnClose calls OnClose on the module and cleans up the modul-SO
-// if the module implements ModuleSOHandler.
+// queue (if any) afterward.
 func (n *Node) fireOnClose(module, peer string) {
-	handler, ok := n.moduleMap[module].(ModuleSOHandler)
-	if !ok {
+	mod := n.moduleMap[module]
+	if mod == nil {
 		return
 	}
-	handler.OnClose(peer)
+	mod.OnClose(peer)
 	n.cleanupModuleSO(peer, module)
 }
 
