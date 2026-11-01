@@ -74,11 +74,13 @@ machine, module negotiation, and invite modes.
 creditnet's Node implements `mimesis.Module`, so it receives lifecycle
 callbacks:
 
-- **OnConnect(peer)** — called when `link.connect` completes bilaterally.
-  Creates the trustline for this peer.
+- **OnConnect(peer, so)** — called when `link.connect` completes bilaterally.
+  Creates the trustline for this peer and embeds the framework-managed
+  SyncObject (registered via `srv.ModuleSO("trustline")`).
 - **OnClose(peer)** — called when `link.close` completes bilaterally,
   just before the link is deleted. Archives non-zero balance to
-  `ClosedBalances` and deletes the trustline if one exists.
+  `ClosedBalances` and deletes the trustline. The framework destroys
+  the modul-SO queue after OnClose returns.
 
 Connected checks use link existence: `node.Get(peer)` returns non-nil
 and `link.State.Root == "trustline"`. There is no separate connected
@@ -101,10 +103,11 @@ There is no separate trustline state machine — link existence is the
 sole source of truth. If `node.Get(peer)` is non-nil and
 `link.State.Root == "trustline"`, the peer is connected.
 
-Trustline state is archived unconditionally in `OnClose` — there is no
-trustline-level ref counting. Child modules (triad, loops) hold their
-own SyncObjects, and the framework defers closing until their RefCounts
-reach zero.
+Trustline state is archived unconditionally in `OnClose`. The trustline's
+own SyncObject is a framework-managed modul-SO (no RefCount — it never
+blocks closure). Child modules (triad, loops) hold their own SyncObjects
+via `ModuleAPI.NewSyncObject`, and the framework defers closing until
+their RefCounts reach zero.
 
 ### Sync protocol
 
