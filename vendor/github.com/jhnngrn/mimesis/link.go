@@ -297,6 +297,7 @@ type queuedMsg struct {
 	Payload  json.RawMessage `json:"payload,omitempty"`
 	QueuedAt int64           `json:"queued_at,omitempty"`
 	SyncObjectID uint64 `json:"sync_object_id,omitempty"` // originating sync object (for dequeue after restart)
+	Timestamp int64 `json:"timestamp,omitempty"` // outgoing timestamp, set at promote time: max(now, lk.Timestamp)
 }
 
 // peerSend tracks the outgoing send lifecycle for a link at a given counter.
@@ -589,6 +590,9 @@ func (l *Link) AcceptRequest(reqCounter uint64, result int8, ts int64) *int8 {
 // AcceptResponse finalizes a received response to our outgoing message.
 // Call after the response handler has processed the response.
 func (l *Link) AcceptResponse() {
+	if l.Pending != nil {
+		l.Timestamp = l.Pending.Timestamp
+	}
 	l.Counter++
 	l.Pending = nil
 	l.CachedResult = nil
@@ -1533,10 +1537,12 @@ func (n *Node) sendPending(peer string) {
 	if promoted {
 		ts := nowSecs()
 		if ts > lk.Timestamp {
-			lk.Timestamp = ts
+			lk.Pending.Timestamp = ts
+		} else {
+			lk.Pending.Timestamp = lk.Timestamp
 		}
 	}
-	env.Timestamp = lk.Timestamp
+	env.Timestamp = lk.Pending.Timestamp
 	if cr := lk.CachedResult; cr != nil {
 		env.Resp = cr
 	}
@@ -1582,7 +1588,9 @@ func (n *Node) sendPending(peer string) {
 		if lk.Pending != nil {
 			ts := nowSecs()
 			if ts > lk.Timestamp {
-				lk.Timestamp = ts
+				lk.Pending.Timestamp = ts
+			} else {
+				lk.Pending.Timestamp = lk.Timestamp
 			}
 		}
 		kickPeer = lk.Pending != nil
