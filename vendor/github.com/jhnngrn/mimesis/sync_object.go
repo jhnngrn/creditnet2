@@ -21,8 +21,11 @@ type SyncObject struct {
 
 	// Closures — set by NewSyncObject/Reattach, capture module name + node.
 	send        func(method string, payload json.RawMessage)
+	connect     func()
+	disconnect  func()
 	deleteQueue func()
 	hasPending  func() bool
+	connected   bool
 }
 
 // Send enqueues an outgoing message to this object's peer.
@@ -47,7 +50,24 @@ func (so *SyncObject) HasPending() bool {
 	return false
 }
 
-// Close cleans up outbox entries. Call before removing the struct.
+// Connect marks this SyncObject as bilaterally connected, taking a ref
+// on the module's ConnectionState. Call once both sides have confirmed
+// (e.g. in HandleResponse after ack, or in HandleRequest when acking).
+// Close releases the ref.
+func (so *SyncObject) Connect() {
+	if so.connect != nil && !so.connected {
+		so.connected = true
+		so.connect()
+	}
+}
+
+// Close cleans up outbox entries and releases the ref if connected.
 func (so *SyncObject) Close() {
+	if so.connected {
+		so.connected = false
+		if so.disconnect != nil {
+			so.disconnect()
+		}
+	}
 	so.DeleteQueue()
 }
