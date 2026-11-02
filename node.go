@@ -251,12 +251,14 @@ func (h *Node) onPayment(peerID string, payload json.RawMessage, ts int64) (int8
 // link.Module — HandleResponse
 // ---------------------------------------------------------------------------
 
-func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, result int8, ts int64) {
+func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, result int8) {
 	peer := h.Trustlines[peerID]
 	if peer == nil {
 		return
 	}
 	ok := result > 0
+	// TODO: Use the original request timestamp once modules can access it.
+	now := time.Now().Unix()
 	switch method {
 	case "set_credit_limit":
 		if ok {
@@ -272,7 +274,7 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, re
 				Rate int64 `json:"rate"`
 			}
 			json.Unmarshal(payload, &req)
-			peer.MaterializeDemurrage(ts)
+			peer.MaterializeDemurrage(now)
 			peer.Demurrage = req.Rate
 		}
 	case "payment":
@@ -281,7 +283,7 @@ func (h *Node) HandleResponse(peerID, method string, payload json.RawMessage, re
 		}
 		json.Unmarshal(payload, &req)
 		if ok {
-			peer.AddBalance(-req.Amount, ts)
+			peer.AddBalance(-req.Amount, now)
 		}
 		h.AddReceipt(peerID, -req.Amount, ok)
 	}

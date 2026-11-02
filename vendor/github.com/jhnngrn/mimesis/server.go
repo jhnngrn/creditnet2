@@ -428,9 +428,6 @@ func (s *Server) handleTx(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "max links")
 		case errors.Is(syncErr, errStaleCounter), errors.Is(syncErr, errCounterAhead), errors.Is(syncErr, errCollision):
 			httpError(w, http.StatusConflict, syncErr.Error())
-		case errors.Is(syncErr, errTimestamp):
-			// Piggybacked response timestamp — still HTTP error.
-			httpError(w, http.StatusConflict, syncErr.Error())
 		default:
 			httpError(w, http.StatusBadRequest, syncErr.Error())
 		}

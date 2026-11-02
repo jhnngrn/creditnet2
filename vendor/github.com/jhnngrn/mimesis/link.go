@@ -93,7 +93,7 @@ type Module interface {
 	OnConnect(peer string, so SyncObject)
 	OnClose(peer string)
 	HandleRequest(peer, method string, payload json.RawMessage, ts int64) (int8, error)
-	HandleResponse(peer, method string, payload json.RawMessage, result int8, ts int64)
+	HandleResponse(peer, method string, payload json.RawMessage, result int8)
 	HandleAccount(method string, payload json.RawMessage) (json.RawMessage, error)
 	Status() json.RawMessage
 	ForceRemove(peer string)
@@ -316,7 +316,7 @@ type Link struct {
 	Counter        uint64        `json:"counter"`
 	TurnBit        uint64        `json:"turn_bit"`
 	Pending        *queuedMsg    `json:"pending,omitempty"`
-	CachedResponse *txResponse `json:"cached_response,omitempty"`
+	CachedResult *int8 `json:"cached_result,omitempty"`
 	Timestamp      int64         `json:"ts"`
 	Sending        *peerSend     `json:"-"`
 }
@@ -537,14 +537,14 @@ func (n *Node) Connect(peer, root string) (*Link, error) {
 
 // ValidateRequest checks whether an incoming request at the given counter
 // is valid for this link. Returns:
-//   - (*txResponse, nil) — stale counter but cached response exists
+//   - (*int8, nil) — stale counter but cached result exists
 //   - (nil, error) — invalid (stale without cache, ahead, or collision)
 //   - (nil, nil) — valid, proceed with dispatch
-func (l *Link) ValidateRequest(counter uint64) (*txResponse, error) {
+func (l *Link) ValidateRequest(counter uint64) (*int8, error) {
 	if counter < l.Counter {
-		if l.CachedResponse != nil && counter == l.Counter-1 {
-			resp := *l.CachedResponse
-			return &resp, nil
+		if l.CachedResult != nil && counter == l.Counter-1 {
+			r := *l.CachedResult
+			return &r, nil
 		}
 		return nil, errStaleCounter
 	}
@@ -572,23 +572,25 @@ func (l *Link) ValidateTimestamp(ts, now int64) error {
 
 // AcceptRequest finalizes an incoming request. Call after the handler
 // has processed the request. result is the tristate: -1/0/1.
-// Returns the response to send back.
-func (l *Link) AcceptRequest(reqCounter uint64, result int8, ts int64) *txResponse {
-	resp := txResponse{Result: result, Timestamp: ts}
-	l.CachedResponse = &resp
+// Returns the result to send back.
+func (l *Link) AcceptRequest(reqCounter uint64, result int8, ts int64) *int8 {
+	r := result
+	l.CachedResult = &r
 	l.Counter++
 	l.Timestamp = ts
 	l.Pending = nil
-	return &resp
+	return &r
 }
 
 // AcceptResponse finalizes a received response to our outgoing message.
 // Call after the response handler has processed the response.
 func (l *Link) AcceptResponse(ts int64) {
 	l.Counter++
-	l.Timestamp = ts
+	if ts > l.Timestamp {
+		l.Timestamp = ts
+	}
 	l.Pending = nil
-	l.CachedResponse = nil
+	l.CachedResult = nil
 }
 
 
@@ -604,15 +606,7 @@ type txRequest struct {
 	Method    string          `json:"method"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
 	Timestamp int64           `json:"timestamp"`
-	Resp      *txResponse   `json:"resp,omitempty"`
-}
-
-// txResponse is the wire envelope for a transaction response.
-// Result is a tristate: -1 = framework error (counter++, app not called),
-// 0 = app nack (counter++, app called), 1 = app ack (counter++, app called).
-type txResponse struct {
-	Result    int8  `json:"result"`
-	Timestamp int64 `json:"timestamp"`
+	Resp      *int8          `json:"resp,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -765,7 +759,7 @@ func (n *Node) dispatchRequest(peer, fullMethod string, payload json.RawMessage,
 
 // dispatchResponse dispatches a sync response by namespace.
 // result is the tristate: -1 (framework error), 0 (nack), 1 (ack).
-func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage, result int8, ts int64) {
+func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage, result int8) {
 	ns, method := splitMethod(fullMethod)
 	ok := result > 0
 	if ns == "link" {
@@ -822,7 +816,7 @@ func (n *Node) dispatchResponse(peer, fullMethod string, payload json.RawMessage
 	if mod == nil {
 		return
 	}
-	mod.HandleResponse(peer, method, payload, result, ts)
+	mod.HandleResponse(peer, method, payload, result)
 }
 
 // nextTx returns the next message to send on a peer link.
@@ -1348,7 +1342,7 @@ func (n *Node) quickReject(from, method string) bool {
 // for authentication (signature verification).
 // Kicks are dispatched under the lock to guarantee they are never lost on
 // error paths after a commit.
-func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
+func (n *Node) handleIncoming(env txRequest) (*int8, error) {
 	env.From = strings.ToLower(env.From)
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -1356,13 +1350,15 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 	lk := n.Get(env.From)
 	if lk == nil {
 		if env.Method == "link.close" {
-			return &txResponse{Result: 1, Timestamp: nowSecs()}, nil
+			r := int8(1)
+			return &r, nil
 		}
 		if env.Method != "link.connect" {
 			return nil, errNoLink
 		}
 		if n.InviteMode == inviteModeClosed {
-			return &txResponse{Result: 0, Timestamp: nowSecs()}, nil
+			r := int8(0)
+			return &r, nil
 		}
 		if n.full() {
 			return nil, errMaxLinks
@@ -1387,14 +1383,11 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 
 	// Piggybacked response.
 	if env.Resp != nil && lk.Pending != nil && env.Counter == lk.Counter+1 {
-		if err := lk.ValidateTimestamp(env.Resp.Timestamp, now); err != nil {
-			return nil, err
-		}
-		n.dispatchResponse(env.From, lk.Pending.Method, lk.Pending.Payload, env.Resp.Result, env.Resp.Timestamp)
+		n.dispatchResponse(env.From, lk.Pending.Method, lk.Pending.Payload, *env.Resp)
 		if lk.Pending.SyncObjectID != 0 {
 			n.outboxDequeue(lk.Pending.SyncObjectID)
 		}
-		lk.AcceptResponse(env.Resp.Timestamp)
+		lk.AcceptResponse(env.Timestamp)
 		n.commit()
 		n.kick(env.From)
 	}
@@ -1535,13 +1528,11 @@ func (n *Node) sendPending(peer string) {
 		From: n.ID, To: peer, Counter: counter,
 		Method: msg.Method, Payload: msg.Payload,
 	}
-	if lk.dominant() {
-		env.Timestamp = nowSecs()
-		if env.Timestamp < lk.Timestamp {
-			env.Timestamp = lk.Timestamp
-		}
+	env.Timestamp = nowSecs()
+	if env.Timestamp < lk.Timestamp {
+		env.Timestamp = lk.Timestamp
 	}
-	if cr := lk.CachedResponse; cr != nil {
+	if cr := lk.CachedResult; cr != nil {
 		env.Resp = cr
 	}
 	if promoted {
@@ -1562,7 +1553,7 @@ func (n *Node) sendPending(peer string) {
 		n.mu.Unlock()
 		return
 	}
-	var resp txResponse
+	var resp int8
 	if json.Unmarshal(body, &resp) != nil {
 		n.setRetry(peer, counter)
 		n.mu.Unlock()
@@ -1574,18 +1565,11 @@ func (n *Node) sendPending(peer string) {
 		return
 	}
 
-	if err := lk.ValidateTimestamp(resp.Timestamp, nowSecs()); err != nil {
-		log.Printf("[link] %s->%s: bad response timestamp: %v", n.ID, peer, err)
-		n.setRetry(peer, counter)
-		n.mu.Unlock()
-		return
-	}
-
-	n.dispatchResponse(peer, msg.Method, msg.Payload, resp.Result, resp.Timestamp)
+	n.dispatchResponse(peer, msg.Method, msg.Payload, resp)
 	if lk.Pending.SyncObjectID != 0 {
 		n.outboxDequeue(lk.Pending.SyncObjectID)
 	}
-	lk.AcceptResponse(resp.Timestamp)
+	lk.AcceptResponse(env.Timestamp)
 
 	var kickPeer bool
 	if n.Get(peer) != nil {

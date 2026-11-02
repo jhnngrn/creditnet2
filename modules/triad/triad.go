@@ -149,13 +149,13 @@ func (h *Triad) HandleRequest(peer, method string, payload json.RawMessage, ts i
 	return 0, mimesis.ErrBadMethod
 }
 
-func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, result int8, ts int64) {
+func (h *Triad) HandleResponse(peer, method string, payload json.RawMessage, result int8) {
 	ok := result > 0
 	switch method {
 	case "commit":
 		h.respCommit(peer, payload, ok)
 	case "finalize":
-		h.respFinalize(peer, payload, ts)
+		h.respFinalize(peer, payload)
 	case "rollback":
 		h.respRollback(payload)
 	}
@@ -264,7 +264,7 @@ func (h *Triad) reqFinalize(peer string, raw json.RawMessage, ts int64) (int8, e
 	return 1, nil
 }
 
-func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
+func (h *Triad) respFinalize(peer string, raw json.RawMessage) {
 	var m novFinalizeMsg
 	if json.Unmarshal(raw, &m) != nil {
 		return
@@ -277,7 +277,8 @@ func (h *Triad) respFinalize(peer string, raw json.RawMessage, ts int64) {
 	if p == nil {
 		log.Fatalf("triad %s: respFinalize for unknown trustline %s", h.nodeID, peer)
 	}
-	p.AddBalance(-nov.Amount, ts)
+	// TODO: Use the original request timestamp once modules can access it.
+	p.AddBalance(-nov.Amount, time.Now().Unix())
 	h.removeSide(nov, OUT)
 	if nov.Side[IN].Peer == "" {
 		delete(h.Novations, m.NovationID)
