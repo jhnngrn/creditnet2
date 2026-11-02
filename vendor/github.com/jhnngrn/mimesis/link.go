@@ -584,11 +584,8 @@ func (l *Link) AcceptRequest(reqCounter uint64, result int8, ts int64) *int8 {
 
 // AcceptResponse finalizes a received response to our outgoing message.
 // Call after the response handler has processed the response.
-func (l *Link) AcceptResponse(ts int64) {
+func (l *Link) AcceptResponse() {
 	l.Counter++
-	if ts > l.Timestamp {
-		l.Timestamp = ts
-	}
 	l.Pending = nil
 	l.CachedResult = nil
 }
@@ -1387,7 +1384,7 @@ func (n *Node) handleIncoming(env txRequest) (*int8, error) {
 		if lk.Pending.SyncObjectID != 0 {
 			n.outboxDequeue(lk.Pending.SyncObjectID)
 		}
-		lk.AcceptResponse(env.Timestamp)
+		lk.AcceptResponse()
 		n.commit()
 		n.kick(env.From)
 	}
@@ -1528,10 +1525,13 @@ func (n *Node) sendPending(peer string) {
 		From: n.ID, To: peer, Counter: counter,
 		Method: msg.Method, Payload: msg.Payload,
 	}
-	env.Timestamp = nowSecs()
-	if env.Timestamp < lk.Timestamp {
-		env.Timestamp = lk.Timestamp
+	if promoted {
+		ts := nowSecs()
+		if ts > lk.Timestamp {
+			lk.Timestamp = ts
+		}
 	}
+	env.Timestamp = lk.Timestamp
 	if cr := lk.CachedResult; cr != nil {
 		env.Resp = cr
 	}
@@ -1569,11 +1569,17 @@ func (n *Node) sendPending(peer string) {
 	if lk.Pending.SyncObjectID != 0 {
 		n.outboxDequeue(lk.Pending.SyncObjectID)
 	}
-	lk.AcceptResponse(env.Timestamp)
+	lk.AcceptResponse()
 
 	var kickPeer bool
 	if n.Get(peer) != nil {
 		lk.Pending = n.nextTx(peer)
+		if lk.Pending != nil {
+			ts := nowSecs()
+			if ts > lk.Timestamp {
+				lk.Timestamp = ts
+			}
+		}
 		kickPeer = lk.Pending != nil
 	}
 	n.commit()
