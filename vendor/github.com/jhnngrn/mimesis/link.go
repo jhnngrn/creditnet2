@@ -287,17 +287,12 @@ func (n *Node) OutboxHasModule(peer, module string) bool {
 	return false
 }
 
-// queuedMsg is a message queued for sending on a link.
-// QueuedAt is a unix-second timestamp of when the message was queued.
-// When multiple modules return a candidate for the same peer, the
-// oldest QueuedAt wins. Zero means unset — unset always loses to any
-// set value; when both are unset (or equal), registration order wins.
+// queuedMsg is a message selected by NextTx for sending on a link.
 type queuedMsg struct {
-	Method   string          `json:"method"`
-	Payload  json.RawMessage `json:"payload,omitempty"`
-	QueuedAt int64           `json:"queued_at,omitempty"`
-	SyncObjectID uint64 `json:"sync_object_id,omitempty"` // originating sync object (for dequeue after restart)
-	Timestamp int64 `json:"timestamp,omitempty"` // outgoing timestamp, set at promote time: max(now, lk.Timestamp)
+	Method       string          `json:"method"`
+	Payload      json.RawMessage `json:"payload,omitempty"`
+	SyncObjectID uint64          `json:"sync_object_id,omitempty"` // originating sync object (for dequeue after restart)
+	Timestamp    int64           `json:"timestamp,omitempty"`      // outgoing timestamp, set at promote time: max(now, lk.Timestamp)
 }
 
 // peerSend tracks the outgoing send lifecycle for a link at a given counter.
@@ -638,25 +633,6 @@ func splitMethod(method string) (ns, name string) {
 	return "", method
 }
 
-// olderQueuedMsg reports whether a should win over b.
-// Zero QueuedAt means unset — unset loses to any set value.
-// Equal values (including both zero) return false, preserving
-// the earlier candidate.
-func olderQueuedMsg(a, b *queuedMsg) bool {
-	if b == nil {
-		return true
-	}
-	if a.QueuedAt == 0 && b.QueuedAt == 0 {
-		return false
-	}
-	if a.QueuedAt == 0 {
-		return false
-	}
-	if b.QueuedAt == 0 {
-		return true
-	}
-	return a.QueuedAt < b.QueuedAt
-}
 
 // ---------------------------------------------------------------------------
 // Link-level request/response handling
@@ -898,6 +874,7 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 		return nil
 	}
 	var best *queuedMsg
+	var bestTime int64
 	for queueID, sq := range n.Outbox {
 		if sq.Peer != peer {
 			continue
@@ -909,14 +886,13 @@ func (n *Node) nextTx(peer string) *queuedMsg {
 			continue
 		}
 		entry := sq.Entries[0]
-		msg := &queuedMsg{
-			Method:   sq.Module + "." + entry.Method,
-			Payload:  entry.Payload,
-			QueuedAt: entry.Time,
-			SyncObjectID:  queueID,
-		}
-		if olderQueuedMsg(msg, best) {
-			best = msg
+		if best == nil || entry.Time < bestTime {
+			best = &queuedMsg{
+				Method:       sq.Module + "." + entry.Method,
+				Payload:      entry.Payload,
+				SyncObjectID: queueID,
+			}
+			bestTime = entry.Time
 		}
 	}
 	return best
