@@ -590,9 +590,10 @@ func (l *Link) AcceptRequest(reqCounter uint64, result int8, ts int64) *int8 {
 // AcceptResponse finalizes a received response to our outgoing message.
 // Call after the response handler has processed the response.
 func (l *Link) AcceptResponse() {
-	if l.Pending != nil {
-		l.Timestamp = l.Pending.Timestamp
+	if l.Pending == nil {
+		panic("AcceptResponse called without Pending")
 	}
+	l.Timestamp = l.Pending.Timestamp
 	l.Counter++
 	l.Pending = nil
 	l.CachedResult = nil
