@@ -1408,12 +1408,6 @@ func (n *Node) handleIncoming(env txRequest) (*txResponse, error) {
 	}
 
 	ts := env.Timestamp
-	if lk.dominant() {
-		ts = now
-		if ts < lk.Timestamp {
-			ts = lk.Timestamp
-		}
-	}
 
 	// Validate peer timestamp (monotonicity + forward cap).
 	// Timestamp errors are framework errors: counter advances, result = -1.
