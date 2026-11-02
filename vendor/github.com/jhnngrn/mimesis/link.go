@@ -559,9 +559,13 @@ func (l *Link) ValidateRequest(counter uint64) (*int8, error) {
 
 // ValidateTimestamp checks that ts is within acceptable bounds:
 //   - not before the link's latest timestamp (monotonicity)
+//   - not more than maxTimestampFuture seconds behind now
 //   - not more than maxTimestampFuture seconds ahead of now
 func (l *Link) ValidateTimestamp(ts, now int64) error {
 	if ts < l.Timestamp {
+		return errTimestamp
+	}
+	if ts < now-maxTimestampFuture {
 		return errTimestamp
 	}
 	if ts > now+maxTimestampFuture {
@@ -1399,10 +1403,11 @@ func (n *Node) handleIncoming(env txRequest) (*int8, error) {
 
 	ts := env.Timestamp
 
-	// Validate peer timestamp (monotonicity + forward cap).
+	// Validate peer timestamp (monotonicity + time window).
 	// Timestamp errors are framework errors: counter advances, result = -1.
+	// Pass lk.Timestamp to avoid storing the invalid timestamp.
 	if err := lk.ValidateTimestamp(ts, now); err != nil {
-		resp := lk.AcceptRequest(env.Counter, -1, ts)
+		resp := lk.AcceptRequest(env.Counter, -1, lk.Timestamp)
 		n.commit()
 		n.kick(env.From)
 		return resp, nil
